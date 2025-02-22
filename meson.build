@@ -1,0 +1,168 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright (c) 2025 Debojeet Das
+
+project(
+    'flash',
+    'C',
+    version: '0.1',
+    license: 'BSD',
+    default_options: [
+        'buildtype=release',
+        'default_library=shared',
+        'warning_level=3',
+        # 'werror=true'
+    ],
+    meson_version: '>= 0.53.2',
+)
+
+use_static_libs = get_option('default_library') == 'static'
+
+cc = meson.get_compiler('c')
+
+build_dir = meson.current_build_dir()
+flash_libs = []
+enabled_libs = []
+
+# to pass comma separated values to the linker
+add_project_link_arguments('-Wl,--no-as-needed', language: 'c')
+if get_option('buildtype') == 'release'
+    # for enabling debugging in release builds
+    add_project_arguments('-g', language: 'c')
+endif
+
+# use pthreads library
+add_project_link_arguments('-pthread', language: 'c')
+
+# use math library
+add_project_link_arguments('-lm', language: 'c')
+
+# if link_lib is empty, do not add it to project properties
+add_project_link_arguments('-ldl', language: 'c')
+
+xdp_dep = dependency(
+    'libxdp',
+    version: '>=1.2.0',
+    required: true,
+    method: 'pkg-config',
+    static: use_static_libs,
+)
+bpf_dep = dependency(
+    'libbpf',
+    required: false,
+    method: 'pkg-config',
+    static: use_static_libs,
+)
+if not bpf_dep.found()
+    bpf_dep = cc.find_library('bpf', required: true)
+endif
+
+if cc.has_header('linux/if_xdp.h')
+    if xdp_dep.found() and cc.has_header('xdp/xsk.h')
+        if bpf_dep.found() and cc.has_header('bpf/bpf.h')
+            add_project_link_arguments('-lbpf', language: 'c')
+            add_project_link_arguments('-lxdp', language: 'c')
+        endif
+    endif
+endif
+
+# Check whether the compiler and linker support User Interrupts. Some compilers have the -muintr
+# flag, but the assembler can fail if it does not support the instructions. Check this by testing
+# whether a simple program compiles and links.
+tp = '#include <x86gprintrin.h>\nint main() { _stui(); return 0; }'
+if cc.get_id() == 'gcc' and cc.links(tp, args: '-muintr', name: '-muintr')
+    add_project_arguments('-muintr', language: 'c')
+endif
+
+# for clang 32-bit compiles we need libatomic for 64-bit atomic ops
+if cc.get_id() == 'clang'
+    atomic_dep = dependency(
+        'atomic',
+        required: false,
+        method: 'pkg-config',
+        static: use_static_libs,
+    )
+    if not atomic_dep.found()
+        atomic_dep = cc.find_library('atomic', required: true)
+    endif
+    add_project_link_arguments('-latomic', language: 'c')
+endif
+
+# enable extra warnings and disable any unwanted warnings
+warning_flags = [
+    # additional warnings in alphabetical order
+    '-Wno-pedantic',
+    '-Wcast-qual',
+    '-Wdeprecated',
+    '-Wformat-nonliteral',
+    '-Wformat-security',
+    '-Wmissing-declarations',
+    '-Wmissing-prototypes',
+    '-Wnested-externs',
+    '-Wold-style-definition',
+    '-Wsign-compare',
+    '-Wstrict-prototypes',
+    '-Wundef',
+    '-Wwrite-strings',
+
+    # globally disabled warnings
+    '-Wno-address-of-packed-member',
+    '-Wno-packed-not-aligned',
+    '-Wno-missing-field-initializers',
+]
+foreach arg : warning_flags
+    if cc.has_argument(arg)
+        add_project_arguments(arg, language: 'c')
+    endif
+endforeach
+
+# specify -D_GNU_SOURCE unconditionally
+add_project_arguments('-D_GNU_SOURCE', language: 'c')
+
+##################################################################
+
+subdir('lib')
+subdir('monitor')
+subdir('examples')
+
+libflash_a = []
+libflash_so = []
+foreach lib: enabled_libs
+    libflash_a += 'lib' + lib + '.a '
+    libflash_so += 'lib' + lib + '.so '
+endforeach
+
+flash_a_name = 'libflash.a'
+flash_so_name = 'libflash.so'
+
+mklib = find_program('tools/mklib.sh')
+
+if use_static_libs
+    flash_a = custom_target(
+        'libflash_a_target',
+        output: 'libflash.a',
+        command: [mklib, build_dir, '@OUTPUT@', libflash_a],
+        install_dir: join_paths('lib', 'x86_64-linux-gnu'),
+        install: true,
+    )
+else
+    flash_so = custom_target(
+        'libflash_so_target',
+        output: 'libflash.so',
+        command: [mklib, build_dir, '@OUTPUT@', libflash_so],
+        install_dir: join_paths('lib', 'x86_64-linux-gnu'),
+        install: true,
+    )
+endif
+
+pkg = import('pkgconfig')
+
+message('>>> Create pkg-config file')
+pkg.generate(
+    name: meson.project_name(),
+    filebase: 'lib' + meson.project_name().to_lower(),
+    version: meson.project_version(),
+    libraries: ['-Wl,--as-needed'] + flash_libs,
+    description: '''FLASH userspace library for AF_XDP userspace applications''',
+    install_dir: 'lib/pkgconfig',
+)
+message('<<< Done pkg-config file')
