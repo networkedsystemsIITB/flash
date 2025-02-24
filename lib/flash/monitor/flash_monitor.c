@@ -3,7 +3,6 @@
  */
 
 #include <fcntl.h>
-#include <sys/mman.h>
 #include <sys/resource.h>
 #include <sched.h>
 #include <stdlib.h>
@@ -249,10 +248,10 @@ struct monitor_xsk_socket_info *flash__setup_xsk(struct config *cfg,
 	return xsk_info;
 }
 
-void init_config(struct config *cfg)
+static void init_config(struct config *cfg)
 {
 	cfg->xsk = calloc(1, sizeof(struct xsk_config));
-	cfg->umem = calloc(1, sizeof(struct xsk_umem_config));
+	cfg->umem = calloc(1, sizeof(struct umem_config));
 	if (!cfg->xsk || !cfg->umem) {
 		log_error("ERROR: Memory allocation failed\n");
 		exit(EXIT_FAILURE);

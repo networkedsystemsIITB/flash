@@ -50,7 +50,7 @@ const struct option_wrapper long_options[] = {
 	{ { 0, 0, NULL, 0 }, NULL, false }
 };
 
-int option_wrappers_to_options(const struct option_wrapper *wrapper,
+static int option_wrappers_to_options(const struct option_wrapper *wrapper,
 			       struct option **options)
 {
 	int i, num;
@@ -70,7 +70,7 @@ int option_wrappers_to_options(const struct option_wrapper *wrapper,
 	return 0;
 }
 
-void _print_options(const struct option_wrapper *long_options, bool required)
+static void _print_options(const struct option_wrapper *long_options, bool required)
 {
 	int i, pos;
 	char buf[BUFSIZE];
@@ -94,7 +94,7 @@ void _print_options(const struct option_wrapper *long_options, bool required)
 	}
 }
 
-void usage(const char *prog_name, const char *doc,
+static void usage(const char *prog_name, const char *doc,
 	   const struct option_wrapper *long_options, bool full)
 {
 	printf("Usage: %s [options]\n", prog_name);
@@ -113,7 +113,7 @@ void usage(const char *prog_name, const char *doc,
 	printf("\n");
 }
 
-int parse_cmdline_args(int argc, char **argv,
+static int parse_cmdline_args(int argc, char **argv,
 		       const struct option_wrapper *options_wrapper,
 		       struct config *cfg, const char *doc)
 {
@@ -251,6 +251,8 @@ int flash__parse_cmdline_args(int argc, char **argv, struct config *cfg)
 
 int monitor__parse_cmdline_args(int argc, char **argv)
 {
+	argc++;
+	argv++;
 	int ret = 0;
 	return ret;
 }

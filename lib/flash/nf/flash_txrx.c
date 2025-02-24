@@ -51,17 +51,10 @@ static inline void __complete_tx_rx_first(struct config *cfg,
 	/* Re-add completed TX buffers */
 	completed = xsk_ring_cons__peek(&xsk->comp, num_outstanding, &idx_cq);
 	if (completed > 0) {
-		unsigned int i;
-		int ret;
+		unsigned int i, ret;
 
 		ret = xsk_ring_prod__reserve(&xsk->fill, completed, &idx_fq);
 		while (ret != completed) {
-			if (ret < 0) {
-				log_error("errno: %d/\"%s\"\n", errno,
-					  strerror(errno));
-				exit(EXIT_FAILURE);
-			}
-
 			if (cfg->xsk->mode__busy_poll ||
 			    xsk_ring_prod__needs_wakeup(&xsk->fill)) {
 				recvfrom(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL,
@@ -85,14 +78,10 @@ static inline void __reserve_fq(struct config *cfg, struct sock_thread *xsk,
 				unsigned int num)
 {
 	__u32 idx_fq = 0;
-	int ret;
+	unsigned int ret;
 
 	ret = xsk_ring_prod__reserve(&xsk->fill, num, &idx_fq);
 	while (ret != num) {
-		if (ret < 0) {
-			log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
-			exit(EXIT_FAILURE);
-		}
 		if (cfg->xsk->mode__busy_poll ||
 		    xsk_ring_prod__needs_wakeup(&xsk->fill)) {
 			recvfrom(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL, NULL);
@@ -106,14 +95,10 @@ static inline void __reserve_tx(struct config *cfg, struct sock_thread *xsk,
 				unsigned int num)
 {
 	__u32 idx_tx = 0;
-	int ret;
+	unsigned int ret;
 
 	ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
 	while (ret != num) {
-		if (ret < 0) {
-			log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
-			exit(EXIT_FAILURE);
-		}
 		__complete_tx_rx_first(cfg, xsk);
 		if (cfg->xsk->mode__busy_poll ||
 		    xsk_ring_prod__needs_wakeup(&xsk->tx)) {
@@ -167,9 +152,9 @@ size_t flash__recvmsg(struct config *cfg, struct sock_thread *xsk,
 
 	if ((flags & FLASH__RXTX) && !(flags & FLASH__NOSENDER))
 		__complete_tx_rx_first(cfg, xsk);
-	else
-		; /* Not implemented */
-
+	else {
+		/* Not implemented */
+	}
 	rcvd = xsk_ring_cons__peek(&xsk->rx, cfg->xsk->batch_size, &idx_rx);
 	if (!rcvd) {
 		if (cfg->xsk->mode__busy_poll ||
@@ -184,8 +169,9 @@ size_t flash__recvmsg(struct config *cfg, struct sock_thread *xsk,
 		__reserve_fq(cfg, xsk, rcvd);
 	} else if (flags & FLASH__BACKP && flags & FLASH__RXTX) {
 		__reserve_tx(cfg, xsk, rcvd);
-	} else
-		; /* Not implemented */
+	} else {
+		/* Not implemented */
+	}
 
 	if (rcvd > cfg->xsk->batch_size) {
 		log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
@@ -224,7 +210,7 @@ size_t flash__sendmsg(struct config *cfg, struct sock_thread *xsk,
 	unsigned int nsend, i;
 	nsend = msg->msg_len;
 	__u32 frags_done = 0, eop_cnt = 0;
-	__u32 nb_frags;
+	__u32 nb_frags = 0;
 
 	if (!nsend)
 		return 0;
@@ -233,9 +219,9 @@ size_t flash__sendmsg(struct config *cfg, struct sock_thread *xsk,
 		__reserve_fq(cfg, xsk, msg->msg_len);
 	} else if (!(flags & FLASH__BACKP) && (flags & FLASH__RXTX)) {
 		__reserve_tx(cfg, xsk, msg->msg_len);
-	} else
-		; /* Not implemented */
-
+	} else {
+		/* Not implemented */
+	}
 	__u32 idx_tx = xsk->idx_tx_bp;
 	__u32 idx_fq = xsk->idx_fq_bp;
 
@@ -266,16 +252,17 @@ size_t flash__sendmsg(struct config *cfg, struct sock_thread *xsk,
 			__u64 orig = xsk_umem__extract_addr(addr);
 			eop_cnt += IS_EOP_DESC(xv->options);
 			*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) = orig;
-		} else
-			; /* Not implemented */
+		} else {
+			/* Not implemented */
+		}
 	}
 	if (flags & FLASH__RXTX) {
 		xsk_ring_prod__submit(&xsk->tx, frags_done);
 		xsk->outstanding_tx += frags_done;
 	} else if (flags & FLASH__RX) {
 		xsk_ring_prod__submit(&xsk->fill, nsend);
-	} else
-		; /* Not implemented */
-
+	} else {
+		/* Not implemented */
+	}
 	return nsend;
 }

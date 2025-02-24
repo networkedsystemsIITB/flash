@@ -23,7 +23,7 @@ struct xsk_config {
 	__u32 xdp_flags;
 	int ifqueue;
 	__u32 queue_mask;
-	int batch_size;
+	uint32_t batch_size;
 	int poll_timeout;
 	bool mode__poll;
 	bool mode__zero_copy;

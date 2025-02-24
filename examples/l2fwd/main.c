@@ -17,6 +17,7 @@ struct xsk_socket_info *xsk;
 
 static void int_exit(int sig)
 {
+	log_info("Received Signal: %d", sig);
 	done = true;
 }
 
@@ -31,7 +32,7 @@ static void swap_mac_addresses(void *data)
 	*dst_addr = tmp;
 }
 
-void *socket_routine(void *arg)
+static void *socket_routine(void *arg)
 {
 	int thread_id = *(int *)arg;
 	log_info("THREAD_ID: %d", thread_id);

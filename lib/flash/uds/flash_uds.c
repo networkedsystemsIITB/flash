@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 
 #include <log.h>
 
@@ -101,6 +102,8 @@ int start_uds_server(void)
 	int sockfd;
 	int flag = 1;
 	struct sockaddr_un server;
+
+	umask(0);
 
 	sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (sockfd < 0) {

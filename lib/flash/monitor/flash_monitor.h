@@ -5,6 +5,7 @@
 #ifndef __FLASH_MONITOR_H
 #define __FLASH_MONITOR_H
 
+#include <sys/mman.h>
 #include <flash_defines.h>
 
 extern int unix_socket_server;

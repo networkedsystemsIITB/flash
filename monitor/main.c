@@ -18,7 +18,7 @@ int offset = 0;
 struct xsk_umem_info *umem;
 struct config *cfg;
 
-void *handle_requests(void *arg)
+static void *handle_requests(void *arg)
 {
 	int msgsock = *(int *)arg, cmd = -1;
 	bool is_primary = false;
@@ -94,6 +94,7 @@ exit:
 
 static void int_exit(int sig)
 {
+	log_info("Received Signal: %d", sig);
 	close(unix_socket_server);
 	unlink(UNIX_SOCKET_NAME);
 }
