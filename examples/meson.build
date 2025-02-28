@@ -2,6 +2,7 @@
 # Copyright (c) 2025 Debojeet Das
 
 dirs = [
+    'helloworld',
     'l2fwd',
 ]
 

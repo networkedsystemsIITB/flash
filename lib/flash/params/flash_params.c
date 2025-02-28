@@ -5,12 +5,15 @@
 #include <stdlib.h>
 #include <flash_defines.h>
 #include <log.h>
+#include <limits.h>
 
 #include "flash_params.h"
 
 #define BUFSIZE 30
 
 const char *__doc__ = "AF_XDP NF Library\n";
+
+static const char *opt_irq_str = "";
 
 const struct option_wrapper long_options[] = {
 
@@ -45,13 +48,131 @@ const struct option_wrapper long_options[] = {
 	  "<queue-id>",
 	  true },
 
+	{ { "app-stats", no_argument, NULL, 'a' },
+	  "Display application (syscall) statistics." },
+
+	{ { "extra-stats", no_argument, NULL, 'x' },
+	  "Display extra statistics." },
+
+	{ { "irq-string", required_argument, NULL, 'I' },
+	  "Display driver interrupt statistics for interface associated with irq-string.",
+	  "<irq>" },
+
+	{ { "interval", required_argument, NULL, 'n' },
+	  "Specify statistics update interval (default 1 sec)." },
+
+	{ { "quiet", no_argument, NULL, 'Q' }, "Quiet mode (no output)" },
+
+	{ { "clock", required_argument, NULL, 'w' },
+	  "Clock NAME (default MONOTONIC). -- not implemented yet" },
+
+	{ { "frags", no_argument, NULL, 'F' },
+	  "Enable frags (multi-buffer) support" },
+
 	{ { "help", no_argument, NULL, 'h' }, "Show help", false },
 
 	{ { 0, 0, NULL, 0 }, NULL, false }
 };
 
+static int *get_ifqueues(__u32 queue_mask, int n_threads)
+{
+	log_info("QUEUE MASK: %d", queue_mask);
+	int *ifqueue = calloc(n_threads, sizeof(int));
+	int count = 0, thread = 0;
+	while (queue_mask != 0) {
+		if ((queue_mask & (1 << 0)) == 1)
+			ifqueue[thread++] = count;
+		queue_mask >>= 1;
+		count++;
+	}
+	return ifqueue;
+}
+
+static bool get_interrupt_number(struct config *cfg)
+{
+	FILE *f_int_proc;
+	char line[4096];
+	bool found = false;
+
+	f_int_proc = fopen("/proc/interrupts", "r");
+	if (f_int_proc == NULL) {
+		printf("Failed to open /proc/interrupts.\n");
+		return found;
+	}
+
+	while (!feof(f_int_proc) && !found) {
+		/* Make sure to read a full line at a time */
+		if (fgets(line, sizeof(line), f_int_proc) == NULL ||
+		    line[strlen(line) - 1] != '\n') {
+			printf("Error reading from interrupts file\n");
+			break;
+		}
+
+		/* Extract interrupt number from line */
+		if (strstr(line, opt_irq_str) != NULL) {
+			cfg->irq_no = atoi(line);
+			found = true;
+			break;
+		}
+	}
+
+	fclose(f_int_proc);
+
+	return found;
+}
+
+int get_irqs(struct config *cfg)
+{
+	char count_path[PATH_MAX];
+	int total_intrs = -1;
+	FILE *f_count_proc;
+	char line[4096];
+
+	snprintf(count_path, sizeof(count_path),
+		 "/sys/kernel/irq/%i/per_cpu_count", cfg->irq_no);
+	f_count_proc = fopen(count_path, "r");
+	if (f_count_proc == NULL) {
+		printf("Failed to open %s\n", count_path);
+		return total_intrs;
+	}
+
+	if (fgets(line, sizeof(line), f_count_proc) == NULL ||
+	    line[strlen(line) - 1] != '\n') {
+		printf("Error reading from %s\n", count_path);
+	} else {
+		static const char com[2] = ",";
+		char *token;
+
+		total_intrs = 0;
+		token = strtok(line, com);
+		while (token != NULL) {
+			/* sum up interrupts across all cores */
+			total_intrs += atoi(token);
+			token = strtok(NULL, com);
+		}
+	}
+
+	fclose(f_count_proc);
+
+	return total_intrs;
+}
+
+static int get_clockid(clockid_t *id, const char *name)
+{
+	const struct clockid_map *clk;
+
+	for (clk = clockids_map; clk->name; clk++) {
+		if (strcasecmp(clk->name, name) == 0) {
+			*id = clk->clockid;
+			return 0;
+		}
+	}
+
+	return -1;
+}
+
 static int option_wrappers_to_options(const struct option_wrapper *wrapper,
-			       struct option **options)
+				      struct option **options)
 {
 	int i, num;
 	struct option *new_options;
@@ -70,7 +191,8 @@ static int option_wrappers_to_options(const struct option_wrapper *wrapper,
 	return 0;
 }
 
-static void _print_options(const struct option_wrapper *long_options, bool required)
+static void _print_options(const struct option_wrapper *long_options,
+			   bool required)
 {
 	int i, pos;
 	char buf[BUFSIZE];
@@ -95,7 +217,7 @@ static void _print_options(const struct option_wrapper *long_options, bool requi
 }
 
 static void usage(const char *prog_name, const char *doc,
-	   const struct option_wrapper *long_options, bool full)
+		  const struct option_wrapper *long_options, bool full)
 {
 	printf("Usage: %s [options]\n", prog_name);
 
@@ -114,8 +236,8 @@ static void usage(const char *prog_name, const char *doc,
 }
 
 static int parse_cmdline_args(int argc, char **argv,
-		       const struct option_wrapper *options_wrapper,
-		       struct config *cfg, const char *doc)
+			      const struct option_wrapper *options_wrapper,
+			      struct config *cfg, const char *doc)
 {
 	int opt, ret;
 	int longindex = 0;
@@ -136,8 +258,8 @@ static int parse_cmdline_args(int argc, char **argv,
 	}
 
 	/* Parse commands line args */
-	while ((opt = getopt_long(argc, argv, "hzpbP:mt:i:q:", long_options,
-				  &longindex)) != -1) {
+	while ((opt = getopt_long(argc, argv, "axhzpbFQmP:t:i:q:I:n:w:",
+				  long_options, &longindex)) != -1) {
 		switch (opt) {
 		case 'z':
 			cfg->xsk->bind_flags &= ~XDP_COPY;
@@ -167,7 +289,7 @@ static int parse_cmdline_args(int argc, char **argv,
 			break;
 		case 'i':
 			if (strlen(optarg) >= IF_NAMESIZE) {
-				fprintf(stderr,
+				log_error(
 					"ERROR: (Parsing error) --dev name too long\n");
 				goto error;
 			}
@@ -177,7 +299,42 @@ static int parse_cmdline_args(int argc, char **argv,
 			break;
 		case 'q':
 			cfg->xsk->queue_mask = (__u32)strtol(optarg, NULL, 16);
+			cfg->ifqueue = get_ifqueues(cfg->xsk->queue_mask,
+						    cfg->n_threads);
 			log_info("DONE6");
+			break;
+		case 'a':
+			cfg->app_stats = true;
+			break;
+		case 'x':
+			cfg->extra_stats = true;
+			break;
+		case 'I':
+			cfg->irqs_at_init = -1;
+			opt_irq_str = optarg;
+			if (get_interrupt_number(cfg))
+				cfg->irqs_at_init = get_irqs(cfg);
+			if (cfg->irqs_at_init < 0) {
+				log_error(
+					"ERROR: (Parsing error) Failed to get irqs for %s\n",
+					opt_irq_str);
+				goto error;
+			}
+			break;
+		case 'n':
+			cfg->stats_interval = atoi(optarg);
+			break;
+		case 'Q':
+			cfg->verbose = false;
+			break;
+		case 'w':
+			if (get_clockid(&cfg->clock, optarg))
+				log_error(
+					"ERROR: Invalid clock %s. Default to CLOCK_MONOTONIC.\n",
+					optarg);
+			break;
+		case 'F':
+			cfg->frags_enabled = true;
 			break;
 		case 'h':
 			full_help = true;
@@ -234,6 +391,11 @@ int flash__parse_cmdline_args(int argc, char **argv, struct config *cfg)
 	log_info("Parsing command line argumentse");
 	cfg->umem->frame_size = FRAME_SIZE;
 	cfg->total_sockets = -1;
+	cfg->stats_interval = 1;
+	cfg->app_stats = false;
+	cfg->extra_stats = false;
+	cfg->frags_enabled = false;
+	cfg->verbose = true;
 
 	int ret = parse_cmdline_args(argc, argv, long_options, cfg, __doc__);
 

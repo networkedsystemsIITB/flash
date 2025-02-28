@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright (c) 2025 Debojeet Das
  */
-
 #ifndef __FLASH_DEFINES_H
 #define __FLASH_DEFINES_H
 
@@ -11,12 +10,14 @@
 #include <errno.h>
 
 #include <flash_list.h>
+#include <time.h>
 
 #define FRAME_SIZE XSK_UMEM__DEFAULT_FRAME_SIZE
 #define NUM_FRAMES (4 * 1024)
 #define BATCH_SIZE 64
 
 #define DEBUG_HEXDUMP 0
+#define STATS
 
 struct xsk_config {
 	__u32 bind_flags;
@@ -44,6 +45,7 @@ struct config {
 	char ifname[IF_NAMESIZE];
 	struct umem_config *umem;
 	int uds_sockfd;
+	int *ifqueue;
 	int thread_count;
 	int offset;
 	bool is_primary;
@@ -51,7 +53,26 @@ struct config {
 	bool custom_xsk;
 	bool reduce_cap;
 	struct xsk_config *xsk;
+#ifdef STATS
+	clockid_t clock;
+	int verbose;
+	int stats_interval;
+	int irqs_at_init;
+	__u32 irq_no;
+	bool app_stats;
+	bool extra_stats;
+	bool frags_enabled;
+#endif
 };
+
+static const struct clockid_map {
+	const char *name;
+	clockid_t clockid;
+} clockids_map[] = { { "REALTIME", CLOCK_REALTIME },
+		     { "TAI", CLOCK_TAI },
+		     { "BOOTTIME", CLOCK_BOOTTIME },
+		     { "MONOTONIC", CLOCK_MONOTONIC },
+		     { NULL } };
 
 struct xsk_umem_info {
 	struct xsk_ring_prod fq;
@@ -167,5 +188,22 @@ struct monitor_xsk_socket_info {
 	struct xsk_socket *xsk;
 	struct xsk_umem_info umem;
 };
+
+typedef struct {
+	char id[10];
+	struct {
+		char id[10];
+		struct {
+			char id[10];
+		} *thread;
+		int thread_count;
+	} *nf;
+	int nf_count;
+} Umem;
+
+typedef struct {
+	Umem *umem;
+	int umem_count;
+} NFGroup;
 
 #endif /* __FLASH_DEFINES_H */

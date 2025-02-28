@@ -33,6 +33,9 @@ endif
 # use pthreads library
 add_project_link_arguments('-pthread', language: 'c')
 
+#use cJSON library
+add_project_link_arguments('-lcjson', language: 'c')
+
 # use math library
 add_project_link_arguments('-lm', language: 'c')
 

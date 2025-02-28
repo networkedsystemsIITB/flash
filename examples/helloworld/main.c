@@ -17,67 +17,12 @@ struct xsk_socket_info *xsk;
 
 static void int_exit(int sig)
 {
+	log_info("Received Signal: %d", sig);
 	done = true;
-}
-
-void *socket_routine(void *arg)
-{
-	int thread_id = *(int *)arg;
-	log_info("THREAD_ID: %d", thread_id);
-	static __u32 nb_frags;
-	int i, ret, nfds = 1, nrecv;
-	int flags = FLASH__RXTX | FLASH__BACKP;
-	struct pollfd fds[1] = {};
-	struct xskmsghdr msg = {};
-
-	msg.msg_iov = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
-
-	fds[0].fd = xsk->threads[thread_id].fd;
-	fds[0].events = POLLIN;
-
-	for (;;) {
-		if (cfg->xsk->mode__poll) {
-			ret = flash__poll(fds, nfds, cfg->xsk->poll_timeout);
-			if (ret <= 0 || ret > 1)
-				continue;
-		}
-
-		nrecv = flash__recvmsg(cfg, &xsk->threads[thread_id], &msg,
-				       flags);
-
-		for (i = 0; i < nrecv; i++) {
-			struct xskvec *xv = &msg.msg_iov[i];
-			bool eop = IS_EOP_DESC(xv->options);
-
-			char *pkt = xv->data;
-
-			if (!nb_frags++)
-				swap_mac_addresses(pkt);
-
-			if (eop)
-				nb_frags = 0;
-		}
-
-		if (nrecv) {
-			ret = flash__sendmsg(cfg, &xsk->threads[thread_id],
-					     &msg, flags);
-			if (ret != nrecv) {
-				log_error("errno: %d/\"%s\"\n", errno,
-					  strerror(errno));
-				exit(EXIT_FAILURE);
-			}
-		}
-
-		if (done)
-			break;
-	}
-
-	return NULL;
 }
 
 int main(int argc, char **argv)
 {
-	cpu_set_t cpuset;
 	cfg = calloc(1, sizeof(struct config));
 	if (!cfg) {
 		log_error("ERROR: Memory allocation failed\n");
@@ -95,47 +40,12 @@ int main(int argc, char **argv)
 	signal(SIGTERM, int_exit);
 	signal(SIGABRT, int_exit);
 
-	log_info("STARTING Data Path");
-
-	CPU_ZERO(&cpuset);
-	CPU_SET(0, &cpuset);
-	if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t),
-				   &cpuset) != 0) {
-		log_error("ERROR: Unable to set thread affinity: %s\n",
-			  strerror(errno));
-		exit(EXIT_FAILURE);
-	}
-
-	int thread_id[24];
-	pthread_t *socket_thread = calloc(cfg->n_threads, sizeof(pthread_t));
-	for (int i = 0; i < cfg->n_threads; i++) {
-		thread_id[i] = i;
-		if (pthread_create(&socket_thread[i], NULL, socket_routine,
-				   thread_id + i)) {
-			log_error("Error creating socket thread");
-			exit(EXIT_FAILURE);
-		}
-		CPU_ZERO(&cpuset);
-		CPU_SET(i + cfg->offset + 1, &cpuset);
-		if (pthread_setaffinity_np(socket_thread[i], sizeof(cpu_set_t),
-					   &cpuset) != 0) {
-			log_error("ERROR: Unable to set thread affinity: %s\n",
-				  strerror(errno));
-			exit(EXIT_FAILURE);
-		}
-	}
-
-	for (int i = 0; i < cfg->n_threads; i++) {
-		log_info("+++++++++++");
-		if (pthread_join(socket_thread[i], NULL)) {
-			log_error("Error joining socket thread");
-			exit(EXIT_FAILURE);
-		}
-	}
-
-	log_info("REACHING HERE!!!!");
+	log_info("All Setup Done!");
+	log_info("Hello, World!");
 
 	flash__xsk_close(cfg, xsk);
+
+	log_info("Control plane setup is working");
 
 	return EXIT_SUCCESS;
 }

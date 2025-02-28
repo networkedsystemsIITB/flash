@@ -5,6 +5,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <net/ethernet.h>
+#include <locale.h>
 #include <stdlib.h>
 
 #include <flash_nf.h>
@@ -49,7 +50,8 @@ static void *socket_routine(void *arg)
 
 	for (;;) {
 		if (cfg->xsk->mode__poll) {
-			ret = flash__poll(fds, nfds, cfg->xsk->poll_timeout);
+			ret = flash__poll(&xsk->threads[thread_id], fds, nfds,
+					  cfg->xsk->poll_timeout);
 			if (ret <= 0 || ret > 1)
 				continue;
 		}
@@ -134,6 +136,27 @@ int main(int argc, char **argv)
 			log_error("ERROR: Unable to set thread affinity: %s\n",
 				  strerror(errno));
 			exit(EXIT_FAILURE);
+		}
+	}
+
+	sleep(5);
+
+	int i;
+	if (cfg->verbose) {
+		unsigned int interval = cfg->stats_interval;
+		setlocale(LC_ALL, "");
+
+		for (i = 0; i < cfg->n_threads; i++)
+			xsk->threads[i].timestamp = flash__get_nsecs(cfg);
+
+		while (!done) {
+			sleep(interval);
+			if (system("clear") != 0)
+				log_error("Terminal clear error");
+			for (i = 0; i < cfg->n_threads; i++) {
+				flash__dump_stats(cfg, &xsk->threads[i], i,
+						  FLASH__RXTX | FLASH__BACKP);
+			}
 		}
 	}
 

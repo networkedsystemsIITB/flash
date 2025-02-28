@@ -3,8 +3,6 @@
 
 sources = files('main.c')
 
-deps += [log, nf, params]
-
 executable('l2fwd',
     sources,
     c_args: cflags,

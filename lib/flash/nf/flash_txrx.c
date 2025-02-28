@@ -8,8 +8,11 @@
 
 #include "flash_nf.h"
 
-int flash__poll(struct pollfd *fds, nfds_t nfds, int timeout)
+int flash__poll(struct sock_thread *xsk, struct pollfd *fds, nfds_t nfds, int timeout)
 {
+#ifdef STATS
+	xsk->app_stats.opt_polls++;
+#endif
 	return poll(fds, nfds, timeout);
 }
 
@@ -41,6 +44,9 @@ static inline void __complete_tx_rx_first(struct config *cfg,
      * sendto() all the time in zero-copy mode.
      */
 	if (cfg->xsk->bind_flags & XDP_COPY) {
+#ifdef STATS
+		xsk->app_stats.copy_tx_sendtos++;
+#endif
 		__kick_tx(xsk);
 	}
 
@@ -57,6 +63,9 @@ static inline void __complete_tx_rx_first(struct config *cfg,
 		while (ret != completed) {
 			if (cfg->xsk->mode__busy_poll ||
 			    xsk_ring_prod__needs_wakeup(&xsk->fill)) {
+#ifdef STATS
+				xsk->app_stats.fill_fail_polls++;
+#endif
 				recvfrom(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL,
 					 NULL);
 			}
@@ -84,6 +93,9 @@ static inline void __reserve_fq(struct config *cfg, struct sock_thread *xsk,
 	while (ret != num) {
 		if (cfg->xsk->mode__busy_poll ||
 		    xsk_ring_prod__needs_wakeup(&xsk->fill)) {
+#ifdef STATS
+			xsk->app_stats.fill_fail_polls++;
+#endif
 			recvfrom(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL, NULL);
 		}
 		ret = xsk_ring_prod__reserve(&xsk->fill, num, &idx_fq);
@@ -102,6 +114,9 @@ static inline void __reserve_tx(struct config *cfg, struct sock_thread *xsk,
 		__complete_tx_rx_first(cfg, xsk);
 		if (cfg->xsk->mode__busy_poll ||
 		    xsk_ring_prod__needs_wakeup(&xsk->tx)) {
+#ifdef STATS
+			xsk->app_stats.tx_wakeup_sendtos++;
+#endif
 			__kick_tx(xsk);
 		}
 		ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
@@ -159,6 +174,9 @@ size_t flash__recvmsg(struct config *cfg, struct sock_thread *xsk,
 	if (!rcvd) {
 		if (cfg->xsk->mode__busy_poll ||
 		    xsk_ring_prod__needs_wakeup(&xsk->fill)) {
+#ifdef STATS
+			xsk->app_stats.rx_empty_polls++;
+#endif
 			recvfrom(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL, NULL);
 		}
 		return 0;
@@ -200,7 +218,10 @@ size_t flash__recvmsg(struct config *cfg, struct sock_thread *xsk,
 	msg->msg_len = rcvd;
 
 	xsk_ring_cons__release(&xsk->rx, rcvd);
-
+#ifdef STATS
+	xsk->ring_stats.rx_npkts += eop_cnt;
+	xsk->ring_stats.rx_frags += rcvd;
+#endif
 	return rcvd;
 }
 
@@ -259,6 +280,10 @@ size_t flash__sendmsg(struct config *cfg, struct sock_thread *xsk,
 	if (flags & FLASH__RXTX) {
 		xsk_ring_prod__submit(&xsk->tx, frags_done);
 		xsk->outstanding_tx += frags_done;
+#ifdef STATS
+		xsk->ring_stats.tx_npkts += eop_cnt;
+		xsk->ring_stats.tx_frags += nsend;
+#endif
 	} else if (flags & FLASH__RX) {
 		xsk_ring_prod__submit(&xsk->fill, nsend);
 	} else {

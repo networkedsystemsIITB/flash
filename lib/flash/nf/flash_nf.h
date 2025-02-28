@@ -33,10 +33,14 @@ void flash__populate_fill_ring(struct xsk_socket_info *xsk, int frame_size,
 			       int n_threads, int offset);
 void flash__configure_nf(struct xsk_socket_info **_xsk, struct config *cfg);
 void flash__xsk_close(struct config *cfg, struct xsk_socket_info *xsk);
-int flash__poll(struct pollfd *fds, nfds_t nfds, int timeout);
+int flash__poll(struct sock_thread *xsk, struct pollfd *fds, nfds_t nfds,
+		int timeout);
 size_t flash__recvmsg(struct config *cfg, struct sock_thread *xsk,
 		      struct xskmsghdr *msg, int flags);
 size_t flash__sendmsg(struct config *cfg, struct sock_thread *xsk,
 		      struct xskmsghdr *msg, int flags);
+unsigned long flash__get_nsecs(struct config *cfg);
+void flash__dump_stats(struct config *cfg, struct sock_thread *xsk, int i,
+		       int flags);
 
 #endif /* __FLASH_NF_H */
