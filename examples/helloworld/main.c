@@ -11,9 +11,9 @@
 #include <flash_params.h>
 #include <log.h>
 
-static bool done = false;
+bool done = false;
 struct config *cfg = NULL;
-struct xsk_socket_info *xsk;
+struct nf *nf;
 
 static void int_exit(int sig)
 {
@@ -30,9 +30,9 @@ int main(int argc, char **argv)
 	}
 
 	flash__parse_cmdline_args(argc, argv, cfg);
-	flash__configure_nf(&xsk, cfg);
-	flash__populate_fill_ring(xsk, cfg->umem->frame_size, cfg->n_threads,
-				  cfg->offset);
+	flash__configure_nf(&nf, cfg);
+	flash__populate_fill_ring(nf->thread, cfg->umem->frame_size,
+				  cfg->total_sockets, cfg->umem_offset);
 
 	log_info("Control Plane Setup Done");
 
@@ -43,7 +43,7 @@ int main(int argc, char **argv)
 	log_info("All Setup Done!");
 	log_info("Hello, World!");
 
-	flash__xsk_close(cfg, xsk);
+	flash__xsk_close(cfg, nf);
 
 	log_info("Control plane setup is working");
 

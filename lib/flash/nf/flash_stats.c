@@ -1,5 +1,4 @@
 #include <log.h>
-#include <sys/socket.h>
 #include <limits.h>
 
 #include "flash_nf.h"
@@ -48,7 +47,7 @@ unsigned long flash__get_nsecs(struct config *cfg)
 	return ts.tv_sec * 1000000000UL + ts.tv_nsec;
 }
 
-static int __xsk_get_xdp_stats(int fd, struct sock_thread *xsk)
+static int __xsk_get_xdp_stats(int fd, struct socket *xsk)
 {
 	struct xdp_statistics stats;
 	socklen_t optlen;
@@ -73,7 +72,7 @@ static int __xsk_get_xdp_stats(int fd, struct sock_thread *xsk)
 	return -EINVAL;
 }
 
-static void __dump_app_stats(struct sock_thread *xsk, long diff)
+static void __dump_app_stats(struct socket *xsk, long diff)
 {
 	double rx_empty_polls_ps, fill_fail_polls_ps, copy_tx_sendtos_ps,
 		tx_wakeup_sendtos_ps, opt_polls_ps;
@@ -114,7 +113,7 @@ static void __dump_app_stats(struct sock_thread *xsk, long diff)
 	xsk->app_stats.prev_opt_polls = xsk->app_stats.opt_polls;
 }
 
-static void __dump_driver_stats(struct config *cfg, struct sock_thread *xsk,
+static void __dump_driver_stats(struct config *cfg, struct socket *xsk,
 				long diff)
 {
 	double intrs_ps;
@@ -136,8 +135,7 @@ static void __dump_driver_stats(struct config *cfg, struct sock_thread *xsk,
 	xsk->drv_stats.prev_intrs = xsk->drv_stats.intrs;
 }
 
-void flash__dump_stats(struct config *cfg, struct sock_thread *xsk, int i,
-		       int flags)
+void flash__dump_stats(struct config *cfg, struct socket *xsk, int flags)
 {
 	unsigned long now = flash__get_nsecs(cfg);
 	long diff = now - xsk->timestamp;
@@ -162,8 +160,9 @@ void flash__dump_stats(struct config *cfg, struct sock_thread *xsk, int i,
 	if (flags & FLASH__BACKP)
 		backp_str = "backpressure";
 
-	printf("%s:%d %s %s ", cfg->ifname, cfg->ifqueue[i], setup_str,
-	       backp_str);
+	printf("ifname:queue no. %s %s ", setup_str, backp_str);
+	// printf("%s:%d %s %s ", cfg->ifname, cfg->ifqueue[i], setup_str,
+	    //    backp_str);
 	// if (cfg->attach_mode == XDP_MODE_SKB)
 	// 	printf("xdp-skb ");
 	// else if (cfg->attach_mode == XDP_MODE_NATIVE)

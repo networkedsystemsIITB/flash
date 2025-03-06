@@ -16,7 +16,6 @@ struct option_wrapper {
 };
 
 int flash__parse_cmdline_args(int argc, char **argv, struct config *cfg);
-int monitor__parse_cmdline_args(int argc, char **argv);
 int get_irqs(struct config *cfg);
 
 #endif

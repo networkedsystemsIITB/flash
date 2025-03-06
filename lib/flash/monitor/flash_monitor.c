@@ -10,10 +10,97 @@
 
 #include <flash_uds.h>
 #include <log.h>
+#include <flash_cfgparser.h>
+#include <flash_common.h>
 
 #include "flash_monitor.h"
 
+static struct NFGroup *nfg;
 int unix_socket_server;
+
+void close_nf(struct umem *umem, int umem_id, int nf_id)
+{
+	struct xdp_mmap_offsets off;
+	int err;
+	if (umem->current_nf_count == 0)
+		return;
+	for (int i = 0; i < umem->nf[nf_id]->thread_count; i++) {
+		if (umem->nf[nf_id]->current_thread_count == 0)
+			continue;
+		struct socket *socket = umem->nf[nf_id]->thread[i]->socket;
+		if (socket == NULL)
+			continue;
+		xsk_socket__delete(umem->nf[nf_id]->thread[i]->xsk);
+		err = xsk_get_mmap_offsets(socket->fd, &off);
+		if (!err) {
+			munmap(socket->fill.ring - off.fr.desc,
+			       off.fr.desc + umem->cfg->umem_config->fill_size *
+						     sizeof(__u64));
+			munmap(socket->comp.ring - off.cr.desc,
+			       off.cr.desc + umem->cfg->umem_config->comp_size *
+						     sizeof(__u64));
+		}
+		free(socket);
+	}
+	umem->cfg->current_socket_count -= umem->nf[nf_id]->thread_count;
+	if (umem->cfg->current_socket_count < 0)
+		umem->cfg->current_socket_count = 0;
+	umem->nf[nf_id]->current_thread_count = 0;
+	umem->current_nf_count--;
+	if (umem->current_nf_count < 0)
+		umem->current_nf_count = 0;
+
+	if (umem->umem_info && umem->umem_info->umem) {
+		if (xsk_umem__delete(umem->umem_info->umem) < 0) {
+			log_info("UMEM refcount == %d, not deleting UMEM",
+				 umem->umem_info->umem->refcount);
+		} else {
+			log_info("UMEM refcount == 0, deleting UMEM");
+			close(umem->cfg->umem_fd);
+			if (umem->cfg->umem->buffer) {
+				munmap(umem->cfg->umem->buffer,
+				       umem->cfg->umem->size);
+				umem->cfg->umem->buffer = NULL;
+				umem->cfg->umem->size = 0;
+			}
+			umem->cfg->umem_fd = -1;
+			free(umem->cfg->umem_config);
+			free(umem->cfg->xsk_config);
+			free(umem->umem_info);
+		}
+	} else {
+		log_info("UMEM for nf %d having umem_id %d does not exist",
+			 nf_id, umem_id);
+	}
+}
+
+static void close_nfg(void)
+{
+	if (nfg == NULL)
+		return;
+	for (int i = 0; i < nfg->umem_count; i++) {
+		for (int j = 0; j < nfg->umem[i]->nf_count; j++) {
+			close_nf(nfg->umem[i], nfg->umem[i]->id,
+				 nfg->umem[i]->nf[i]->id);
+		}
+	}
+}
+
+const char *process_input(char *input)
+{
+	if (strncmp(input, "load", 4) == 0) {
+		nfg = parse_json(input + 5);
+		return input;
+	} else if (strncmp(input, "unload", 6) == 0) {
+		close_nfg();
+		nfg = NULL;
+		free_nf_group(nfg);
+		return input;
+	} else {
+		return "Invalid command";
+	}
+	return NULL;
+}
 
 static int create_umem_fd(size_t size)
 {
@@ -38,31 +125,10 @@ static int create_umem_fd(size_t size)
 	return fd;
 }
 
-static struct xsk_umem_info *__configure_umem(void *buffer, uint64_t size,
-					      struct config *cfg)
+static void __configure_umem(struct umem *umem)
 {
-	struct xsk_umem_info *umem;
-	struct xsk_umem_config umem_cfg = {
-		/**
-         * It is recommended that the fill ring size >= HW RX ring size +
-         * AF_XDP RX ring size. Make sure you fill up the fill ring
-         * with buffers at regular intervals, and you will with this setting
-         * avoid allocation failures in the driver. These are usually quite
-         * expensive since drivers have not been written to assume that
-         * allocation failures are common. For regular sockets, kernel
-         * allocated memory is used that only runs out in OOM situations
-         * that should be rare.
-         */
-		.fill_size =
-			(size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS * (size_t)2,
-		.comp_size = (size_t)XSK_RING_CONS__DEFAULT_NUM_DESCS,
-		.frame_size = cfg->umem->frame_size,
-		.frame_headroom = XSK_UMEM__DEFAULT_FRAME_HEADROOM,
-		.flags = cfg->umem->flags
-	};
-
 	log_info("Creating UMEM info");
-	umem = calloc(1, sizeof(*umem));
+	umem->umem_info = calloc(1, sizeof(struct xsk_umem_info));
 	if (!umem) {
 		log_error("ERROR: calloc failed \"%s\"\n", strerror(errno));
 		exit(EXIT_FAILURE);
@@ -81,21 +147,20 @@ static struct xsk_umem_info *__configure_umem(void *buffer, uint64_t size,
      */
 	int ret = 0;
 	log_info("Creating UMEM");
-	ret = xsk_umem__create(&umem->umem, buffer, size, &umem->fq, &umem->cq,
-			       &umem_cfg);
+	ret = xsk_umem__create(&umem->umem_info->umem, umem->cfg->umem->buffer,
+			       umem->cfg->umem->size, &umem->umem_info->fq,
+			       &umem->umem_info->cq, umem->cfg->umem_config);
 
 	if (ret) {
 		log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
 		exit(EXIT_FAILURE);
 	}
-	umem->buffer = buffer;
-	return umem;
+	return;
 }
 
-struct xsk_umem_info *flash__setup_umem(struct config *cfg)
+static void flash__setup_umem(struct umem *umem)
 {
 	struct rlimit rlim = { RLIM_INFINITY, RLIM_INFINITY };
-	struct xsk_umem_info *umem;
 	void *packet_buffer;
 	struct sched_param schparam;
 	int ret, fd, flags;
@@ -118,8 +183,10 @@ struct xsk_umem_info *flash__setup_umem(struct config *cfg)
 		exit(EXIT_FAILURE);
 	}
 
-	size = (size_t)NUM_FRAMES * (size_t)cfg->umem->frame_size *
-	       (size_t)cfg->total_sockets;
+	log_info("TOTAL SOCKET IN JSON: %d", umem->cfg->total_sockets);
+
+	size = (size_t)NUM_FRAMES * (size_t)umem->cfg->umem->frame_size *
+	       (size_t)umem->cfg->total_sockets;
 
 	log_info("UMEM size: %lu", size);
 
@@ -135,13 +202,14 @@ struct xsk_umem_info *flash__setup_umem(struct config *cfg)
 			  strerror(errno));
 		exit(EXIT_FAILURE);
 	}
-
+	umem->cfg->umem->buffer = packet_buffer;
+	umem->cfg->umem->size = size;
 	// /* Create the sockets.. */
 	log_info("Creating UMEM info");
-	umem = __configure_umem(packet_buffer, size, cfg);
-	cfg->umemfd = fd;
+	__configure_umem(umem);
+	umem->cfg->umem_fd = fd;
 
-	return umem;
+	return;
 }
 
 /**
@@ -151,32 +219,28 @@ struct xsk_umem_info *flash__setup_umem(struct config *cfg)
  *
  * @param cfg
  * @param umem
- * @return struct monitor_xsk_socket_info*
+ * @return struct xsk_socket_info*
  */
-struct monitor_xsk_socket_info *flash__setup_xsk(struct config *cfg,
-						 struct xsk_umem_info *umem)
+static int flash__setup_xsk(struct umem *umem, int nf_id)
 {
-	struct xsk_socket_config xsk_cfg;
-	struct monitor_xsk_socket_info *xsk_info;
 	int ret;
 	int sock_opt;
+	int umem_ref_count = umem->cfg->current_socket_count;
+	int nf_thread_count = umem->nf[nf_id]->current_thread_count;
+	int ifqueue = umem->cfg->ifqueue[nf_id * umem->nf[nf_id]->thread_count +
+					 nf_thread_count];
+	char *ifname = umem->cfg->ifname;
 
-	xsk_info = calloc(1, sizeof(*xsk_info));
-	if (!xsk_info) {
+	struct xsk_socket *xsk;
+	struct xsk_umem *_umem = umem->umem_info->umem;
+	struct xsk_socket_config *xsk_config = umem->cfg->xsk_config;
+
+	struct socket *socket = calloc(1, sizeof(struct socket));
+	if (!socket) {
 		log_error("Memory allocation failed, errno: %d/\"%s\"\n", errno,
 			  strerror(errno));
 		exit(EXIT_FAILURE);
 	}
-
-	/* XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD macro ensures that the default program is not loaded by the library. */
-	xsk_info->umem = *umem;
-	xsk_cfg.rx_size = (size_t)XSK_RING_CONS__DEFAULT_NUM_DESCS;
-	xsk_cfg.tx_size = (size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS;
-	xsk_cfg.libbpf_flags = ((cfg->custom_xsk) || (cfg->reduce_cap)) ?
-				       XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD :
-				       0;
-	xsk_cfg.xdp_flags = cfg->xsk->xdp_flags;
-	xsk_cfg.bind_flags = cfg->xsk->bind_flags;
 
 	/**
      * The library call does the following steps of the AF_XDP control path:
@@ -187,48 +251,46 @@ struct monitor_xsk_socket_info *flash__setup_xsk(struct config *cfg,
      * 4. Binds the socket to the given interface and queue.
      * 5. Loads the default XDP program (if required).
      */
-
-	if (cfg->is_primary)
-		log_info("IS PRIMARY!!!");
-
-	if (cfg->thread_count == 0) {
-		log_info("QUEUEUEUEUEUEUE1 ID: %d %d %d", cfg->xsk->ifqueue,
-			 cfg->thread_count, cfg->is_primary);
-		ret = xsk_socket__create(&xsk_info->xsk, cfg->ifname,
-					 cfg->xsk->ifqueue, umem->umem,
-					 &xsk_info->mxsk.rx, &xsk_info->mxsk.tx,
-					 &xsk_cfg);
-		cfg->thread_count++;
+	if (umem_ref_count == 0) {
+		log_info("Creating socket #%d for a UMEM with queue #%d",
+			 umem_ref_count, ifqueue);
+		ret = xsk_socket__create(&xsk, ifname, ifqueue, _umem,
+					 &socket->rx, &socket->tx, xsk_config);
 	} else {
-		log_info("QUEUEUEUEUEUEUE2 ID: %d %d %d", cfg->xsk->ifqueue,
-			 cfg->thread_count, cfg->is_primary);
-		ret = xsk_socket__create_shared(
-			&xsk_info->xsk, cfg->ifname, cfg->xsk->ifqueue,
-			umem->umem, &xsk_info->mxsk.rx, &xsk_info->mxsk.tx,
-			&xsk_info->mxsk.fill, &xsk_info->mxsk.comp, &xsk_cfg);
-		cfg->thread_count++;
+		log_info("Creating socket #%d for a UMEM with queue #%d",
+			 umem_ref_count, ifqueue);
+		ret = xsk_socket__create_shared(&xsk, ifname, ifqueue, _umem,
+						&socket->rx, &socket->tx,
+						&socket->fill, &socket->comp,
+						xsk_config);
 	}
 	if (ret) {
-		log_error("xsk_socket__create failed, errno: %d/\"%s\"\n",
-			  errno, strerror(errno));
+		log_error(
+			"xsk_socket__create failed(check available queues), errno: %d/\"%s\"\n",
+			errno, strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
-	log_info("SOCKET FD: %d", xsk_info->xsk->fd);
+	socket->fd = xsk_socket__fd(xsk);
+	log_info("SOCKET FD: %d", socket->fd);
+	umem->nf[nf_id]->thread[nf_thread_count]->xsk = xsk;
+	umem->nf[nf_id]->thread[nf_thread_count]->socket = socket;
+	umem->nf[nf_id]->current_thread_count++;
+	umem->cfg->current_socket_count++;
 
 	/* Enable and configure busy poll */
-	if (cfg->xsk->mode__busy_poll && !(cfg->xsk->bind_flags & XDP_COPY)) {
+	if (umem->cfg->xsk->mode__busy_poll &&
+	    !(umem->cfg->xsk->bind_flags & XDP_COPY)) {
 		sock_opt = 1;
-		if (setsockopt(xsk_info->xsk->fd, SOL_SOCKET,
-			       SO_PREFER_BUSY_POLL, (void *)&sock_opt,
-			       sizeof(sock_opt)) < 0) {
+		if (setsockopt(socket->fd, SOL_SOCKET, SO_PREFER_BUSY_POLL,
+			       (void *)&sock_opt, sizeof(sock_opt)) < 0) {
 			log_error("setsockopt 1 failed, errno: %d/\"%s\"\n",
 				  errno, strerror(errno));
 			exit(EXIT_FAILURE);
 		}
 
 		sock_opt = 20;
-		if (setsockopt(xsk_info->xsk->fd, SOL_SOCKET, SO_BUSY_POLL,
+		if (setsockopt(socket->fd, SOL_SOCKET, SO_BUSY_POLL,
 			       (void *)&sock_opt, sizeof(sock_opt)) < 0) {
 			log_error("setsockopt 2 failed, errno: %d/\"%s\"\n",
 				  errno, strerror(errno));
@@ -236,77 +298,53 @@ struct monitor_xsk_socket_info *flash__setup_xsk(struct config *cfg,
 		}
 
 		sock_opt = 64; // poll budget
-		if (setsockopt(xsk_info->xsk->fd, SOL_SOCKET,
-			       SO_BUSY_POLL_BUDGET, (void *)&sock_opt,
-			       sizeof(sock_opt)) < 0) {
+		if (setsockopt(socket->fd, SOL_SOCKET, SO_BUSY_POLL_BUDGET,
+			       (void *)&sock_opt, sizeof(sock_opt)) < 0) {
 			log_error("setsockopt 3 failed, errno: %d/\"%s\"\n",
 				  errno, strerror(errno));
 			exit(EXIT_FAILURE);
 		}
+		log_info("SET BUSY POLL OPS");
 	}
 
-	return xsk_info;
+	return socket->fd;
 }
 
 static void init_config(struct config *cfg)
 {
-	cfg->xsk = calloc(1, sizeof(struct xsk_config));
-	cfg->umem = calloc(1, sizeof(struct umem_config));
-	if (!cfg->xsk || !cfg->umem) {
-		log_error("ERROR: Memory allocation failed\n");
-		exit(EXIT_FAILURE);
-	}
-
-	/* Default config values */
-	cfg->reduce_cap = false;
-	cfg->custom_xsk = false;
-	cfg->xsk->ifqueue = -1;
-	cfg->xsk->bind_flags = XDP_USE_NEED_WAKEUP;
-	cfg->xsk->batch_size = BATCH_SIZE;
-	cfg->xsk->mode__need_wakeup = false;
-	cfg->xsk->mode__zero_copy = false;
-	cfg->xsk->mode__poll = false;
-	cfg->xsk->mode__busy_poll = false;
+	log_info("CONFIG_INIT");
 	cfg->umem->frame_size = FRAME_SIZE;
-	cfg->thread_count = 0;
-	cfg->umemfd = -1;
-}
-
-int create_new_umem(struct config **_cfg, struct xsk_umem_info **_umem,
-		    int total_sockets)
-{
-	struct config *cfg = calloc(1, sizeof(struct config));
-	if (!cfg) {
-		log_error("ERROR: Memory allocation failed\n");
-		exit(EXIT_FAILURE);
-	}
-	init_config(cfg);
-	cfg->xsk->mode__busy_poll = true;
-	cfg->total_sockets = total_sockets;
-	printf("TOTAL SOCKETS: %d\n", cfg->total_sockets);
+	cfg->xsk->batch_size = BATCH_SIZE;
 	cfg->xsk->mode__zero_copy = true;
 	cfg->xsk->bind_flags &= ~XDP_COPY;
 	cfg->xsk->bind_flags |= XDP_ZEROCOPY;
-
-	struct xsk_umem_info *umem = flash__setup_umem(cfg);
-	*_umem = umem;
-	*_cfg = cfg;
-	log_info("Primary UMEM Setup DONE");
-
-	return cfg->umemfd;
+	cfg->umem_fd = -1;
 }
 
-struct xsk_socket *create_new_socket(struct config *cfg,
-				     struct xsk_umem_info *umem, int msgsock)
+int configure_umem(struct nf_data *data, struct umem **_umem)
 {
-	char ifname[IF_NAMESIZE];
-	recv_data(msgsock, ifname, IF_NAMESIZE);
-	for (int i = 0; i < IF_NAMESIZE; i++)
-		cfg->ifname[i] = ifname[i];
+	if (nfg == NULL) {
+		log_error("First load config file");
+		return -1;
+	}
 
-	recv_data(msgsock, &cfg->xsk->ifqueue, sizeof(int));
+	struct umem *umem = nfg->umem[data->umem_id];
+	umem->current_nf_count++;
+	if (umem->cfg->umem_fd != 0 && umem->cfg->umem_fd != -1) {
+		*_umem = umem;
+		return umem->cfg->umem_fd;
+	}
 
-	log_info("IFNAME: %s %s", cfg->ifname, ifname);
-	struct monitor_xsk_socket_info *xsk = flash__setup_xsk(cfg, umem);
-	return xsk->xsk;
+	init_config(umem->cfg);
+	setup_xsk_config(&umem->cfg->xsk_config, &umem->cfg->umem_config,
+			 umem->cfg);
+	flash__setup_umem(umem);
+
+	*_umem = umem;
+	return umem->cfg->umem_fd;
+}
+
+int create_new_socket(struct umem *umem, int nf_id)
+{
+	return flash__setup_xsk(umem, nf_id);
 }

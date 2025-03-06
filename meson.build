@@ -33,8 +33,11 @@ endif
 # use pthreads library
 add_project_link_arguments('-pthread', language: 'c')
 
-#use cJSON library
+# use cJSON library
 add_project_link_arguments('-lcjson', language: 'c')
+
+# use ncurses library
+add_project_link_arguments('-lncurses', language: 'c')
 
 # use math library
 add_project_link_arguments('-lm', language: 'c')
@@ -129,7 +132,7 @@ subdir('examples')
 
 libflash_a = []
 libflash_so = []
-foreach lib: enabled_libs
+foreach lib : enabled_libs
     libflash_a += 'lib' + lib + '.a '
     libflash_so += 'lib' + lib + '.so '
 endforeach

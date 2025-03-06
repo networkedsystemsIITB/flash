@@ -28,19 +28,20 @@ struct xskmsghdr {
 	__u32 msg_len; /* Number of vectors */
 };
 
-void close_uds_conn(struct config *cfg);
-void flash__populate_fill_ring(struct xsk_socket_info *xsk, int frame_size,
-			       int n_threads, int offset);
-void flash__configure_nf(struct xsk_socket_info **_xsk, struct config *cfg);
-void flash__xsk_close(struct config *cfg, struct xsk_socket_info *xsk);
-int flash__poll(struct sock_thread *xsk, struct pollfd *fds, nfds_t nfds,
+extern bool done;
+
+void flash__populate_fill_ring(struct thread **thread, int frame_size,
+			       int total_sockets, int umem_offset);
+void flash__configure_nf(struct nf **_nf, struct config *cfg);
+void flash__xsk_close(struct config *cfg, struct nf *nf);
+int flash__poll(struct socket *xsk, struct pollfd *fds, nfds_t nfds,
 		int timeout);
-size_t flash__recvmsg(struct config *cfg, struct sock_thread *xsk,
+size_t flash__recvmsg(struct config *cfg, struct socket *xsk,
 		      struct xskmsghdr *msg, int flags);
-size_t flash__sendmsg(struct config *cfg, struct sock_thread *xsk,
+size_t flash__sendmsg(struct config *cfg, struct socket *xsk,
 		      struct xskmsghdr *msg, int flags);
 unsigned long flash__get_nsecs(struct config *cfg);
-void flash__dump_stats(struct config *cfg, struct sock_thread *xsk, int i,
-		       int flags);
+void flash__dump_stats(struct config *cfg, struct socket *xsk, int flags);
+void wait_for_cmd(void);
 
 #endif /* __FLASH_NF_H */

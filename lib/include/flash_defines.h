@@ -22,8 +22,6 @@
 struct xsk_config {
 	__u32 bind_flags;
 	__u32 xdp_flags;
-	int ifqueue;
-	__u32 queue_mask;
 	uint32_t batch_size;
 	int poll_timeout;
 	bool mode__poll;
@@ -40,19 +38,19 @@ struct umem_config {
 };
 
 struct config {
-	int umemfd;
+	int umem_fd;
 	int total_sockets;
-	char ifname[IF_NAMESIZE];
-	struct umem_config *umem;
-	int uds_sockfd;
+	int current_socket_count;
+	char ifname[IF_NAMESIZE + 1];
 	int *ifqueue;
-	int thread_count;
-	int offset;
-	bool is_primary;
-	int n_threads;
-	bool custom_xsk;
-	bool reduce_cap;
+	struct umem_config *umem;
 	struct xsk_config *xsk;
+	struct xsk_umem_config *umem_config;
+	struct xsk_socket_config *xsk_config;
+	bool custom_xsk;
+	int umem_id;
+	int nf_id;
+	int umem_offset;
 #ifdef STATS
 	clockid_t clock;
 	int verbose;
@@ -63,6 +61,41 @@ struct config {
 	bool extra_stats;
 	bool frags_enabled;
 #endif
+};
+
+struct xsk_umem {
+	struct xsk_ring_prod *fill_save;
+	struct xsk_ring_cons *comp_save;
+	char *umem_area;
+	struct xsk_umem_config config;
+	int fd;
+	int refcount;
+	struct list_head ctx_list;
+	bool rx_ring_setup_done;
+	bool tx_ring_setup_done;
+};
+
+struct xsk_ctx {
+	struct xsk_ring_prod *fill;
+	struct xsk_ring_cons *comp;
+	struct xsk_umem *umem;
+	__u32 queue_id;
+	int refcount;
+	int ifindex;
+	__u64 netns_cookie;
+	int xsks_map_fd;
+	struct list_head list;
+	struct xdp_program *xdp_prog;
+	int refcnt_map_fd;
+	char ifname[IFNAMSIZ];
+};
+
+struct xsk_socket {
+	struct xsk_ring_cons *rx;
+	struct xsk_ring_prod *tx;
+	struct xsk_ctx *ctx;
+	struct xsk_socket_config config;
+	int fd;
 };
 
 static const struct clockid_map {
@@ -79,41 +112,6 @@ struct xsk_umem_info {
 	struct xsk_ring_cons cq;
 	struct xsk_umem *umem;
 	void *buffer;
-};
-
-struct xsk_umem {
-	struct xsk_ring_prod *fill_save;
-	struct xsk_ring_cons *comp_save;
-	char *umem_area;
-	struct xsk_umem_config config;
-	int fd;
-	int refcount;
-	struct list_head ctx_list;
-	bool rx_ring_setup_done;
-	bool tx_ring_setup_done;
-};
-
-struct xsk_socket {
-	struct xsk_ring_cons *rx;
-	struct xsk_ring_prod *tx;
-	struct xsk_ctx *ctx;
-	struct xsk_socket_config config;
-	int fd;
-};
-
-struct xsk_ctx {
-	struct xsk_ring_prod *fill;
-	struct xsk_ring_cons *comp;
-	struct xsk_umem *umem;
-	__u32 queue_id;
-	int refcount;
-	int ifindex;
-	__u64 netns_cookie;
-	int xsks_map_fd;
-	struct list_head list;
-	struct xdp_program *xdp_prog;
-	int refcnt_map_fd;
-	char ifname[IFNAMSIZ];
 };
 
 #ifdef STATS
@@ -159,9 +157,8 @@ struct xsk_app_stats {
 };
 #endif
 
-struct sock_thread {
+struct socket {
 	int fd;
-	FILE *stream;
 	struct xsk_ring_cons rx;
 	struct xsk_ring_prod tx;
 	struct xsk_ring_prod fill;
@@ -177,33 +174,38 @@ struct sock_thread {
 	__u32 idx_tx_bp;
 };
 
-struct xsk_socket_info {
-	struct sock_thread *threads;
-	struct xsk_umem_config umem_config;
-	struct xsk_socket_config xsk_config;
-};
-
-struct monitor_xsk_socket_info {
-	struct sock_thread mxsk;
+struct thread {
+	int id;
+	int umem_offset;
+	struct socket *socket;
 	struct xsk_socket *xsk;
-	struct xsk_umem_info umem;
 };
 
-typedef struct {
-	char id[10];
-	struct {
-		char id[10];
-		struct {
-			char id[10];
-		} *thread;
-		int thread_count;
-	} *nf;
-	int nf_count;
-} Umem;
+struct nf {
+	int id;
+	struct thread **thread;
+	bool is_up;
+	int thread_count;
+	int current_thread_count;
+};
 
-typedef struct {
-	Umem *umem;
+struct umem {
+	int id;
+	struct nf **nf;
+	int nf_count;
+	int current_nf_count;
+	struct xsk_umem_info *umem_info;
+	struct config *cfg;
+};
+
+struct NFGroup {
+	struct umem **umem;
 	int umem_count;
-} NFGroup;
+};
+
+struct nf_data {
+	int umem_id;
+	int nf_id;
+};
 
 #endif /* __FLASH_DEFINES_H */

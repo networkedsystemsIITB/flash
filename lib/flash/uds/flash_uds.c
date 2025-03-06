@@ -18,7 +18,7 @@ void send_cmd(int sockfd, int cmd)
 {
 	int rval = write(sockfd, &cmd, sizeof(int));
 	if (rval < 0) {
-		log_error("Error writing stream message");
+		log_error("Error writing stream cmd");
 		exit(EXIT_FAILURE);
 	}
 }
@@ -27,16 +27,17 @@ void send_data(int sockfd, void *data, int size)
 {
 	int rval = write(sockfd, data, size);
 	if (rval < 0) {
-		log_error("Error writing stream message");
+		log_error("Error writing stream data");
 		exit(EXIT_FAILURE);
 	}
 }
 
 void recv_data(int sockfd, void *data, int size)
 {
+	log_info("SOCKET: %d", sockfd);
 	int rval = read(sockfd, data, size);
 	if (rval < 0) {
-		log_error("Error reading stream message");
+		log_error("Error reading stream data");
 		exit(EXIT_FAILURE);
 	}
 }
@@ -47,7 +48,7 @@ int recv_cmd(int sockfd)
 	rval = read(sockfd, &cmd, sizeof(int));
 	log_info("Received command: %d", cmd);
 	if (rval < 0) {
-		log_error("Error reading stream message");
+		log_error("Error reading stream cmd");
 		exit(EXIT_FAILURE);
 	}
 

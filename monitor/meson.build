@@ -3,7 +3,7 @@
 
 sources = files('main.c')
 
-deps = [log, include, params, uds, monitor]
+deps = [log, include, params, uds, monitor, cfgparser, display]
 
 executable('monitor',
     sources,

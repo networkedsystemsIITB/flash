@@ -3,12 +3,12 @@
  */
 
 #include <stdlib.h>
-
 #include <log.h>
 
 #include "flash_nf.h"
 
-int flash__poll(struct sock_thread *xsk, struct pollfd *fds, nfds_t nfds, int timeout)
+int flash__poll(struct socket *xsk, struct pollfd *fds, nfds_t nfds,
+		int timeout)
 {
 #ifdef STATS
 	xsk->app_stats.opt_polls++;
@@ -16,7 +16,7 @@ int flash__poll(struct sock_thread *xsk, struct pollfd *fds, nfds_t nfds, int ti
 	return poll(fds, nfds, timeout);
 }
 
-static void __kick_tx(struct sock_thread *xsk)
+static void __kick_tx(struct socket *xsk)
 {
 	int ret;
 	ret = sendto(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL, 0);
@@ -29,7 +29,7 @@ static void __kick_tx(struct sock_thread *xsk)
 }
 
 static inline void __complete_tx_rx_first(struct config *cfg,
-					  struct sock_thread *xsk)
+					  struct socket *xsk)
 {
 	__u32 idx_cq = 0, idx_fq = 0;
 	unsigned int completed, num_outstanding;
@@ -83,7 +83,7 @@ static inline void __complete_tx_rx_first(struct config *cfg,
 	}
 }
 
-static inline void __reserve_fq(struct config *cfg, struct sock_thread *xsk,
+static inline void __reserve_fq(struct config *cfg, struct socket *xsk,
 				unsigned int num)
 {
 	__u32 idx_fq = 0;
@@ -103,7 +103,7 @@ static inline void __reserve_fq(struct config *cfg, struct sock_thread *xsk,
 	xsk->idx_fq_bp = idx_fq;
 }
 
-static inline void __reserve_tx(struct config *cfg, struct sock_thread *xsk,
+static inline void __reserve_tx(struct config *cfg, struct socket *xsk,
 				unsigned int num)
 {
 	__u32 idx_tx = 0;
@@ -159,7 +159,7 @@ static void __hex_dump(void *pkt, size_t length, __u64 addr)
 	printf("\n");
 }
 
-size_t flash__recvmsg(struct config *cfg, struct sock_thread *xsk,
+size_t flash__recvmsg(struct config *cfg, struct socket *xsk,
 		      struct xskmsghdr *msg, int flags)
 {
 	__u32 idx_rx = 0;
@@ -225,7 +225,7 @@ size_t flash__recvmsg(struct config *cfg, struct sock_thread *xsk,
 	return rcvd;
 }
 
-size_t flash__sendmsg(struct config *cfg, struct sock_thread *xsk,
+size_t flash__sendmsg(struct config *cfg, struct socket *xsk,
 		      struct xskmsghdr *msg, int flags)
 {
 	unsigned int nsend, i;

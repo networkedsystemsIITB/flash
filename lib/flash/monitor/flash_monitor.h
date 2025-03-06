@@ -10,12 +10,9 @@
 
 extern int unix_socket_server;
 
-struct monitor_xsk_socket_info *flash__setup_xsk(struct config *mcfg,
-						 struct xsk_umem_info *umem);
-struct xsk_umem_info *flash__setup_umem(struct config *mcfg);
-int create_new_umem(struct config **_cfg, struct xsk_umem_info **_umem,
-		    int total_sockets);
-struct xsk_socket *create_new_socket(struct config *cfg,
-				     struct xsk_umem_info *umem, int msgsock);
+int configure_umem(struct nf_data *data, struct umem **_umem);
+int create_new_socket(struct umem *umem, int nf_id);
+const char *process_input(char *input);
+void close_nf(struct umem *umem, int umem_id, int nf_id);
 
 #endif /* __FLASH_MONITOR_H */

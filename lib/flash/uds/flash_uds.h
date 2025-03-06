@@ -14,9 +14,9 @@
 #define FLASH__CREATE_SOCKET 3
 #define FLASH__CLOSE_CONN 4
 #define FLASH__GET_THREAD_INFO 5
-#define FLASH__GET_FR_OFFSET 6
+#define FLASH__GET_UMEM_OFFSET 6
 
-int send_fd(int sockfd, int recv_fd);
+int send_fd(int sockfd, int fd);
 int start_uds_server(void);
 int start_uds_client(void);
 int recv_fd(int sockfd, int *_fd);

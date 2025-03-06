@@ -4,7 +4,7 @@
 sources = files('flash_monitor.c')
 headers = files('flash_monitor.h')
 
-deps += [uds]
+deps += [uds, cfgparser, common]
 
 libmonitor = library(libname, sources, install: true, dependencies: deps)
 monitor = declare_dependency(link_with: libmonitor, include_directories: include_directories('.'))
