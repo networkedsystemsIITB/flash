@@ -1,4 +1,8 @@
-/* Taken from linux kernel */
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2025 Debojeet Das
+ *
+ * This file was taken from the Linux kernel
+ */
 
 #ifndef __FLASH_LIST_H
 #define __FLASH_LIST_H

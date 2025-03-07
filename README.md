@@ -7,7 +7,7 @@ Flash userspace library for AF_XDP network function chaining.
 The library is built on top of libbpf and libxdp. You can install the dependencies using the following commands:
 
 ```bash
-sudo apt install -y build-essential meson libbpf-dev pkg-config git gcc-multilib clang llvm lld m4 libpcap-dev
+sudo apt install -y build-essential meson libbpf-dev pkg-config git gcc-multilib clang llvm lld m4 libpcap-dev libcjson-dev libncurses-dev
 ```
 
 The libxdp library is not available in the Ubuntu repositories. You can build it from source using the following commands:
