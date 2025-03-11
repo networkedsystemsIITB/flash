@@ -1,5 +1,8 @@
 # FLASH Userspace Library
 
+[![Commitizen friendly](https://img.shields.io/badge/commitizen-friendly-brightgreen.svg)](http://commitizen.github.io/cz-cli/)
+![Ubuntu 24.04](https://github.com/rickydebojeet/flash/actions/workflows/main.yml/badge.svg)
+
 Flash userspace library for AF_XDP network function chaining.
 
 ## Building
