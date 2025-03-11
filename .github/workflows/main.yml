@@ -1,0 +1,33 @@
+name: FLASH Build Check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Set up dependencies
+      run: sudo apt install -y build-essential meson libbpf-dev pkg-config git gcc-multilib clang llvm lld m4 libpcap-dev libcjson-dev libncurses-dev
+
+    - name: Install libxdp
+      run: |
+        git clone https://github.com/xdp-project/xdp-tools.git
+        cd xdp-tools/
+        make
+        sudo make install
+
+    - name: Build project
+      run: |
+        meson setup builddir
+        cd builddir
+        meson compile
