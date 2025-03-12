@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BSD-3-Clause
+/* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2025 Debojeet Das
  */
 
@@ -28,8 +28,7 @@ struct appconf {
 	int stats_cpu;
 } app_conf;
 
-static void parse_app_args(int argc, char **argv, struct appconf *app_conf,
-			   int shift)
+static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
 {
 	int c;
 	opterr = 0;
@@ -87,14 +86,12 @@ static void *socket_routine(void *arg)
 
 	for (;;) {
 		if (cfg->xsk->mode__poll) {
-			ret = flash__poll(nf->thread[socket_id]->socket, fds,
-					  nfds, cfg->xsk->poll_timeout);
+			ret = flash__poll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
 			if (ret <= 0 || ret > 1)
 				continue;
 		}
 
-		nrecv = flash__recvmsg(cfg, nf->thread[socket_id]->socket, &msg,
-				       flags);
+		nrecv = flash__recvmsg(cfg, nf->thread[socket_id]->socket, &msg, flags);
 
 		for (i = 0; i < nrecv; i++) {
 			struct xskvec *xv = &msg.msg_iov[i];
@@ -110,11 +107,9 @@ static void *socket_routine(void *arg)
 		}
 
 		if (nrecv) {
-			ret = flash__sendmsg(cfg, nf->thread[socket_id]->socket,
-					     &msg, flags);
+			ret = flash__sendmsg(cfg, nf->thread[socket_id]->socket, &msg, flags);
 			if (ret != nrecv) {
-				log_error("errno: %d/\"%s\"\n", errno,
-					  strerror(errno));
+				log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
 				exit(EXIT_FAILURE);
 			}
 		}
@@ -135,16 +130,14 @@ static void *worker__stats(void *arg)
 		setlocale(LC_ALL, "");
 
 		for (int i = 0; i < cfg->total_sockets; i++)
-			nf->thread[i]->socket->timestamp =
-				flash__get_nsecs(cfg);
+			nf->thread[i]->socket->timestamp = flash__get_nsecs(cfg);
 
 		while (!done) {
 			sleep(interval);
 			if (system("clear") != 0)
 				log_error("Terminal clear error");
 			for (int i = 0; i < cfg->total_sockets; i++) {
-				flash__dump_stats(cfg, nf->thread[i]->socket,
-						  FLASH__RXTX | FLASH__BACKP);
+				flash__dump_stats(cfg, nf->thread[i]->socket, FLASH__RXTX | FLASH__BACKP);
 			}
 		}
 	}
@@ -163,8 +156,7 @@ int main(int argc, char **argv)
 	int n = flash__parse_cmdline_args(argc, argv, cfg);
 	parse_app_args(argc, argv, &app_conf, n);
 	flash__configure_nf(&nf, cfg);
-	flash__populate_fill_ring(nf->thread, cfg->umem->frame_size,
-				  cfg->total_sockets, cfg->umem_offset);
+	flash__populate_fill_ring(nf->thread, cfg->umem->frame_size, cfg->total_sockets, cfg->umem_offset);
 
 	log_info("Control Plane Setup Done");
 
@@ -178,19 +170,14 @@ int main(int argc, char **argv)
 		int *socket_id = (int *)malloc(sizeof(int));
 		*socket_id = i;
 		pthread_t socket_thread;
-		if (pthread_create(&socket_thread, NULL, socket_routine,
-				   socket_id)) {
+		if (pthread_create(&socket_thread, NULL, socket_routine, socket_id)) {
 			log_error("Error creating socket thread");
 			exit(EXIT_FAILURE);
 		}
 		CPU_ZERO(&cpuset);
-		CPU_SET((i % (app_conf.cpu_end - app_conf.cpu_start + 1)) +
-				app_conf.cpu_start,
-			&cpuset);
-		if (pthread_setaffinity_np(socket_thread, sizeof(cpu_set_t),
-					   &cpuset) != 0) {
-			log_error("ERROR: Unable to set thread affinity: %s\n",
-				  strerror(errno));
+		CPU_SET((i % (app_conf.cpu_end - app_conf.cpu_start + 1)) + app_conf.cpu_start, &cpuset);
+		if (pthread_setaffinity_np(socket_thread, sizeof(cpu_set_t), &cpuset) != 0) {
+			log_error("ERROR: Unable to set thread affinity: %s\n", strerror(errno));
 			exit(EXIT_FAILURE);
 		}
 
@@ -205,10 +192,8 @@ int main(int argc, char **argv)
 	}
 	CPU_ZERO(&cpuset);
 	CPU_SET(app_conf.stats_cpu, &cpuset);
-	if (pthread_setaffinity_np(stats_thread, sizeof(cpu_set_t), &cpuset) !=
-	    0) {
-		log_error("ERROR: Unable to set thread affinity: %s\n",
-			  strerror(errno));
+	if (pthread_setaffinity_np(stats_thread, sizeof(cpu_set_t), &cpuset) != 0) {
+		log_error("ERROR: Unable to set thread affinity: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 	pthread_detach(stats_thread);

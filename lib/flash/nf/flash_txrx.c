@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BSD-3-Clause
+/* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2025 Debojeet Das
  */
 
@@ -7,8 +7,7 @@
 
 #include "flash_nf.h"
 
-int flash__poll(struct socket *xsk, struct pollfd *fds, nfds_t nfds,
-		int timeout)
+int flash__poll(struct socket *xsk, struct pollfd *fds, nfds_t nfds, int timeout)
 {
 #ifdef STATS
 	xsk->app_stats.opt_polls++;
@@ -21,15 +20,13 @@ static void __kick_tx(struct socket *xsk)
 	int ret;
 	ret = sendto(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL, 0);
 
-	if (ret >= 0 || errno == ENOBUFS || errno == EAGAIN || errno == EBUSY ||
-	    errno == ENETDOWN)
+	if (ret >= 0 || errno == ENOBUFS || errno == EAGAIN || errno == EBUSY || errno == ENETDOWN)
 		return;
 	log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
 	exit(EXIT_FAILURE);
 }
 
-static inline void __complete_tx_rx_first(struct config *cfg,
-					  struct socket *xsk)
+static inline void __complete_tx_rx_first(struct config *cfg, struct socket *xsk)
 {
 	__u32 idx_cq = 0, idx_fq = 0;
 	unsigned int completed, num_outstanding;
@@ -50,9 +47,7 @@ static inline void __complete_tx_rx_first(struct config *cfg,
 		__kick_tx(xsk);
 	}
 
-	num_outstanding = xsk->outstanding_tx > cfg->xsk->batch_size ?
-				  cfg->xsk->batch_size :
-				  xsk->outstanding_tx;
+	num_outstanding = xsk->outstanding_tx > cfg->xsk->batch_size ? cfg->xsk->batch_size : xsk->outstanding_tx;
 
 	/* Re-add completed TX buffers */
 	completed = xsk_ring_cons__peek(&xsk->comp, num_outstanding, &idx_cq);
@@ -61,21 +56,17 @@ static inline void __complete_tx_rx_first(struct config *cfg,
 
 		ret = xsk_ring_prod__reserve(&xsk->fill, completed, &idx_fq);
 		while (ret != completed) {
-			if (cfg->xsk->mode__busy_poll ||
-			    xsk_ring_prod__needs_wakeup(&xsk->fill)) {
+			if (cfg->xsk->mode__busy_poll || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
 #ifdef STATS
 				xsk->app_stats.fill_fail_polls++;
 #endif
-				recvfrom(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL,
-					 NULL);
+				recvfrom(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL, NULL);
 			}
-			ret = xsk_ring_prod__reserve(&xsk->fill, completed,
-						     &idx_fq);
+			ret = xsk_ring_prod__reserve(&xsk->fill, completed, &idx_fq);
 		}
 
 		for (i = 0; i < completed; i++)
-			*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) =
-				*xsk_ring_cons__comp_addr(&xsk->comp, idx_cq++);
+			*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) = *xsk_ring_cons__comp_addr(&xsk->comp, idx_cq++);
 
 		xsk_ring_prod__submit(&xsk->fill, completed);
 		xsk_ring_cons__release(&xsk->comp, completed);
@@ -83,16 +74,14 @@ static inline void __complete_tx_rx_first(struct config *cfg,
 	}
 }
 
-static inline void __reserve_fq(struct config *cfg, struct socket *xsk,
-				unsigned int num)
+static inline void __reserve_fq(struct config *cfg, struct socket *xsk, unsigned int num)
 {
 	__u32 idx_fq = 0;
 	unsigned int ret;
 
 	ret = xsk_ring_prod__reserve(&xsk->fill, num, &idx_fq);
 	while (ret != num) {
-		if (cfg->xsk->mode__busy_poll ||
-		    xsk_ring_prod__needs_wakeup(&xsk->fill)) {
+		if (cfg->xsk->mode__busy_poll || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
 #ifdef STATS
 			xsk->app_stats.fill_fail_polls++;
 #endif
@@ -103,8 +92,7 @@ static inline void __reserve_fq(struct config *cfg, struct socket *xsk,
 	xsk->idx_fq_bp = idx_fq;
 }
 
-static inline void __reserve_tx(struct config *cfg, struct socket *xsk,
-				unsigned int num)
+static inline void __reserve_tx(struct config *cfg, struct socket *xsk, unsigned int num)
 {
 	__u32 idx_tx = 0;
 	unsigned int ret;
@@ -112,8 +100,7 @@ static inline void __reserve_tx(struct config *cfg, struct socket *xsk,
 	ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
 	while (ret != num) {
 		__complete_tx_rx_first(cfg, xsk);
-		if (cfg->xsk->mode__busy_poll ||
-		    xsk_ring_prod__needs_wakeup(&xsk->tx)) {
+		if (cfg->xsk->mode__busy_poll || xsk_ring_prod__needs_wakeup(&xsk->tx)) {
 #ifdef STATS
 			xsk->app_stats.tx_wakeup_sendtos++;
 #endif
@@ -159,8 +146,7 @@ static void __hex_dump(void *pkt, size_t length, __u64 addr)
 	printf("\n");
 }
 
-size_t flash__recvmsg(struct config *cfg, struct socket *xsk,
-		      struct xskmsghdr *msg, int flags)
+size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg, int flags)
 {
 	__u32 idx_rx = 0;
 	unsigned int rcvd, i, eop_cnt = 0;
@@ -172,8 +158,7 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk,
 	}
 	rcvd = xsk_ring_cons__peek(&xsk->rx, cfg->xsk->batch_size, &idx_rx);
 	if (!rcvd) {
-		if (cfg->xsk->mode__busy_poll ||
-		    xsk_ring_prod__needs_wakeup(&xsk->fill)) {
+		if (cfg->xsk->mode__busy_poll || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
 #ifdef STATS
 			xsk->app_stats.rx_empty_polls++;
 #endif
@@ -197,8 +182,7 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk,
 	}
 
 	for (i = 0; i < rcvd; i++) {
-		const struct xdp_desc *desc =
-			xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++);
+		const struct xdp_desc *desc = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++);
 		eop_cnt += IS_EOP_DESC(desc->options);
 		__u64 addr = desc->addr;
 		__u32 len = desc->len;
@@ -225,8 +209,7 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk,
 	return rcvd;
 }
 
-size_t flash__sendmsg(struct config *cfg, struct socket *xsk,
-		      struct xskmsghdr *msg, int flags)
+size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg, int flags)
 {
 	unsigned int nsend, i;
 	nsend = msg->msg_len;
@@ -255,8 +238,7 @@ size_t flash__sendmsg(struct config *cfg, struct socket *xsk,
 			__u32 len = xv->len;
 			nb_frags++;
 
-			struct xdp_desc *tx_desc =
-				xsk_ring_prod__tx_desc(&xsk->tx, idx_tx++);
+			struct xdp_desc *tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, idx_tx++);
 
 			tx_desc->options = eop ? 0 : XDP_PKT_CONTD;
 			tx_desc->addr = addr;

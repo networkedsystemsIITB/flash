@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BSD-3-Clause
+/* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2025 Debojeet Das
  */
 
@@ -95,9 +95,7 @@ static int *__configure(struct config *cfg)
 	return received_fd;
 }
 
-static int xsk_mmap_umem_rings(struct socket *socket,
-			       struct xsk_umem_config umem_config,
-			       struct xsk_socket_config xsk_config)
+static int xsk_mmap_umem_rings(struct socket *socket, struct xsk_umem_config umem_config, struct xsk_socket_config xsk_config)
 {
 	struct xdp_mmap_offsets off;
 	void *fill_map, *comp_map, *rx_map, *tx_map;
@@ -120,11 +118,8 @@ static int xsk_mmap_umem_rings(struct socket *socket,
 		return -errno;
 
 	if (fill) {
-		fill_map = mmap(
-			NULL,
-			off.fr.desc + umem_config.fill_size * sizeof(__u64),
-			PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, fd,
-			XDP_UMEM_PGOFF_FILL_RING);
+		fill_map = mmap(NULL, off.fr.desc + umem_config.fill_size * sizeof(__u64), PROT_READ | PROT_WRITE,
+				MAP_SHARED | MAP_POPULATE, fd, XDP_UMEM_PGOFF_FILL_RING);
 		if (fill_map == MAP_FAILED)
 			return -errno;
 
@@ -140,11 +135,8 @@ static int xsk_mmap_umem_rings(struct socket *socket,
 	printf("FILL RING MAPPED NF!!!\n");
 
 	if (comp) {
-		comp_map = mmap(
-			NULL,
-			off.cr.desc + umem_config.comp_size * sizeof(__u64),
-			PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, fd,
-			XDP_UMEM_PGOFF_COMPLETION_RING);
+		comp_map = mmap(NULL, off.cr.desc + umem_config.comp_size * sizeof(__u64), PROT_READ | PROT_WRITE,
+				MAP_SHARED | MAP_POPULATE, fd, XDP_UMEM_PGOFF_COMPLETION_RING);
 		if (fill_map == MAP_FAILED) {
 			err = -errno;
 			goto out_mmap_comp;
@@ -161,11 +153,8 @@ static int xsk_mmap_umem_rings(struct socket *socket,
 	printf("COMP RING MAPPED NF!!!\n");
 
 	if (rx) {
-		rx_map = mmap(NULL,
-			      off.rx.desc + xsk_config.rx_size *
-						    sizeof(struct xdp_desc),
-			      PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE,
-			      fd, XDP_PGOFF_RX_RING);
+		rx_map = mmap(NULL, off.rx.desc + xsk_config.rx_size * sizeof(struct xdp_desc), PROT_READ | PROT_WRITE,
+			      MAP_SHARED | MAP_POPULATE, fd, XDP_PGOFF_RX_RING);
 		if (rx_map == MAP_FAILED) {
 			err = -errno;
 			goto out_mmap_rx;
@@ -184,11 +173,8 @@ static int xsk_mmap_umem_rings(struct socket *socket,
 	printf("RX RING MAPPED NF!!!\n");
 
 	if (tx) {
-		tx_map = mmap(NULL,
-			      off.tx.desc + xsk_config.tx_size *
-						    sizeof(struct xdp_desc),
-			      PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE,
-			      fd, XDP_PGOFF_TX_RING);
+		tx_map = mmap(NULL, off.tx.desc + xsk_config.tx_size * sizeof(struct xdp_desc), PROT_READ | PROT_WRITE,
+			      MAP_SHARED | MAP_POPULATE, fd, XDP_PGOFF_TX_RING);
 		if (tx_map == MAP_FAILED) {
 			err = -errno;
 			goto out_mmap_tx;
@@ -211,8 +197,7 @@ static int xsk_mmap_umem_rings(struct socket *socket,
 	return 0;
 
 out_mmap_tx:
-	munmap(rx_map,
-	       off.rx.desc + xsk_config.rx_size * sizeof(struct xdp_desc));
+	munmap(rx_map, off.rx.desc + xsk_config.rx_size * sizeof(struct xdp_desc));
 out_mmap_rx:
 	munmap(comp_map, off.rx.desc + umem_config.comp_size * sizeof(__u64));
 out_mmap_comp:
@@ -220,8 +205,7 @@ out_mmap_comp:
 	return err;
 }
 
-void flash__populate_fill_ring(struct thread **thread, int frame_size,
-			       int total_sockets, int umem_offset)
+void flash__populate_fill_ring(struct thread **thread, int frame_size, int total_sockets, int umem_offset)
 {
 	int ret, i;
 	int nr_frames = (size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS * (size_t)2;
@@ -229,16 +213,13 @@ void flash__populate_fill_ring(struct thread **thread, int frame_size,
 	log_info("FILLING FILL RING");
 
 	for (int t = 0; t < total_sockets; t++) {
-		ret = xsk_ring_prod__reserve(&thread[t]->socket->fill,
-					     nr_frames, &idx);
+		ret = xsk_ring_prod__reserve(&thread[t]->socket->fill, nr_frames, &idx);
 		if (ret != nr_frames) {
 			log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
 			exit(EXIT_FAILURE);
 		}
-		for (i = (t + umem_offset) * nr_frames;
-		     i < nr_frames * (t + umem_offset + 1); i++) {
-			*xsk_ring_prod__fill_addr(&thread[t]->socket->fill,
-						  idx++) = i * frame_size;
+		for (i = (t + umem_offset) * nr_frames; i < nr_frames * (t + umem_offset + 1); i++) {
+			*xsk_ring_prod__fill_addr(&thread[t]->socket->fill, idx++) = i * frame_size;
 		}
 		log_info("THREAD: %d, umem_offset: %d", t, t + umem_offset);
 		xsk_ring_prod__submit(&thread[t]->socket->fill, nr_frames);
@@ -258,18 +239,12 @@ void flash__xsk_close(struct config *cfg, struct nf *nf)
 	for (int i = 0; i < cfg->total_sockets; i++) {
 		err = xsk_get_mmap_offsets(nf->thread[i]->socket->fd, &off);
 		if (!err) {
-			munmap(nf->thread[i]->socket->rx.ring - off.rx.desc,
-			       off.rx.desc +
-				       cfg->xsk_config->rx_size * desc_sz);
-			munmap(nf->thread[i]->socket->tx.ring - off.tx.desc,
-			       off.tx.desc +
-				       cfg->xsk_config->tx_size * desc_sz);
+			munmap(nf->thread[i]->socket->rx.ring - off.rx.desc, off.rx.desc + cfg->xsk_config->rx_size * desc_sz);
+			munmap(nf->thread[i]->socket->tx.ring - off.tx.desc, off.tx.desc + cfg->xsk_config->tx_size * desc_sz);
 			munmap(nf->thread[i]->socket->fill.ring - off.fr.desc,
-			       off.fr.desc + cfg->umem_config->fill_size *
-						     sizeof(__u64));
+			       off.fr.desc + cfg->umem_config->fill_size * sizeof(__u64));
 			munmap(nf->thread[i]->socket->comp.ring - off.cr.desc,
-			       off.cr.desc + cfg->umem_config->comp_size *
-						     sizeof(__u64));
+			       off.cr.desc + cfg->umem_config->comp_size * sizeof(__u64));
 		}
 		free(nf->thread[i]->socket);
 		free(nf->thread[i]);
@@ -278,8 +253,7 @@ void flash__xsk_close(struct config *cfg, struct nf *nf)
 	free(nf);
 
 	if (cfg->umem->buffer) {
-		munmap(cfg->umem->buffer,
-		       NUM_FRAMES * cfg->umem->frame_size * cfg->total_sockets);
+		munmap(cfg->umem->buffer, NUM_FRAMES * cfg->umem->frame_size * cfg->total_sockets);
 	}
 
 	if (cfg && cfg->umem && cfg->xsk) {
@@ -304,25 +278,20 @@ void flash__configure_nf(struct nf **_nf, struct config *cfg)
 
 	if (cfg->total_sockets <= 0)
 		log_error("Invalid number of sockets");
-	nf->thread = (struct thread **)calloc(cfg->total_sockets,
-					      sizeof(struct thread *));
+	nf->thread = (struct thread **)calloc(cfg->total_sockets, sizeof(struct thread *));
 
 	for (int i = 0; i < cfg->total_sockets; i++)
-		nf->thread[i] =
-			(struct thread *)calloc(1, sizeof(struct thread));
+		nf->thread[i] = (struct thread *)calloc(1, sizeof(struct thread));
 
 	int size = cfg->umem->size;
-	cfg->umem->buffer = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED,
-				 cfg->umem_fd, 0);
+	cfg->umem->buffer = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, cfg->umem_fd, 0);
 	if (cfg->umem->buffer == MAP_FAILED) {
-		log_error("ERROR: (UMEM setup) mmap failed \"%s\"\n",
-			  strerror(errno));
+		log_error("ERROR: (UMEM setup) mmap failed \"%s\"\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
 	if (!size && !xsk_page_aligned(cfg->umem->buffer)) {
-		log_error("ERROR: UMEM size is not page aligned \"%s\"\n",
-			  strerror(errno));
+		log_error("ERROR: UMEM size is not page aligned \"%s\"\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
@@ -333,14 +302,10 @@ void flash__configure_nf(struct nf **_nf, struct config *cfg)
 	}
 
 	for (int i = 0; i < cfg->total_sockets; i++) {
-		nf->thread[i]->socket =
-			(struct socket *)calloc(1, sizeof(struct socket));
+		nf->thread[i]->socket = (struct socket *)calloc(1, sizeof(struct socket));
 		nf->thread[i]->socket->fd = sockfd[i];
-		if (xsk_mmap_umem_rings(nf->thread[i]->socket,
-					*cfg->umem_config,
-					*cfg->xsk_config) != 0) {
-			log_error("ERROR: (Ring setup) mmap failed \"%s\"\n",
-				  strerror(errno));
+		if (xsk_mmap_umem_rings(nf->thread[i]->socket, *cfg->umem_config, *cfg->xsk_config) != 0) {
+			log_error("ERROR: (Ring setup) mmap failed \"%s\"\n", strerror(errno));
 			exit(EXIT_FAILURE);
 		}
 	}

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BSD-3-Clause
+/* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2025 Debojeet Das
  */
 
@@ -127,10 +127,8 @@ int start_uds_server(void)
 
 	log_info("SET SOCK OPT::::");
 
-	if (bind(sockfd, (struct sockaddr *)&server,
-		 sizeof(struct sockaddr_un))) {
-		log_error("Binding to socket stream failed: %s",
-			  strerror(errno));
+	if (bind(sockfd, (struct sockaddr *)&server, sizeof(struct sockaddr_un))) {
+		log_error("Binding to socket stream failed: %s", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
@@ -153,11 +151,9 @@ int start_uds_client(void)
 	server.sun_family = AF_UNIX;
 	strcpy(server.sun_path, UNIX_SOCKET_NAME);
 
-	if (connect(sockfd, (struct sockaddr *)&server,
-		    sizeof(struct sockaddr_un)) < 0) {
+	if (connect(sockfd, (struct sockaddr *)&server, sizeof(struct sockaddr_un)) < 0) {
 		close(sockfd);
-		log_error("Error connecting stream socket: %s",
-			  strerror(errno));
+		log_error("Error connecting stream socket: %s", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 

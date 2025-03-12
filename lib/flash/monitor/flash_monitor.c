@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BSD-3-Clause
+/* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2025 Debojeet Das
  */
 
@@ -33,12 +33,8 @@ void close_nf(struct umem *umem, int umem_id, int nf_id)
 		xsk_socket__delete(umem->nf[nf_id]->thread[i]->xsk);
 		err = xsk_get_mmap_offsets(socket->fd, &off);
 		if (!err) {
-			munmap(socket->fill.ring - off.fr.desc,
-			       off.fr.desc + umem->cfg->umem_config->fill_size *
-						     sizeof(__u64));
-			munmap(socket->comp.ring - off.cr.desc,
-			       off.cr.desc + umem->cfg->umem_config->comp_size *
-						     sizeof(__u64));
+			munmap(socket->fill.ring - off.fr.desc, off.fr.desc + umem->cfg->umem_config->fill_size * sizeof(__u64));
+			munmap(socket->comp.ring - off.cr.desc, off.cr.desc + umem->cfg->umem_config->comp_size * sizeof(__u64));
 		}
 		free(socket);
 	}
@@ -52,14 +48,12 @@ void close_nf(struct umem *umem, int umem_id, int nf_id)
 
 	if (umem->umem_info && umem->umem_info->umem) {
 		if (xsk_umem__delete(umem->umem_info->umem) < 0) {
-			log_info("UMEM refcount == %d, not deleting UMEM",
-				 umem->umem_info->umem->refcount);
+			log_info("UMEM refcount == %d, not deleting UMEM", umem->umem_info->umem->refcount);
 		} else {
 			log_info("UMEM refcount == 0, deleting UMEM");
 			close(umem->cfg->umem_fd);
 			if (umem->cfg->umem->buffer) {
-				munmap(umem->cfg->umem->buffer,
-				       umem->cfg->umem->size);
+				munmap(umem->cfg->umem->buffer, umem->cfg->umem->size);
 				umem->cfg->umem->buffer = NULL;
 				umem->cfg->umem->size = 0;
 			}
@@ -69,8 +63,7 @@ void close_nf(struct umem *umem, int umem_id, int nf_id)
 			free(umem->umem_info);
 		}
 	} else {
-		log_info("UMEM for nf %d having umem_id %d does not exist",
-			 nf_id, umem_id);
+		log_info("UMEM for nf %d having umem_id %d does not exist", nf_id, umem_id);
 	}
 }
 
@@ -80,8 +73,7 @@ static void close_nfg(void)
 		return;
 	for (int i = 0; i < nfg->umem_count; i++) {
 		for (int j = 0; j < nfg->umem[i]->nf_count; j++) {
-			close_nf(nfg->umem[i], nfg->umem[i]->id,
-				 nfg->umem[i]->nf[i]->id);
+			close_nf(nfg->umem[i], nfg->umem[i]->id, nfg->umem[i]->nf[i]->id);
 		}
 	}
 }
@@ -147,8 +139,7 @@ static void __configure_umem(struct umem *umem)
      */
 	int ret = 0;
 	log_info("Creating UMEM");
-	ret = xsk_umem__create(&umem->umem_info->umem, umem->cfg->umem->buffer,
-			       umem->cfg->umem->size, &umem->umem_info->fq,
+	ret = xsk_umem__create(&umem->umem_info->umem, umem->cfg->umem->buffer, umem->cfg->umem->size, &umem->umem_info->fq,
 			       &umem->umem_info->cq, umem->cfg->umem_config);
 
 	if (ret) {
@@ -167,9 +158,7 @@ static void flash__setup_umem(struct umem *umem)
 	size_t size;
 
 	if (setrlimit(RLIMIT_MEMLOCK, &rlim)) {
-		log_error(
-			"ERROR: (UMEM setup) setrlimit(RLIMIT_MEMLOCK) \"%s\"\n",
-			strerror(errno));
+		log_error("ERROR: (UMEM setup) setrlimit(RLIMIT_MEMLOCK) \"%s\"\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
@@ -178,15 +167,13 @@ static void flash__setup_umem(struct umem *umem)
 	schparam.sched_priority = 0;
 	ret = sched_setscheduler(0, 0, &schparam);
 	if (ret) {
-		log_error("Error(%d) in setting priority(%d): %s\n", errno, 0,
-			  strerror(errno));
+		log_error("Error(%d) in setting priority(%d): %s\n", errno, 0, strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
 	log_info("TOTAL SOCKET IN JSON: %d", umem->cfg->total_sockets);
 
-	size = (size_t)NUM_FRAMES * (size_t)umem->cfg->umem->frame_size *
-	       (size_t)umem->cfg->total_sockets;
+	size = (size_t)NUM_FRAMES * (size_t)umem->cfg->umem->frame_size * (size_t)umem->cfg->total_sockets;
 
 	log_info("UMEM size: %lu", size);
 
@@ -198,8 +185,7 @@ static void flash__setup_umem(struct umem *umem)
 	log_info("Reserving memory for UMEM");
 	packet_buffer = mmap(NULL, size, PROT_READ | PROT_WRITE, flags, fd, 0);
 	if (packet_buffer == MAP_FAILED) {
-		log_error("ERROR: (UMEM setup) mmap failed \"%s\"\n",
-			  strerror(errno));
+		log_error("ERROR: (UMEM setup) mmap failed \"%s\"\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 	umem->cfg->umem->buffer = packet_buffer;
@@ -227,8 +213,7 @@ static int flash__setup_xsk(struct umem *umem, int nf_id)
 	int sock_opt;
 	int umem_ref_count = umem->cfg->current_socket_count;
 	int nf_thread_count = umem->nf[nf_id]->current_thread_count;
-	int ifqueue = umem->cfg->ifqueue[nf_id * umem->nf[nf_id]->thread_count +
-					 nf_thread_count];
+	int ifqueue = umem->cfg->ifqueue[nf_id * umem->nf[nf_id]->thread_count + nf_thread_count];
 	char *ifname = umem->cfg->ifname;
 
 	struct xsk_socket *xsk;
@@ -237,8 +222,7 @@ static int flash__setup_xsk(struct umem *umem, int nf_id)
 
 	struct socket *socket = calloc(1, sizeof(struct socket));
 	if (!socket) {
-		log_error("Memory allocation failed, errno: %d/\"%s\"\n", errno,
-			  strerror(errno));
+		log_error("Memory allocation failed, errno: %d/\"%s\"\n", errno, strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
@@ -252,22 +236,15 @@ static int flash__setup_xsk(struct umem *umem, int nf_id)
      * 5. Loads the default XDP program (if required).
      */
 	if (umem_ref_count == 0) {
-		log_info("Creating socket #%d for a UMEM with queue #%d",
-			 umem_ref_count, ifqueue);
-		ret = xsk_socket__create(&xsk, ifname, ifqueue, _umem,
-					 &socket->rx, &socket->tx, xsk_config);
+		log_info("Creating socket #%d for a UMEM with queue #%d", umem_ref_count, ifqueue);
+		ret = xsk_socket__create(&xsk, ifname, ifqueue, _umem, &socket->rx, &socket->tx, xsk_config);
 	} else {
-		log_info("Creating socket #%d for a UMEM with queue #%d",
-			 umem_ref_count, ifqueue);
-		ret = xsk_socket__create_shared(&xsk, ifname, ifqueue, _umem,
-						&socket->rx, &socket->tx,
-						&socket->fill, &socket->comp,
+		log_info("Creating socket #%d for a UMEM with queue #%d", umem_ref_count, ifqueue);
+		ret = xsk_socket__create_shared(&xsk, ifname, ifqueue, _umem, &socket->rx, &socket->tx, &socket->fill, &socket->comp,
 						xsk_config);
 	}
 	if (ret) {
-		log_error(
-			"xsk_socket__create failed(check available queues), errno: %d/\"%s\"\n",
-			errno, strerror(errno));
+		log_error("xsk_socket__create failed(check available queues), errno: %d/\"%s\"\n", errno, strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
@@ -279,29 +256,22 @@ static int flash__setup_xsk(struct umem *umem, int nf_id)
 	umem->cfg->current_socket_count++;
 
 	/* Enable and configure busy poll */
-	if (umem->cfg->xsk->mode__busy_poll &&
-	    !(umem->cfg->xsk->bind_flags & XDP_COPY)) {
+	if (umem->cfg->xsk->mode__busy_poll && !(umem->cfg->xsk->bind_flags & XDP_COPY)) {
 		sock_opt = 1;
-		if (setsockopt(socket->fd, SOL_SOCKET, SO_PREFER_BUSY_POLL,
-			       (void *)&sock_opt, sizeof(sock_opt)) < 0) {
-			log_error("setsockopt 1 failed, errno: %d/\"%s\"\n",
-				  errno, strerror(errno));
+		if (setsockopt(socket->fd, SOL_SOCKET, SO_PREFER_BUSY_POLL, (void *)&sock_opt, sizeof(sock_opt)) < 0) {
+			log_error("setsockopt 1 failed, errno: %d/\"%s\"\n", errno, strerror(errno));
 			exit(EXIT_FAILURE);
 		}
 
 		sock_opt = 20;
-		if (setsockopt(socket->fd, SOL_SOCKET, SO_BUSY_POLL,
-			       (void *)&sock_opt, sizeof(sock_opt)) < 0) {
-			log_error("setsockopt 2 failed, errno: %d/\"%s\"\n",
-				  errno, strerror(errno));
+		if (setsockopt(socket->fd, SOL_SOCKET, SO_BUSY_POLL, (void *)&sock_opt, sizeof(sock_opt)) < 0) {
+			log_error("setsockopt 2 failed, errno: %d/\"%s\"\n", errno, strerror(errno));
 			exit(EXIT_FAILURE);
 		}
 
 		sock_opt = 64; // poll budget
-		if (setsockopt(socket->fd, SOL_SOCKET, SO_BUSY_POLL_BUDGET,
-			       (void *)&sock_opt, sizeof(sock_opt)) < 0) {
-			log_error("setsockopt 3 failed, errno: %d/\"%s\"\n",
-				  errno, strerror(errno));
+		if (setsockopt(socket->fd, SOL_SOCKET, SO_BUSY_POLL_BUDGET, (void *)&sock_opt, sizeof(sock_opt)) < 0) {
+			log_error("setsockopt 3 failed, errno: %d/\"%s\"\n", errno, strerror(errno));
 			exit(EXIT_FAILURE);
 		}
 		log_info("SET BUSY POLL OPS");
@@ -336,8 +306,7 @@ int configure_umem(struct nf_data *data, struct umem **_umem)
 	}
 
 	init_config(umem->cfg);
-	setup_xsk_config(&umem->cfg->xsk_config, &umem->cfg->umem_config,
-			 umem->cfg);
+	setup_xsk_config(&umem->cfg->xsk_config, &umem->cfg->umem_config, umem->cfg);
 	flash__setup_umem(umem);
 
 	*_umem = umem;

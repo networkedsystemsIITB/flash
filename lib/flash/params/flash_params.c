@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BSD-3-Clause
+/* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2025 Debojeet Das
  */
 
@@ -15,28 +15,21 @@ const char *__doc__ = "AF_XDP NF Library\n";
 
 const struct option_wrapper long_options[] = {
 
-	{ { "app-stats", no_argument, NULL, 'a' },
-	  "Display application (syscall) statistics." },
+	{ { "app-stats", no_argument, NULL, 'a' }, "Display application (syscall) statistics." },
 
-	{ { "extra-stats", no_argument, NULL, 'x' },
-	  "Display extra statistics." },
+	{ { "extra-stats", no_argument, NULL, 'x' }, "Display extra statistics." },
 
-	{ { "interval", required_argument, NULL, 'n' },
-	  "Specify statistics update interval (default 1 sec)." },
+	{ { "interval", required_argument, NULL, 'n' }, "Specify statistics update interval (default 1 sec)." },
 
-	{ { "nf_id", required_argument, NULL, 'f' },
-	  "NF id to connect to monitor" },
+	{ { "nf_id", required_argument, NULL, 'f' }, "NF id to connect to monitor" },
 
-	{ { "umem_id", required_argument, NULL, 'u' },
-	  "Umem id to connect to monitor" },
+	{ { "umem_id", required_argument, NULL, 'u' }, "Umem id to connect to monitor" },
 
 	{ { "quiet", no_argument, NULL, 'Q' }, "Quiet mode (no output)" },
 
-	{ { "clock", required_argument, NULL, 'w' },
-	  "Clock NAME (default MONOTONIC). -- not implemented yet" },
+	{ { "clock", required_argument, NULL, 'w' }, "Clock NAME (default MONOTONIC). -- not implemented yet" },
 
-	{ { "frags", no_argument, NULL, 'F' },
-	  "Enable frags (multi-buffer) support" },
+	{ { "frags", no_argument, NULL, 'F' }, "Enable frags (multi-buffer) support" },
 
 	{ { "help", no_argument, NULL, 'h' }, "Show help", false },
 
@@ -57,8 +50,7 @@ static int get_clockid(clockid_t *id, const char *name)
 	return -1;
 }
 
-static int option_wrappers_to_options(const struct option_wrapper *wrapper,
-				      struct option **options)
+static int option_wrappers_to_options(const struct option_wrapper *wrapper, struct option **options)
 {
 	int i, num;
 	struct option *new_options;
@@ -77,8 +69,7 @@ static int option_wrappers_to_options(const struct option_wrapper *wrapper,
 	return 0;
 }
 
-static void _print_options(const struct option_wrapper *long_options,
-			   bool required)
+static void _print_options(const struct option_wrapper *long_options, bool required)
 {
 	int i, pos;
 	char buf[BUFSIZE];
@@ -91,19 +82,16 @@ static void _print_options(const struct option_wrapper *long_options,
 			printf(" -%c,", long_options[i].option.val);
 		else
 			printf("    ");
-		pos = snprintf(buf, BUFSIZE, " --%s",
-			       long_options[i].option.name);
+		pos = snprintf(buf, BUFSIZE, " --%s", long_options[i].option.name);
 		if (long_options[i].metavar)
-			snprintf(&buf[pos], BUFSIZE - pos, " %s",
-				 long_options[i].metavar);
+			snprintf(&buf[pos], BUFSIZE - pos, " %s", long_options[i].metavar);
 		printf("%-22s", buf);
 		printf("  %s", long_options[i].help);
 		printf("\n");
 	}
 }
 
-static void usage(const char *prog_name, const char *doc,
-		  const struct option_wrapper *long_options, bool full)
+static void usage(const char *prog_name, const char *doc, const struct option_wrapper *long_options, bool full)
 {
 	printf("Usage: %s [options]\n", prog_name);
 
@@ -121,9 +109,7 @@ static void usage(const char *prog_name, const char *doc,
 	printf("\n");
 }
 
-static int parse_cmdline_args(int argc, char **argv,
-			      const struct option_wrapper *options_wrapper,
-			      struct config *cfg, const char *doc)
+static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper *options_wrapper, struct config *cfg, const char *doc)
 {
 	int opt, ret;
 	int longindex = 0;
@@ -144,8 +130,7 @@ static int parse_cmdline_args(int argc, char **argv,
 	}
 
 	/* Parse commands line args */
-	while ((opt = getopt_long(argc, argv, "axhFQn:w:u:f:", long_options,
-				  &longindex)) != -1) {
+	while ((opt = getopt_long(argc, argv, "axhFQn:w:u:f:", long_options, &longindex)) != -1) {
 		switch (opt) {
 		case 'a':
 			cfg->app_stats = true;
@@ -167,9 +152,7 @@ static int parse_cmdline_args(int argc, char **argv,
 			break;
 		case 'w':
 			if (get_clockid(&cfg->clock, optarg))
-				log_error(
-					"ERROR: Invalid clock %s. Default to CLOCK_MONOTONIC.\n",
-					optarg);
+				log_error("ERROR: Invalid clock %s. Default to CLOCK_MONOTONIC.\n", optarg);
 			break;
 		case 'F':
 			cfg->frags_enabled = true;
@@ -227,9 +210,7 @@ int flash__parse_cmdline_args(int argc, char **argv, struct config *cfg)
 	log_info("Parsing command line arguments2");
 
 	if ((cfg->umem->frame_size & (cfg->umem->frame_size - 1))) {
-		log_error(
-			"ERROR: (Parsing error) --frame-size=%d is not a power of two\n",
-			cfg->umem->frame_size);
+		log_error("ERROR: (Parsing error) --frame-size=%d is not a power of two\n", cfg->umem->frame_size);
 		exit(EXIT_FAILURE);
 	}
 

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BSD-3-Clause
+/* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2025 Debojeet Das
  */
 
@@ -44,23 +44,18 @@ static void *handle_nf(void *arg)
 				continue;
 			}
 			send_fd(msgsock, umem->cfg->umem_fd);
-			send_data(msgsock, &umem->nf[data->nf_id]->thread_count,
-				  sizeof(int));
+			send_data(msgsock, &umem->nf[data->nf_id]->thread_count, sizeof(int));
 			send_data(msgsock, &umem->cfg->umem->size, sizeof(int));
 			break;
 
 		case FLASH__CREATE_SOCKET:
 			if (umem != NULL) {
-				send_fd(msgsock,
-					create_new_socket(umem, data->nf_id));
+				send_fd(msgsock, create_new_socket(umem, data->nf_id));
 			}
 			break;
 
 		case FLASH__GET_UMEM_OFFSET:
-			int offset =
-				data->nf_id *
-					umem->nf[data->nf_id]->thread_count +
-				umem->nf[data->nf_id]->current_thread_count;
+			int offset = data->nf_id * umem->nf[data->nf_id]->thread_count + umem->nf[data->nf_id]->current_thread_count;
 			send_data(msgsock, &offset, sizeof(int));
 			break;
 
@@ -108,8 +103,7 @@ static void *worker__uds_server(void *arg)
 
 		*msgsock = accept(unix_socket_server, NULL, NULL);
 		if (*msgsock == -1) {
-			log_error("Error accepting connection: %s",
-				  strerror(errno));
+			log_error("Error accepting connection: %s", strerror(errno));
 			free(msgsock);
 			continue;
 		}

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BSD-3-Clause
+/* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2025 Debojeet Das
  *
  * This file was taken from the Linux kernel
@@ -24,8 +24,7 @@ static inline void INIT_LIST_HEAD(struct list_head *list)
 	list->prev = list;
 }
 
-static inline void __list_add(struct list_head *new, struct list_head *prev,
-			      struct list_head *next)
+static inline void __list_add(struct list_head *new, struct list_head *prev, struct list_head *next)
 {
 	next->prev = new;
 	new->next = next;
@@ -62,12 +61,9 @@ static inline int list_empty(const struct list_head *head)
 }
 
 #define list_entry(ptr, type, member) container_of(ptr, type, member)
-#define list_first_entry(ptr, type, member) \
-	list_entry((ptr)->next, type, member)
-#define list_next_entry(pos, member) \
-	list_entry((pos)->member.next, typeof(*(pos)), member)
-#define list_for_each_entry(pos, head, member)                   \
-	for (pos = list_first_entry(head, typeof(*pos), member); \
-	     &pos->member != (head); pos = list_next_entry(pos, member))
+#define list_first_entry(ptr, type, member) list_entry((ptr)->next, type, member)
+#define list_next_entry(pos, member) list_entry((pos)->member.next, typeof(*(pos)), member)
+#define list_for_each_entry(pos, head, member) \
+	for (pos = list_first_entry(head, typeof(*pos), member); &pos->member != (head); pos = list_next_entry(pos, member))
 
 #endif /* __FLASH_LIST_H */
