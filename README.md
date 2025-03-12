@@ -17,17 +17,15 @@ The libxdp library is not available in the Ubuntu repositories. You can build it
 
 ```bash
 git clone https://github.com/xdp-project/xdp-tools.git
-cd xdp-tools/
-make
-sudo make install
+make -C xdp-tools
+sudo make install -C xdp-tools
 ```
 
 Once you have installed the dependencies, you can build the library using the following commands:
 
 ```bash
-meson setup builddir
-cd builddir
-meson compile
+meson setup build
+meson compile -C build
 ```
 
 ## Usage

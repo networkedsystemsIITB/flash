@@ -5,8 +5,4 @@ sources = files('main.c')
 
 deps += [log, nf, params]
 
-executable('helloworld',
-    sources,
-    c_args: cflags,
-    install: true,
-    dependencies: deps)
+executable('helloworld', sources, c_args: cflags, install: true, dependencies: deps)

@@ -10,7 +10,7 @@ project(
         'buildtype=release',
         'default_library=shared',
         'warning_level=3',
-        'werror=true'
+        'werror=true',
     ],
     meson_version: '>= 0.53.2',
 )

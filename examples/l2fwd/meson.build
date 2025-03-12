@@ -3,8 +3,4 @@
 
 sources = files('main.c')
 
-executable('l2fwd',
-    sources,
-    c_args: cflags,
-    install: true,
-    dependencies: deps)
+executable('l2fwd', sources, c_args: cflags, install: true, dependencies: deps)

@@ -2,10 +2,7 @@
 # Copyright (c) 2025 Debojeet Das
 
 sources = []
-headers = files(
-    'flash_list.h',
-    'flash_defines.h'
-    )
+headers = files('flash_defines.h', 'flash_list.h')
 
 include = declare_dependency(include_directories: include_directories('.'))
 

@@ -1,4 +1,4 @@
-name: FLASH Build Check
+name: Build
 
 on:
   push:
@@ -10,24 +10,15 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-18.04, ubuntu-20.04, ubuntu-22.04, ubuntu-latest]
+
+    runs-on: ${{ matrix.os }}
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
 
-    - name: Set up dependencies
-      run: sudo apt install -y build-essential meson libbpf-dev pkg-config git gcc-multilib clang llvm lld m4 libpcap-dev libcjson-dev libncurses-dev
-
-    - name: Install libxdp
-      run: |
-        git clone https://github.com/xdp-project/xdp-tools.git
-        cd xdp-tools/
-        make
-        sudo make install
-
-    - name: Build project
-      run: |
-        meson setup builddir
-        cd builddir
-        meson compile
+    - name: Build
+      run: make ci_build

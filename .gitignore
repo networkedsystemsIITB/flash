@@ -1,6 +1,6 @@
 # Remove vscode and meson build directories
 .vscode/
-builddir/
+build/
 
 # Keep the next two in this order, removes the usr directory (which is the install files), but
 # retains the lib/usr directory.

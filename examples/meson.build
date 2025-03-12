@@ -8,9 +8,9 @@ dirs = [
 
 def_deps = [include, log, nf, params, uds]
 
-foreach d:dirs
+foreach d : dirs
     cflags = []
-    deps =  def_deps  # reset the deps to the original values
+    deps = def_deps # reset the deps to the original values
 
     sources = []
     headers = []
