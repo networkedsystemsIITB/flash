@@ -7,7 +7,8 @@
 
 #include <flash_defines.h>
 
-#define UNIX_SOCKET_NAME "/var/run/flash/sock"
+#define UNIX_SOCKET_DIR "/tmp/flash"
+#define UNIX_SOCKET_NAME "/tmp/flash/uds.sock"
 #define MAX_NUM_OF_CLIENTS 20
 #define FLASH__CREATE_UMEM 1
 #define FLASH__GET_UMEM 2

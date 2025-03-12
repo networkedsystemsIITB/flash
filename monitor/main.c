@@ -19,6 +19,8 @@ static bool done = false;
 
 static void int_exit(int sig)
 {
+	cleanup_exit();
+	sleep(1);
 	log_info("Received Signal: %d", sig);
 	close(unix_socket_server);
 	unlink(UNIX_SOCKET_NAME);
@@ -136,16 +138,13 @@ int main(int argc, char **argv)
 	signal(SIGTERM, int_exit);
 	signal(SIGABRT, int_exit);
 
-	// char *filename = argv[argc - 1];
-	// log_info("FILE: %s", filename);
-	// log_info("%s", process_input(filename));
-
 	pthread_t uds_thread;
 	if (pthread_create(&uds_thread, NULL, worker__uds_server, NULL)) {
 		log_error("Error creating UDS thread");
 		exit(EXIT_FAILURE);
 	}
 
+	sleep(1);
 	pthread_t prompt_thread;
 	if (pthread_create(&prompt_thread, NULL, init_prompt, NULL)) {
 		log_error("Error creating UDS thread");

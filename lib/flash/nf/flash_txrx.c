@@ -241,6 +241,7 @@ size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *
 			struct xdp_desc *tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, idx_tx++);
 
 			tx_desc->options = eop ? 0 : XDP_PKT_CONTD;
+			tx_desc->options |= (xv->options & 0xFFFF0000);
 			tx_desc->addr = addr;
 			tx_desc->len = len;
 

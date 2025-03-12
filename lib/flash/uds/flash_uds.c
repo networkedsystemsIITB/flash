@@ -106,6 +106,11 @@ int start_uds_server(void)
 
 	umask(0);
 
+	if (mkdir(UNIX_SOCKET_DIR, 0777) == -1 && errno != EEXIST) {
+		log_error("Error creating directory %s: %s", UNIX_SOCKET_DIR, strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
 	sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (sockfd < 0) {
 		log_error("Error opening socket stream: %s", strerror(errno));
