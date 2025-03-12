@@ -1,0 +1,20 @@
+services:
+  helloworld:
+    build: .
+    image: flash:dev
+    restart: unless-stopped
+    command: ./build/examples/helloworld/helloworld -u 0 -f 0 -ax -- -s 0 -c 1 -e 2
+    environment:
+      TERM: xterm-256color
+    volumes:
+      - /tmp/flash:/tmp/flash
+
+  l2fwd:
+    build: .
+    image: flash:dev
+    restart: unless-stopped
+    command: ./build/examples/l2fwd/l2fwd -u 0 -f 1 -ax -Q -- -s 0 -c 2 -e 3
+    environment:
+      TERM: xterm-256color
+    volumes:
+      - /tmp/flash:/tmp/flash
