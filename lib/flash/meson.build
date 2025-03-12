@@ -7,13 +7,13 @@ special_dirs = [
 
 dirs = ['uds', 'cfgparser', 'common', 'monitor', 'display', 'params', 'nf']
 
-foreach d : special_dirs
+foreach special_dir : special_dirs
     sources = []
     headers = []
-    libname = 'flash_' + d
+    libname = 'flash_' + special_dir
     enabled_libs += libname
 
-    subdir(d)
+    subdir(special_dir)
 
     install_headers(headers, subdir: meson.project_name().to_lower())
 endforeach

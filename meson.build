@@ -149,7 +149,7 @@ flash_so_name = 'libflash.so'
 mklib = find_program('tools/mklib.sh')
 
 if use_static_libs
-    flash_a = custom_target(
+    custom_target(
         'libflash_a_target',
         output: 'libflash.a',
         command: [mklib, build_dir, '@OUTPUT@', libflash_a],
@@ -157,7 +157,7 @@ if use_static_libs
         install: true,
     )
 else
-    flash_so = custom_target(
+    custom_target(
         'libflash_so_target',
         output: 'libflash.so',
         command: [mklib, build_dir, '@OUTPUT@', libflash_so],
