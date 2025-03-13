@@ -151,7 +151,7 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *
 	__u32 idx_rx = 0;
 	unsigned int rcvd, i, eop_cnt = 0;
 
-	if ((flags & FLASH__RXTX) && !(flags & FLASH__NOSENDER))
+	if (!(flags & FLASH__NOSENDER))
 		__complete_tx_rx_first(cfg, xsk);
 	else {
 		/* Not implemented */
@@ -168,9 +168,9 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *
 	}
 
 	/* Backpresure mechanism */
-	if (flags & FLASH__BACKP && flags & FLASH__RX) {
+	if (cfg->backpressure && !cfg->fwdall) {
 		__reserve_fq(cfg, xsk, rcvd);
-	} else if (flags & FLASH__BACKP && flags & FLASH__RXTX) {
+	} else if (cfg->backpressure && cfg->fwdall) {
 		__reserve_tx(cfg, xsk, rcvd);
 	} else {
 		/* Not implemented */
@@ -209,68 +209,72 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *
 	return rcvd;
 }
 
-size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg, int flags)
+size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, unsigned int nsend)
 {
-	unsigned int nsend, i;
-	nsend = msg->msg_len;
+	unsigned int i;
 	__u32 frags_done = 0, eop_cnt = 0;
 	__u32 nb_frags = 0;
 
 	if (!nsend)
 		return 0;
 
-	if (!(flags & FLASH__BACKP) && (flags & FLASH__RX)) {
-		__reserve_fq(cfg, xsk, msg->msg_len);
-	} else if (!(flags & FLASH__BACKP) && (flags & FLASH__RXTX)) {
-		__reserve_tx(cfg, xsk, msg->msg_len);
-	} else {
-		/* Not implemented */
+	if (!cfg->backpressure) {
+		__reserve_tx(cfg, xsk, nsend);
 	}
 	__u32 idx_tx = xsk->idx_tx_bp;
-	__u32 idx_fq = xsk->idx_fq_bp;
-
 	for (i = 0; i < nsend; i++) {
-		struct xskvec *xv = &msg->msg_iov[i];
+		struct xskvec *xv = msgiov[i];
 		bool eop = IS_EOP_DESC(xv->options);
 		__u64 addr = xv->addr;
 
-		if (flags & FLASH__RXTX) {
-			__u32 len = xv->len;
-			nb_frags++;
+		__u32 len = xv->len;
+		nb_frags++;
 
-			struct xdp_desc *tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, idx_tx++);
+		struct xdp_desc *tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, idx_tx++);
 
-			tx_desc->options = eop ? 0 : XDP_PKT_CONTD;
-			tx_desc->options |= (xv->options & 0xFFFF0000);
-			tx_desc->addr = addr;
-			tx_desc->len = len;
+		tx_desc->options = eop ? 0 : XDP_PKT_CONTD;
+		tx_desc->addr = addr;
+		tx_desc->len = len;
 
-			__hex_dump(xv->data, xv->len, addr);
+		__hex_dump(xv->data, xv->len, addr);
 
-			if (eop) {
-				frags_done += nb_frags;
-				nb_frags = 0;
-				eop_cnt++;
-			}
-		} else if (flags & FLASH__RX) {
-			__u64 orig = xsk_umem__extract_addr(addr);
-			eop_cnt += IS_EOP_DESC(xv->options);
-			*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) = orig;
-		} else {
-			/* Not implemented */
+		if (eop) {
+			frags_done += nb_frags;
+			nb_frags = 0;
+			eop_cnt++;
 		}
 	}
-	if (flags & FLASH__RXTX) {
-		xsk_ring_prod__submit(&xsk->tx, frags_done);
-		xsk->outstanding_tx += frags_done;
+	xsk_ring_prod__submit(&xsk->tx, frags_done);
+	xsk->outstanding_tx += frags_done;
 #ifdef STATS
-		xsk->ring_stats.tx_npkts += eop_cnt;
-		xsk->ring_stats.tx_frags += nsend;
+	xsk->ring_stats.tx_npkts += eop_cnt;
+	xsk->ring_stats.tx_frags += nsend;
 #endif
-	} else if (flags & FLASH__RX) {
-		xsk_ring_prod__submit(&xsk->fill, nsend);
-	} else {
-		/* Not implemented */
-	}
 	return nsend;
+}
+
+size_t flash__dropmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, unsigned int ndrop)
+{
+	unsigned int i;
+	__u32 eop_cnt = 0;
+
+	if (!ndrop)
+		return 0;
+
+	if (!cfg->backpressure) {
+		__reserve_fq(cfg, xsk, ndrop);
+	}
+	__u32 idx_fq = xsk->idx_fq_bp;
+
+	for (i = 0; i < ndrop; i++) {
+		struct xskvec *xv = msgiov[i];
+		__u64 addr = xv->addr;
+
+		__u64 orig = xsk_umem__extract_addr(addr);
+		eop_cnt += IS_EOP_DESC(xv->options);
+		*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) = orig;
+	}
+
+	xsk_ring_prod__submit(&xsk->fill, ndrop);
+	return ndrop;
 }

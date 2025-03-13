@@ -17,6 +17,10 @@ const struct option_wrapper long_options[] = {
 
 	{ { "app-stats", no_argument, NULL, 'a' }, "Display application (syscall) statistics." },
 
+	{ { "apply-bp", no_argument, NULL, 'b' }, "apply back pressure" },
+
+	{ { "fwd-all", no_argument, NULL, 's' }, "Forward all packets" },
+
 	{ { "extra-stats", no_argument, NULL, 'x' }, "Display extra statistics." },
 
 	{ { "interval", required_argument, NULL, 'n' }, "Specify statistics update interval (default 1 sec)." },
@@ -128,10 +132,16 @@ static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper
 	}
 
 	/* Parse commands line args */
-	while ((opt = getopt_long(argc, argv, "axhFQn:w:u:f:", long_options, &longindex)) != -1) {
+	while ((opt = getopt_long(argc, argv, "absxhFQn:w:u:f:", long_options, &longindex)) != -1) {
 		switch (opt) {
 		case 'a':
 			cfg->app_stats = true;
+			break;
+		case 'b':
+			cfg->backpressure = true;
+			break;
+		case 's':
+			cfg->fwdall = true;
 			break;
 		case 'x':
 			cfg->extra_stats = true;
@@ -189,6 +199,8 @@ int flash__parse_cmdline_args(int argc, char **argv, struct config *cfg)
 
 	cfg->xsk->batch_size = BATCH_SIZE;
 	cfg->umem->frame_size = FRAME_SIZE;
+	cfg->backpressure = false;
+	cfg->fwdall = false;
 	cfg->stats_interval = 1;
 	cfg->app_stats = false;
 	cfg->extra_stats = false;

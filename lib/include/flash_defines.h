@@ -50,6 +50,8 @@ struct config {
 	struct xsk_config *xsk;
 	struct xsk_umem_config *umem_config;
 	struct xsk_socket_config *xsk_config;
+	bool backpressure;
+	bool fwdall;
 	bool custom_xsk;
 	int umem_id;
 	int nf_id;

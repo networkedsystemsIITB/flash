@@ -107,7 +107,8 @@ static void *socket_routine(void *arg)
 		}
 
 		nrecv = flash__recvmsg(cfg, nf->thread[socket_id]->socket, &msg, flags);
-
+		struct xskvec* send[nrecv];
+		unsigned int tot_pkt_send = 0;
 		for (i = 0; i < nrecv; i++) {
 			struct xskvec *xv = &msg.msg_iov[i];
 			bool eop = IS_EOP_DESC(xv->options);
@@ -123,12 +124,13 @@ static void *socket_routine(void *arg)
 			if (!nb_frags++)
 				swap_mac_addresses(pkt);
 
+			send[tot_pkt_send++] = &msg.msg_iov[i];
 			if (eop)
 				nb_frags = 0;
 		}
 
 		if (nrecv) {
-			ret = flash__sendmsg(cfg, nf->thread[socket_id]->socket, &msg, flags);
+			ret = flash__sendmsg(cfg, nf->thread[socket_id]->socket, send, tot_pkt_send);
 			if (ret != nrecv) {
 				log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
 				exit(EXIT_FAILURE);
@@ -155,8 +157,8 @@ static void *worker__stats(void *arg)
 
 		while (!done) {
 			sleep(interval);
-			// if (system("clear") != 0)
-			// 	log_error("Terminal clear error");
+			if (system("clear") != 0)
+				log_error("Terminal clear error");
 			for (int i = 0; i < cfg->total_sockets; i++) {
 				flash__dump_stats(cfg, nf->thread[i]->socket, FLASH__RXTX | FLASH__BACKP);
 			}
