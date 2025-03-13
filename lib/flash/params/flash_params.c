@@ -123,8 +123,6 @@ static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper
 	optind = 1;
 
 	if (option_wrappers_to_options(options_wrapper, &long_options)) {
-		log_info("Parsing command line arguments3");
-
 		log_error("ERROR: (Parsing error) Unable to malloc()\n");
 		exit(EXIT_FAILURE);
 	}
@@ -162,7 +160,6 @@ static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper
 			/* fall-through */
 		default:
 			usage(argv[0], doc, options_wrapper, full_help);
-			log_info("Parsing command line arguments4");
 			free(long_options);
 			exit(EXIT_FAILURE);
 		}
@@ -173,7 +170,6 @@ static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper
 		argv[optind - 1] = argv[0];
 
 	ret = optind - 1;
-	log_info("Parsing command line arguments5");
 
 	/* restore getopt lib */
 	optind = old_optind;
@@ -193,21 +189,12 @@ int flash__parse_cmdline_args(int argc, char **argv, struct config *cfg)
 
 	cfg->xsk->batch_size = BATCH_SIZE;
 	cfg->umem->frame_size = FRAME_SIZE;
-	cfg->total_sockets = -1;
 	cfg->stats_interval = 1;
 	cfg->app_stats = false;
 	cfg->extra_stats = false;
-	cfg->frags_enabled = false;
-	cfg->custom_xsk = false;
 	cfg->verbose = true;
-	cfg->xsk->bind_flags &= ~XDP_COPY;
-	cfg->xsk->bind_flags |= XDP_ZEROCOPY;
-	cfg->xsk->mode__busy_poll = true;
-	cfg->xsk->mode__zero_copy = true;
 
 	int ret = parse_cmdline_args(argc, argv, long_options, cfg, __doc__);
-
-	log_info("Parsing command line arguments2");
 
 	if ((cfg->umem->frame_size & (cfg->umem->frame_size - 1))) {
 		log_error("ERROR: (Parsing error) --frame-size=%d is not a power of two\n", cfg->umem->frame_size);

@@ -7,4 +7,4 @@
 struct NFGroup *parse_json(const char *filename);
 void free_nf_group(struct NFGroup *nf_group);
 
-#endif
+#endif /* __FLASH_CFG_PARSER_H */

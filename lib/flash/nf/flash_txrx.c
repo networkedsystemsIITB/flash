@@ -56,7 +56,7 @@ static inline void __complete_tx_rx_first(struct config *cfg, struct socket *xsk
 
 		ret = xsk_ring_prod__reserve(&xsk->fill, completed, &idx_fq);
 		while (ret != completed) {
-			if (cfg->xsk->mode__busy_poll || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
+			if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
 #ifdef STATS
 				xsk->app_stats.fill_fail_polls++;
 #endif
@@ -81,7 +81,7 @@ static inline void __reserve_fq(struct config *cfg, struct socket *xsk, unsigned
 
 	ret = xsk_ring_prod__reserve(&xsk->fill, num, &idx_fq);
 	while (ret != num) {
-		if (cfg->xsk->mode__busy_poll || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
+		if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
 #ifdef STATS
 			xsk->app_stats.fill_fail_polls++;
 #endif
@@ -100,7 +100,7 @@ static inline void __reserve_tx(struct config *cfg, struct socket *xsk, unsigned
 	ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
 	while (ret != num) {
 		__complete_tx_rx_first(cfg, xsk);
-		if (cfg->xsk->mode__busy_poll || xsk_ring_prod__needs_wakeup(&xsk->tx)) {
+		if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->tx)) {
 #ifdef STATS
 			xsk->app_stats.tx_wakeup_sendtos++;
 #endif
@@ -158,7 +158,7 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *
 	}
 	rcvd = xsk_ring_cons__peek(&xsk->rx, cfg->xsk->batch_size, &idx_rx);
 	if (!rcvd) {
-		if (cfg->xsk->mode__busy_poll || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
+		if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
 #ifdef STATS
 			xsk->app_stats.rx_empty_polls++;
 #endif

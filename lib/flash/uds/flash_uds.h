@@ -16,6 +16,13 @@
 #define FLASH__CLOSE_CONN 4
 #define FLASH__GET_THREAD_INFO 5
 #define FLASH__GET_UMEM_OFFSET 6
+#define FLASH__GET_ROUTE_INFO 7
+#define FLASH__GET_BIND_FLAGS 8
+#define FLASH__GET_XDP_FLAGS 9
+#define FLASH__GET_MODE 10
+#define FLASH__GET_POLL_TIMEOUT 11
+#define FLASH__GET_FRAGS_ENABLED 12
+#define FLASH__GET_IFNAME 13
 
 int send_fd(int sockfd, int fd);
 int start_uds_server(void);

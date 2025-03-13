@@ -11,7 +11,7 @@
 extern int unix_socket_server;
 
 int configure_umem(struct nf_data *data, struct umem **_umem);
-int create_new_socket(struct umem *umem, int nf_id);
+struct socket *create_new_socket(struct umem *umem, int nf_id);
 const char *process_input(char *input);
 void close_nf(struct umem *umem, int umem_id, int nf_id);
 

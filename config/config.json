@@ -1,0 +1,27 @@
+{
+    "umem": [
+        {
+            "umem_id": 0,
+            "nf": [
+                {
+                    "nf_id": 0,
+                    "thread": [
+                        {
+                            "thread_id": 0
+                        }
+                    ]
+                }
+            ],
+            "ifname": "ens865f0np0",
+            "ifqueue_mask": "0x1",
+            "xdp_flags": "d",
+            "bind_flags": "z",
+            "mode": "b",
+            "custom_xsk": false,
+            "frags_enabled": false
+        }
+    ],
+    "route": {
+        "0": []
+    }
+}

@@ -63,10 +63,9 @@ static void close_uds_conn(void)
 	return;
 }
 
-static int *__configure(struct config *cfg)
+static int *__configure(struct config *cfg, struct nf *nf)
 {
 	uds_sockfd = start_uds_client();
-	log_info("SOCKET : %d", uds_sockfd);
 	struct nf_data data;
 	data.nf_id = cfg->nf_id;
 	data.umem_id = cfg->umem_id;
@@ -75,20 +74,60 @@ static int *__configure(struct config *cfg)
 	send_data(uds_sockfd, &data, sizeof(struct nf_data));
 	recv_fd(uds_sockfd, &cfg->umem_fd);
 	log_info("RECEIVED EXISTING UMEM FD");
+
 	recv_data(uds_sockfd, &cfg->total_sockets, sizeof(int));
 	log_info("TOTAL SOCKETS: %d", cfg->total_sockets);
+
 	recv_data(uds_sockfd, &cfg->umem->size, sizeof(int));
 	log_info("UMEM SIZE: %d", cfg->umem->size);
-	int *received_fd = (int *)calloc(cfg->total_sockets, sizeof(int));
 
 	send_cmd(uds_sockfd, FLASH__GET_UMEM_OFFSET);
 	recv_data(uds_sockfd, &cfg->umem_offset, sizeof(int));
 	log_info("RECEIVED umem_offset: %d", cfg->umem_offset);
 
+	int *received_fd = (int *)calloc(cfg->total_sockets, sizeof(int));
+	cfg->ifqueue = (int *)calloc(cfg->total_sockets, sizeof(int));
 	for (int i = 0; i < cfg->total_sockets; i++) {
 		send_cmd(uds_sockfd, FLASH__CREATE_SOCKET);
 		recv_fd(uds_sockfd, received_fd + i);
+		recv_data(uds_sockfd, &cfg->ifqueue[i], sizeof(int));
+		log_info("RECEIVED SOCKET-%d FD-%d, binded to Queue-%d", i, received_fd[i], cfg->ifqueue[i]);
 	}
+
+	send_cmd(uds_sockfd, FLASH__GET_ROUTE_INFO);
+	recv_data(uds_sockfd, &nf->next_size, sizeof(int));
+	log_info("ROUTE SIZE: %d", nf->next_size);
+
+	nf->next = (int *)calloc(nf->next_size, sizeof(int));
+	recv_data(uds_sockfd, nf->next, sizeof(int) * nf->next_size);
+	for (int i = 0; i < nf->next_size; i++) {
+		log_info("ROUTE ITEM-%d %d", i, nf->next[i]);
+	}
+
+	send_cmd(uds_sockfd, FLASH__GET_BIND_FLAGS);
+	recv_data(uds_sockfd, &cfg->xsk->bind_flags, sizeof(__u32));
+	log_info("BIND_FLAGS: %d", cfg->xsk->bind_flags);
+
+	send_cmd(uds_sockfd, FLASH__GET_XDP_FLAGS);
+	recv_data(uds_sockfd, &cfg->xsk->xdp_flags, sizeof(__u32));
+	log_info("XDP_FLAGS: %d", cfg->xsk->xdp_flags);
+
+	send_cmd(uds_sockfd, FLASH__GET_MODE);
+	recv_data(uds_sockfd, &cfg->xsk->mode, sizeof(__u32));
+	log_info("MODE: %d", cfg->xsk->mode);
+
+	if (cfg->xsk->mode & FLASH__POLL) {
+		send_cmd(uds_sockfd, FLASH__GET_POLL_TIMEOUT);
+		recv_data(uds_sockfd, &cfg->xsk->poll_timeout, sizeof(int));
+		log_info("POLL_TIMEOUT: %d", cfg->xsk->poll_timeout);
+	}
+
+	send_cmd(uds_sockfd, FLASH__GET_FRAGS_ENABLED);
+	recv_data(uds_sockfd, &cfg->frags_enabled, sizeof(bool));
+	log_info("FRAGS_ENABLED: %d", cfg->frags_enabled);
+
+	send_cmd(uds_sockfd, FLASH__GET_IFNAME);
+	recv_data(uds_sockfd, cfg->ifname, IF_NAMESIZE + 1);
 
 	set_nonblocking(uds_sockfd);
 
@@ -132,8 +171,6 @@ static int xsk_mmap_umem_rings(struct socket *socket, struct xsk_umem_config ume
 		fill->cached_cons = umem_config.fill_size;
 	}
 
-	printf("FILL RING MAPPED NF!!!\n");
-
 	if (comp) {
 		comp_map = mmap(NULL, off.cr.desc + umem_config.comp_size * sizeof(__u64), PROT_READ | PROT_WRITE,
 				MAP_SHARED | MAP_POPULATE, fd, XDP_UMEM_PGOFF_COMPLETION_RING);
@@ -149,8 +186,6 @@ static int xsk_mmap_umem_rings(struct socket *socket, struct xsk_umem_config ume
 		comp->flags = comp_map + off.cr.flags;
 		comp->ring = comp_map + off.cr.desc;
 	}
-
-	printf("COMP RING MAPPED NF!!!\n");
 
 	if (rx) {
 		rx_map = mmap(NULL, off.rx.desc + xsk_config.rx_size * sizeof(struct xdp_desc), PROT_READ | PROT_WRITE,
@@ -169,8 +204,6 @@ static int xsk_mmap_umem_rings(struct socket *socket, struct xsk_umem_config ume
 		rx->cached_prod = *rx->producer;
 		rx->cached_cons = *rx->consumer;
 	}
-
-	printf("RX RING MAPPED NF!!!\n");
 
 	if (tx) {
 		tx_map = mmap(NULL, off.tx.desc + xsk_config.tx_size * sizeof(struct xdp_desc), PROT_READ | PROT_WRITE,
@@ -193,7 +226,6 @@ static int xsk_mmap_umem_rings(struct socket *socket, struct xsk_umem_config ume
 		tx->cached_cons = *tx->consumer + xsk_config.tx_size;
 	}
 
-	printf("TX RING MAPPED NF!!!\n");
 	return 0;
 
 out_mmap_tx:
@@ -210,7 +242,6 @@ void flash__populate_fill_ring(struct thread **thread, int frame_size, int total
 	int ret, i;
 	int nr_frames = (size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS * (size_t)2;
 	__u32 idx = 0;
-	log_info("FILLING FILL RING");
 
 	for (int t = 0; t < total_sockets; t++) {
 		ret = xsk_ring_prod__reserve(&thread[t]->socket->fill, nr_frames, &idx);
@@ -228,6 +259,8 @@ void flash__populate_fill_ring(struct thread **thread, int frame_size, int total
 
 void flash__xsk_close(struct config *cfg, struct nf *nf)
 {
+	log_info("Shutting down...");
+
 	close_uds_conn();
 
 	size_t desc_sz = sizeof(struct xdp_desc);
@@ -272,9 +305,8 @@ static bool xsk_page_aligned(void *buffer)
 
 void flash__configure_nf(struct nf **_nf, struct config *cfg)
 {
-	int *sockfd = __configure(cfg);
-
 	struct nf *nf = (struct nf *)calloc(1, sizeof(struct nf));
+	int *sockfd = __configure(cfg, nf);
 
 	if (cfg->total_sockets <= 0)
 		log_error("Invalid number of sockets");
@@ -298,12 +330,13 @@ void flash__configure_nf(struct nf **_nf, struct config *cfg)
 	setup_xsk_config(&cfg->xsk_config, &cfg->umem_config, cfg);
 
 	for (int i = 0; i < cfg->total_sockets; i++) {
-		printf("SOCKET FD (Thread %d) :::: %d\n", i, sockfd[i]);
+		log_info("SOCKET FD (Thread %d) :::: %d\n", i, sockfd[i]);
 	}
 
 	for (int i = 0; i < cfg->total_sockets; i++) {
 		nf->thread[i]->socket = (struct socket *)calloc(1, sizeof(struct socket));
 		nf->thread[i]->socket->fd = sockfd[i];
+		nf->thread[i]->socket->ifqueue = cfg->ifqueue[i];
 		if (xsk_mmap_umem_rings(nf->thread[i]->socket, *cfg->umem_config, *cfg->xsk_config) != 0) {
 			log_error("ERROR: (Ring setup) mmap failed \"%s\"\n", strerror(errno));
 			exit(EXIT_FAILURE);

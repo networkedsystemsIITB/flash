@@ -19,9 +19,9 @@ static bool done = false;
 
 static void int_exit(int sig)
 {
+	(void)sig;
 	cleanup_exit();
 	sleep(1);
-	log_info("Received Signal: %d", sig);
 	close(unix_socket_server);
 	unlink(UNIX_SOCKET_NAME);
 	done = true;
@@ -52,13 +52,44 @@ static void *handle_nf(void *arg)
 
 		case FLASH__CREATE_SOCKET:
 			if (umem != NULL) {
-				send_fd(msgsock, create_new_socket(umem, data->nf_id));
+				struct socket *sock = create_new_socket(umem, data->nf_id);
+				send_fd(msgsock, sock->fd);
+				send_data(msgsock, &sock->ifqueue, sizeof(int));
 			}
 			break;
 
 		case FLASH__GET_UMEM_OFFSET:
 			int offset = data->nf_id * umem->nf[data->nf_id]->thread_count + umem->nf[data->nf_id]->current_thread_count;
 			send_data(msgsock, &offset, sizeof(int));
+			break;
+
+		case FLASH__GET_ROUTE_INFO:
+			send_data(msgsock, &umem->nf[data->nf_id]->next_size, sizeof(int));
+			send_data(msgsock, umem->nf[data->nf_id]->next, sizeof(int) * umem->nf[data->nf_id]->next_size);
+			break;
+
+		case FLASH__GET_BIND_FLAGS:
+			send_data(msgsock, &umem->cfg->xsk->bind_flags, sizeof(__u32));
+			break;
+
+		case FLASH__GET_XDP_FLAGS:
+			send_data(msgsock, &umem->cfg->xsk->xdp_flags, sizeof(__u32));
+			break;
+
+		case FLASH__GET_MODE:
+			send_data(msgsock, &umem->cfg->xsk->mode, sizeof(__u32));
+			break;
+
+		case FLASH__GET_POLL_TIMEOUT:
+			send_data(msgsock, &umem->cfg->xsk->poll_timeout, sizeof(int));
+			break;
+
+		case FLASH__GET_FRAGS_ENABLED:
+			send_data(msgsock, &umem->cfg->frags_enabled, sizeof(bool));
+			break;
+
+		case FLASH__GET_IFNAME:
+			send_data(msgsock, &umem->cfg->ifname, IF_NAMESIZE + 1);
 			break;
 
 		case FLASH__CLOSE_CONN:
@@ -74,8 +105,8 @@ static void *handle_nf(void *arg)
 
 exit:
 	close(msgsock);
+	log_info("Closing NF %d...", data->nf_id);
 	free(data);
-	log_info("NF Closed...");
 	return NULL;
 }
 
@@ -83,7 +114,6 @@ static void *worker__uds_server(void *arg)
 {
 	(void)arg;
 
-	log_info("Starting UDS server");
 	unix_socket_server = start_uds_server();
 	struct pollfd fds[1] = {};
 	fds[0].fd = unix_socket_server;
@@ -110,8 +140,6 @@ static void *worker__uds_server(void *arg)
 			continue;
 		}
 
-		log_info("Connection accepted");
-
 		pthread_t thread;
 		if (pthread_create(&thread, NULL, handle_nf, msgsock)) {
 			log_error("Error creating UDS thread");
@@ -130,9 +158,8 @@ int main(int argc, char **argv)
 {
 	(void)argc;
 	(void)argv;
-	printf("MONITOR\n");
+	printf("*****MONITOR*****\n");
 	log_set_level_from_env();
-	log_info("Starting monitor");
 
 	signal(SIGINT, int_exit);
 	signal(SIGTERM, int_exit);

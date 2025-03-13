@@ -34,7 +34,6 @@ void send_data(int sockfd, void *data, int size)
 
 void recv_data(int sockfd, void *data, int size)
 {
-	log_info("SOCKET: %d", sockfd);
 	int rval = read(sockfd, data, size);
 	if (rval < 0) {
 		log_error("Error reading stream data");
@@ -46,7 +45,6 @@ int recv_cmd(int sockfd)
 {
 	int cmd, rval;
 	rval = read(sockfd, &cmd, sizeof(int));
-	log_info("Received command: %d", cmd);
 	if (rval < 0) {
 		log_error("Error reading stream cmd");
 		exit(EXIT_FAILURE);
@@ -117,27 +115,15 @@ int start_uds_server(void)
 		exit(EXIT_FAILURE);
 	}
 
-	log_info("SOCK CREATED::::");
-
 	unlink(UNIX_SOCKET_NAME);
-
-	log_info("UNLINKED ::::");
-
 	server.sun_family = AF_UNIX;
 	strcpy(server.sun_path, UNIX_SOCKET_NAME);
-
-	log_info("COPIED TO SUN_PATH::::");
-
 	setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(int));
-
-	log_info("SET SOCK OPT::::");
 
 	if (bind(sockfd, (struct sockaddr *)&server, sizeof(struct sockaddr_un))) {
 		log_error("Binding to socket stream failed: %s", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
-
-	log_info("BINDED::::");
 
 	return sockfd;
 }
@@ -185,15 +171,12 @@ int recv_fd(int sockfd, int *_fd)
 	msg.msg_control = (caddr_t)cms;
 	msg.msg_controllen = sizeof(cms);
 
-	log_info("Receiving MSG");
 	len = recvmsg(sockfd, &msg, 0);
 
 	if (len < 0) {
 		log_error("Recvmsg failed length incorrect.\n");
 		exit(EXIT_FAILURE);
 	}
-
-	log_info("Received MSG");
 
 	cmsg = CMSG_FIRSTHDR(&msg);
 	*_fd = *(int *)CMSG_DATA(cmsg);

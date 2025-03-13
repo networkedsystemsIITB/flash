@@ -68,10 +68,19 @@ static void swap_mac_addresses(void *data)
 	*dst_addr = tmp;
 }
 
+struct Args {
+	int socket_id;
+	int *next;
+	int next_size;
+};
+
 static void *socket_routine(void *arg)
 {
-	int socket_id = *(int *)arg;
-	free(arg);
+	struct Args *a = (struct Args *)arg;
+	int socket_id = a->socket_id;
+	int *next = a->next;
+	int next_size = a->next_size;
+	// free(arg);
 	log_info("SOCKET_ID: %d", socket_id);
 	static __u32 nb_frags;
 	int i, ret, nfds = 1, nrecv;
@@ -79,13 +88,19 @@ static void *socket_routine(void *arg)
 	struct pollfd fds[1] = {};
 	struct xskmsghdr msg = {};
 
+	log_info("2_NEXT_SIZE: %d", next_size);
+
+	for (int i = 0; i < next_size; i++) {
+		log_info("2_NEXT_ITEM_%d %d", i, next[i]);
+	}
+
 	msg.msg_iov = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
 
 	fds[0].fd = nf->thread[socket_id]->socket->fd;
 	fds[0].events = POLLIN;
-
+	unsigned int count = 0;
 	for (;;) {
-		if (cfg->xsk->mode__poll) {
+		if (cfg->xsk->mode & FLASH__POLL) {
 			ret = flash__poll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
 			if (ret <= 0 || ret > 1)
 				continue;
@@ -97,6 +112,12 @@ static void *socket_routine(void *arg)
 			struct xskvec *xv = &msg.msg_iov[i];
 			bool eop = IS_EOP_DESC(xv->options);
 
+			if (next_size != 0) {
+				xv->options |= ((count % next_size) << 16);
+				count++;
+				// log_info("COUNT: %d NEXT: %d", count,
+				// 	 (xv->options) >> 16);
+			}
 			char *pkt = xv->data;
 
 			if (!nb_frags++)
@@ -134,8 +155,8 @@ static void *worker__stats(void *arg)
 
 		while (!done) {
 			sleep(interval);
-			if (system("clear") != 0)
-				log_error("Terminal clear error");
+			// if (system("clear") != 0)
+			// 	log_error("Terminal clear error");
 			for (int i = 0; i < cfg->total_sockets; i++) {
 				flash__dump_stats(cfg, nf->thread[i]->socket, FLASH__RXTX | FLASH__BACKP);
 			}
@@ -167,10 +188,19 @@ int main(int argc, char **argv)
 	log_info("STARTING Data Path");
 
 	for (int i = 0; i < cfg->total_sockets; i++) {
-		int *socket_id = (int *)malloc(sizeof(int));
-		*socket_id = i;
+		struct Args *args = calloc(1, sizeof(struct Args));
+		args->socket_id = i;
+		args->next = nf->next;
+		args->next_size = nf->next_size;
+
+		log_info("2_NEXT_SIZE: %d", args->next_size);
+
+		for (int i = 0; i < args->next_size; i++) {
+			log_info("2_NEXT_ITEM_%d %d", i, nf->next[i]);
+		}
+
 		pthread_t socket_thread;
-		if (pthread_create(&socket_thread, NULL, socket_routine, socket_id)) {
+		if (pthread_create(&socket_thread, NULL, socket_routine, args)) {
 			log_error("Error creating socket thread");
 			exit(EXIT_FAILURE);
 		}
@@ -184,7 +214,6 @@ int main(int argc, char **argv)
 		pthread_detach(socket_thread);
 	}
 
-	sleep(1);
 	pthread_t stats_thread;
 	if (pthread_create(&stats_thread, NULL, worker__stats, NULL)) {
 		log_error("Error creating statistics thread");
@@ -199,8 +228,6 @@ int main(int argc, char **argv)
 	pthread_detach(stats_thread);
 
 	wait_for_cmd();
-
-	log_info("REACHING HERE!!!!");
 
 	flash__xsk_close(cfg, nf);
 

@@ -8,6 +8,8 @@
 #include <sys/types.h>
 #include <xdp/xsk.h>
 #include <errno.h>
+#include <xdp/libxdp.h>
+#include <linux/if_link.h>
 
 #include <flash_list.h>
 #include <time.h>
@@ -16,18 +18,19 @@
 #define NUM_FRAMES (4 * 1024)
 #define BATCH_SIZE 64
 
+#define FLASH__BUSY_POLL 0x1
+#define FLASH__NO_NEED_WAKEUP 0x2
+#define FLASH__POLL 0x4
+
 #define DEBUG_HEXDUMP 0
 #define STATS
 
 struct xsk_config {
 	__u32 bind_flags;
 	__u32 xdp_flags;
+	__u32 mode;
 	uint32_t batch_size;
 	int poll_timeout;
-	bool mode__poll;
-	bool mode__zero_copy;
-	bool mode__busy_poll;
-	bool mode__need_wakeup;
 };
 
 struct umem_config {
@@ -51,6 +54,7 @@ struct config {
 	int umem_id;
 	int nf_id;
 	int umem_offset;
+	bool frags_enabled;
 #ifdef STATS
 	clockid_t clock;
 	int verbose;
@@ -59,7 +63,6 @@ struct config {
 	__u32 irq_no;
 	bool app_stats;
 	bool extra_stats;
-	bool frags_enabled;
 #endif
 };
 
@@ -159,10 +162,12 @@ struct xsk_app_stats {
 
 struct socket {
 	int fd;
+	int ifqueue;
 	struct xsk_ring_cons rx;
 	struct xsk_ring_prod tx;
 	struct xsk_ring_prod fill;
 	struct xsk_ring_cons comp;
+	bool backpressure;
 #ifdef STATS
 	struct xsk_ring_stats ring_stats;
 	struct xsk_app_stats app_stats;
@@ -183,6 +188,8 @@ struct thread {
 
 struct nf {
 	int id;
+	int *next;
+	int next_size;
 	struct thread **thread;
 	bool is_up;
 	int thread_count;

@@ -48,9 +48,9 @@ void close_nf(struct umem *umem, int umem_id, int nf_id)
 
 	if (umem->umem_info && umem->umem_info->umem) {
 		if (xsk_umem__delete(umem->umem_info->umem) < 0) {
-			log_info("UMEM refcount == %d, not deleting UMEM", umem->umem_info->umem->refcount);
+			log_info("UMEM refcount is %d (> 0), not deleting UMEM", umem->umem_info->umem->refcount);
 		} else {
-			log_info("UMEM refcount == 0, deleting UMEM");
+			log_info("UMEM refcount is 0, deleting UMEM");
 			close(umem->cfg->umem_fd);
 			if (umem->cfg->umem->buffer) {
 				munmap(umem->cfg->umem->buffer, umem->cfg->umem->size);
@@ -63,31 +63,77 @@ void close_nf(struct umem *umem, int umem_id, int nf_id)
 			free(umem->umem_info);
 		}
 	} else {
-		log_info("UMEM for nf %d having umem_id %d does not exist", nf_id, umem_id);
+		log_warn("UMEM for nf %d having umem_id %d does not exist", nf_id, umem_id);
 	}
 }
 
-static void close_nfg(void)
+static char *int_array_to_string(int *arr, int size)
 {
-	if (nfg == NULL)
-		return;
-	for (int i = 0; i < nfg->umem_count; i++) {
-		for (int j = 0; j < nfg->umem[i]->nf_count; j++) {
-			close_nf(nfg->umem[i], nfg->umem[i]->id, nfg->umem[i]->nf[i]->id);
+	int total_length = 0;
+	for (int i = 0; i < size; i++) {
+		total_length += snprintf(NULL, 0, "%d", arr[i]) + 1;
+	}
+	total_length++;
+
+	char *result = (char *)malloc(total_length * sizeof(char));
+	if (result == NULL) {
+		log_error("Memory allocation failed");
+		exit(EXIT_FAILURE);
+	}
+
+	result[0] = '\0';
+
+	for (int i = 0; i < size; i++) {
+		char temp[20];
+		sprintf(temp, "%d", arr[i]);
+		strcat(result, temp);
+
+		if (i != size - 1) {
+			strcat(result, " ");
 		}
+	}
+
+	return result;
+}
+
+static void write_to_kernel_flash(int *arr, int size, int num)
+{
+	char *x = int_array_to_string(arr, size);
+	char y_path[256];
+	snprintf(y_path, sizeof(y_path), "/sys/kernel/flash/%d/next", num);
+
+	FILE *file = fopen(y_path, "w");
+	if (file == NULL) {
+		log_error("Error opening file");
+		free(x);
+		exit(EXIT_FAILURE);
+	}
+
+	fprintf(file, "%s\n", x);
+	log_info("Successfully wrote the %s to %s\n", x, y_path);
+	fclose(file);
+	free(x);
+}
+
+static void load_route(int *next, int size, int nf_id)
+{
+	write_to_kernel_flash(next, size, nf_id);
+}
+
+static void load(int umem_id)
+{
+	for (int i = 0; i < nfg->umem[umem_id]->nf_count; i++) {
+		load_route(nfg->umem[umem_id]->nf[i]->next, nfg->umem[umem_id]->nf[i]->next_size, nfg->umem[umem_id]->nf[i]->id);
 	}
 }
 
 const char *process_input(char *input)
 {
-	if (strncmp(input, "load", 4) == 0) {
-		nfg = parse_json(input + 5);
+	if (strncmp(input, "load config", 11) == 0) {
+		nfg = parse_json(input + 12);
 		return input;
-	} else if (strncmp(input, "unload", 6) == 0) {
-		close_nfg();
-		nfg = NULL;
-		free_nf_group(nfg);
-		return input;
+	} else if (strcmp(input, "load route") == 0) {
+		load(0);
 	} else {
 		return "Invalid command";
 	}
@@ -119,7 +165,6 @@ static int create_umem_fd(size_t size)
 
 static void __configure_umem(struct umem *umem)
 {
-	log_info("Creating UMEM info");
 	umem->umem_info = calloc(1, sizeof(struct xsk_umem_info));
 	if (!umem) {
 		log_error("ERROR: calloc failed \"%s\"\n", strerror(errno));
@@ -138,7 +183,6 @@ static void __configure_umem(struct umem *umem)
      * has opened the AF_XDP socket.
      */
 	int ret = 0;
-	log_info("Creating UMEM");
 	ret = xsk_umem__create(&umem->umem_info->umem, umem->cfg->umem->buffer, umem->cfg->umem->size, &umem->umem_info->fq,
 			       &umem->umem_info->cq, umem->cfg->umem_config);
 
@@ -162,7 +206,6 @@ static void flash__setup_umem(struct umem *umem)
 		exit(EXIT_FAILURE);
 	}
 
-	log_info("Setting priority to 0");
 	memset(&schparam, 0, sizeof(schparam));
 	schparam.sched_priority = 0;
 	ret = sched_setscheduler(0, 0, &schparam);
@@ -177,12 +220,10 @@ static void flash__setup_umem(struct umem *umem)
 
 	log_info("UMEM size: %lu", size);
 
-	log_info("Creating UMEM");
 	fd = create_umem_fd(size);
 	flags = MAP_SHARED;
 
 	/* Reserve memory for the umem. Use hugepages if unaligned chunk mode is enabled */
-	log_info("Reserving memory for UMEM");
 	packet_buffer = mmap(NULL, size, PROT_READ | PROT_WRITE, flags, fd, 0);
 	if (packet_buffer == MAP_FAILED) {
 		log_error("ERROR: (UMEM setup) mmap failed \"%s\"\n", strerror(errno));
@@ -190,8 +231,7 @@ static void flash__setup_umem(struct umem *umem)
 	}
 	umem->cfg->umem->buffer = packet_buffer;
 	umem->cfg->umem->size = size;
-	// /* Create the sockets.. */
-	log_info("Creating UMEM info");
+
 	__configure_umem(umem);
 	umem->cfg->umem_fd = fd;
 
@@ -207,7 +247,7 @@ static void flash__setup_umem(struct umem *umem)
  * @param umem
  * @return struct xsk_socket_info*
  */
-static int flash__setup_xsk(struct umem *umem, int nf_id)
+static struct socket *flash__setup_xsk(struct umem *umem, int nf_id)
 {
 	int ret;
 	int sock_opt;
@@ -252,11 +292,12 @@ static int flash__setup_xsk(struct umem *umem, int nf_id)
 	log_info("SOCKET FD: %d", socket->fd);
 	umem->nf[nf_id]->thread[nf_thread_count]->xsk = xsk;
 	umem->nf[nf_id]->thread[nf_thread_count]->socket = socket;
+	umem->nf[nf_id]->thread[nf_thread_count]->socket->ifqueue = ifqueue;
 	umem->nf[nf_id]->current_thread_count++;
 	umem->cfg->current_socket_count++;
 
 	/* Enable and configure busy poll */
-	if (umem->cfg->xsk->mode__busy_poll && !(umem->cfg->xsk->bind_flags & XDP_COPY)) {
+	if (umem->cfg->xsk->mode & FLASH__BUSY_POLL && !(umem->cfg->xsk->bind_flags & XDP_COPY)) {
 		sock_opt = 1;
 		if (setsockopt(socket->fd, SOL_SOCKET, SO_PREFER_BUSY_POLL, (void *)&sock_opt, sizeof(sock_opt)) < 0) {
 			log_error("setsockopt 1 failed, errno: %d/\"%s\"\n", errno, strerror(errno));
@@ -274,20 +315,15 @@ static int flash__setup_xsk(struct umem *umem, int nf_id)
 			log_error("setsockopt 3 failed, errno: %d/\"%s\"\n", errno, strerror(errno));
 			exit(EXIT_FAILURE);
 		}
-		log_info("SET BUSY POLL OPS");
 	}
 
-	return socket->fd;
+	return socket;
 }
 
 static void init_config(struct config *cfg)
 {
-	log_info("CONFIG_INIT");
 	cfg->umem->frame_size = FRAME_SIZE;
 	cfg->xsk->batch_size = BATCH_SIZE;
-	cfg->xsk->mode__zero_copy = true;
-	cfg->xsk->bind_flags &= ~XDP_COPY;
-	cfg->xsk->bind_flags |= XDP_ZEROCOPY;
 	cfg->umem_fd = -1;
 }
 
@@ -313,7 +349,7 @@ int configure_umem(struct nf_data *data, struct umem **_umem)
 	return umem->cfg->umem_fd;
 }
 
-int create_new_socket(struct umem *umem, int nf_id)
+struct socket *create_new_socket(struct umem *umem, int nf_id)
 {
 	return flash__setup_xsk(umem, nf_id);
 }

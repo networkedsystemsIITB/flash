@@ -21,16 +21,13 @@ int xsk_get_mmap_offsets(int fd, struct xdp_mmap_offsets *off)
 	return -EINVAL;
 }
 
-void setup_xsk_config(struct xsk_socket_config **_xsk_config,
-		      struct xsk_umem_config **_umem_config, struct config *cfg)
+void setup_xsk_config(struct xsk_socket_config **_xsk_config, struct xsk_umem_config **_umem_config, struct config *cfg)
 {
 	log_info("SETTING XSK_CONFIG");
-	struct xsk_socket_config *xsk_config =
-		calloc(1, sizeof(struct xsk_socket_config));
+	struct xsk_socket_config *xsk_config = calloc(1, sizeof(struct xsk_socket_config));
 	xsk_config->rx_size = (size_t)XSK_RING_CONS__DEFAULT_NUM_DESCS;
 	xsk_config->tx_size = (size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS;
-	xsk_config->libbpf_flags =
-		cfg->custom_xsk ? XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD : 0;
+	xsk_config->libbpf_flags = cfg->custom_xsk ? XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD : 0;
 	xsk_config->xdp_flags = cfg->xsk->xdp_flags;
 	xsk_config->bind_flags = cfg->xsk->bind_flags;
 	*_xsk_config = xsk_config;
@@ -45,10 +42,8 @@ void setup_xsk_config(struct xsk_socket_config **_xsk_config,
 	 * allocated memory is used that only runs out in OOM situations
 	 * that should be rare.
 	 */
-	struct xsk_umem_config *umem_config =
-		calloc(1, sizeof(struct xsk_umem_config));
-	umem_config->fill_size =
-		(size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS * (size_t)2;
+	struct xsk_umem_config *umem_config = calloc(1, sizeof(struct xsk_umem_config));
+	umem_config->fill_size = (size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS * (size_t)2;
 	umem_config->comp_size = (size_t)XSK_RING_CONS__DEFAULT_NUM_DESCS;
 	umem_config->frame_size = cfg->umem->frame_size;
 	umem_config->frame_headroom = XSK_UMEM__DEFAULT_FRAME_HEADROOM;
