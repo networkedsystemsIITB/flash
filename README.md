@@ -1,9 +1,13 @@
 # FLASH Userspace Library
 
+<img align="right" width="230" height="230" src="https://www.cse.iitb.ac.in/~debojeetdas/flash/flash.png">
+
 [![Commitizen friendly](https://img.shields.io/badge/commitizen-friendly-brightgreen.svg)](http://commitizen.github.io/cz-cli/)
 ![Ubuntu 24.04](https://github.com/rickydebojeet/flash/actions/workflows/main.yml/badge.svg)
 
-Flash userspace library for AF_XDP network function chaining.
+FLASH: Fast Linked AF_XDP Sockets for High Performance Network Services
+
+A userspace library that lets you link isolated unprivileged AF_XDP network functions to boost performance using FLASH out-of-tree kernel. It’s also great for deploying network functions in containers without needing a custom kernel, but without chaining support.
 
 ## Baremetal Usage Instructions
 
