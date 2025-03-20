@@ -3,10 +3,12 @@
  */
 
 #include <fcntl.h>
+#include <linux/memfd.h>
 #include <sys/resource.h>
 #include <sched.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <asm-generic/socket.h>
 
 #include <flash_uds.h>
 #include <log.h>
