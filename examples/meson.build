@@ -4,6 +4,8 @@
 dirs = [
     'helloworld',
     'l2fwd',
+    'fwddrop',
+    'maglev',
 ]
 
 def_deps = [include, log, nf, params, uds]
