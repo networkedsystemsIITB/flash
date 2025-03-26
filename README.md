@@ -57,10 +57,20 @@ A TUI will be initiated, allowing configuration parameters to be passed to setup
 Docker containers enable the consistent and isolated deployment of NFs in a portable development environment, facilitating the entry of NF developers into the setup process. To begin, you can create an image of the FLASH container.  
 
 ```bash
+# For NFs
 docker build -t flash:dev .
+
+# For Monitor
+docker built -t flash:mon -f Dockerfile.monitor .
 ```
 
-It is noteworthy that in this setup, the monitor should be placed within a container (network namespace) where the network interface (NIC) that the NF will utilize is present. Additionally, the monitor requires root privileges to facilitate deployment. However, NFs can be isolated within unprivileged containers. If the monitor is ready and running, the NF can be initiated using the following command:
+It is noteworthy that in this setup, the monitor should be placed within a network namespace where the network interface (NIC) that the NFs will utilize is present. Additionally, the monitor requires root privileges to facilitate deployment. However, NFs can be isolated within unprivileged containers. The monitor can be initiated in the host otherwise within a privileged container using the following command:
+
+```bash
+docker run -rm -it --privileged -v /tmp/flash/:/tmp/flash/ --net=host flash:mon ./build/monitor/monitor
+```
+
+ If the monitor is ready and running, the NF can be initiated using the following command:
 
 ```bash
 docker run --rm -it -v /tmp/flash/:/tmp/flash/ flash:dev ./build/examples/l2fwd/l2fwd -u 0 -f 1 -ax -- -s 0 -c 2 -e 3

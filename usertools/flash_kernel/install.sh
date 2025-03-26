@@ -19,7 +19,7 @@ if [ "$1" = "" ]; then
     exit 1
 fi
 
-set -xu
+set -u
 
 # Take the kernel directory as an argument
 KERNEL_DIR=$1

@@ -1,0 +1,56 @@
+ARG BASE_IMAGE=ubuntu:latest
+ARG DEBIAN_FRONTEND=noninteractive
+
+FROM ${BASE_IMAGE} as xdp-build
+
+ARG DEBIAN_FRONTEND
+
+RUN \
+    apt-get update && \
+    apt-get install -y \
+    build-essential \
+    libbpf-dev \
+    pkg-config \
+    git \
+    clang \
+    llvm \
+    lld \
+    m4 \
+    libpcap-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN \
+    git clone https://github.com/xdp-project/xdp-tools.git && \
+    make -j -C xdp-tools libxdp && \
+    make -j -C xdp-tools libxdp_install
+
+FROM ${BASE_IMAGE} as xdp
+
+COPY --from=xdp-build /usr/local/include/xdp /usr/local/include/xdp
+COPY --from=xdp-build /usr/local/lib/pkgconfig/libxdp.pc /usr/local/lib/pkgconfig/
+COPY --from=xdp-build /usr/local/lib/bpf /usr/local/lib/bpf
+COPY --from=xdp-build /usr/local/lib/libxdp.* /usr/local/lib/
+COPY --from=xdp-build /usr/include/linux/if_xdp.h /usr/include/linux/
+COPY --from=xdp-build /usr/include/linux/xdp_diag.h /usr/include/linux/
+
+FROM xdp as flash
+
+ARG DEBIAN_FRONTEND
+
+WORKDIR /flash
+
+RUN \
+    apt-get update && \
+    apt-get install -y \
+    build-essential \
+    meson \
+    libbpf-dev \
+    pkg-config \
+    gcc-multilib \
+    libcjson-dev \
+    libncurses-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY . .
+
+RUN make

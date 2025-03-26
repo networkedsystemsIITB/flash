@@ -12,7 +12,7 @@ System Requirements and Building flash kernel
 =====================================
 
 flash kernel is based on linux kernel v6.10.6. This documentation assumes that you are building and installing the kernel on a
-Ubuntu 24.04 LTS host. Other distrubutions may work, but this documentation assumes Ubuntu.
+Ubuntu 24.04 LTS host. Other distributions may work, but this documentation assumes Ubuntu.
 
 Clone the flash kernel repository
 ---------------------------------
