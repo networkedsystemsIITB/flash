@@ -2,6 +2,7 @@
 # Copyright (c) 2025 Debojeet Das
 
 dirs = [
+    'unit-tests',
     'helloworld',
     'l2fwd',
     'fwddrop',
