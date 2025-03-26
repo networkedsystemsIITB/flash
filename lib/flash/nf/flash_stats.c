@@ -116,8 +116,8 @@ void flash__dump_stats(struct config *cfg, struct socket *xsk, int flags)
 {
 	unsigned long now = flash__get_nsecs(cfg);
 	long diff = now - xsk->timestamp;
-	const char *setup_str = "INVALID";
-	const char *backp_str = "BACKP_DISABLED";
+	const char *setup_str = "dynamic";
+	const char *backp_str = "us-backpressure-disabled";
 
 	xsk->timestamp = now;
 
@@ -126,13 +126,13 @@ void flash__dump_stats(struct config *cfg, struct socket *xsk, int flags)
 	rx_pps = (xsk->ring_stats.rx_npkts - xsk->ring_stats.prev_rx_npkts) * 1000000000. / diff;
 	tx_pps = (xsk->ring_stats.tx_npkts - xsk->ring_stats.prev_tx_npkts) * 1000000000. / diff;
 
-	if (flags & FLASH__RXTX)
-		setup_str = "fwd";
-	else if (flags & FLASH__RX)
-		setup_str = "rxdrop";
-
-	if (flags & FLASH__BACKP)
-		backp_str = "backpressure";
+	if (cfg->backpressure && !cfg->fwdall) {
+		backp_str = "us-backpressure-enabled";
+		setup_str = "drop-only";
+	} else if (cfg->backpressure && cfg->fwdall) {
+		backp_str = "us-backpressure-enabled";
+		setup_str = "fwd-only";
+	}
 
 	printf("%s:%d %s %s ", cfg->ifname, xsk->ifqueue, setup_str, backp_str);
 	if (cfg->xsk->xdp_flags & XDP_FLAGS_SKB_MODE)

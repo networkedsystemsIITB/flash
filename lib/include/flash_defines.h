@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <xdp/libxdp.h>
 #include <linux/if_link.h>
+#include <poll.h>
 
 #include <flash_list.h>
 #include <time.h>
@@ -25,12 +26,15 @@
 #define DEBUG_HEXDUMP 0
 #define STATS
 
+#define MS_PER_S 1000
+
 struct xsk_config {
 	__u32 bind_flags;
 	__u32 xdp_flags;
 	__u32 mode;
-	uint32_t batch_size;
+	__u32 batch_size;
 	int poll_timeout;
+	int idle_timeout;
 };
 
 struct umem_config {
@@ -53,6 +57,7 @@ struct config {
 	bool backpressure;
 	bool fwdall;
 	bool custom_xsk;
+	bool hybrid_poll;
 	int umem_id;
 	int nf_id;
 	int umem_offset;
@@ -169,16 +174,19 @@ struct socket {
 	struct xsk_ring_prod tx;
 	struct xsk_ring_prod fill;
 	struct xsk_ring_cons comp;
-	bool backpressure;
+	struct pollfd idle_fd;
+	bool idle;
+	__u32 outstanding_tx;
+	__u32 idx_fq_bp;
+	__u32 idx_tx_bp;
+	__u64 idle_timestamp;
+
 #ifdef STATS
 	struct xsk_ring_stats ring_stats;
 	struct xsk_app_stats app_stats;
 	struct xsk_driver_stats drv_stats;
 	unsigned long timestamp;
 #endif
-	uint32_t outstanding_tx;
-	__u32 idx_fq_bp;
-	__u32 idx_tx_bp;
 };
 
 struct thread {

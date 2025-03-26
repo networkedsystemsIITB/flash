@@ -49,7 +49,7 @@ static __u32 get_flags(char *flag)
 	exit(EXIT_FAILURE);
 }
 
-static int count_ones(uint32_t mask)
+static int count_ones(__u32 mask)
 {
 	int count = 0;
 	while (mask) {
@@ -123,7 +123,7 @@ struct NFGroup *parse_json(const char *filename)
 			cJSON_Delete(root);
 			return NULL;
 		}
-		uint32_t ifqueue_mask = strtoul(mask_obj->valuestring, NULL, 16);
+		__u32 ifqueue_mask = strtoul(mask_obj->valuestring, NULL, 16);
 
 		int total_queues = count_ones(ifqueue_mask);
 		nf_group->umem[i]->cfg = calloc(1, sizeof(struct config));
@@ -170,6 +170,16 @@ struct NFGroup *parse_json(const char *filename)
 			nf_group->umem[i]->cfg->xsk->bind_flags |= XDP_USE_NEED_WAKEUP;
 		} else {
 			nf_group->umem[i]->cfg->xsk->mode = get_flags(mode);
+			nf_group->umem[i]->cfg->xsk->poll_timeout = -1;
+			if (nf_group->umem[i]->cfg->xsk->mode & FLASH__POLL) {
+				cJSON *poll_timeout_obj = cJSON_GetObjectItem(umem_obj, "poll_timeout");
+				if (!cJSON_IsNumber(poll_timeout_obj)) {
+					log_error("Invalid or missing 'poll_timeout'");
+					cJSON_Delete(root);
+					return NULL;
+				}
+				nf_group->umem[i]->cfg->xsk->poll_timeout = poll_timeout_obj->valueint;
+			}
 		}
 
 		// Extract "custom_xsk" array

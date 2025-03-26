@@ -15,23 +15,27 @@ const char *__doc__ = "AF_XDP NF Library\n";
 
 const struct option_wrapper long_options[] = {
 
+	{ { "nf-id", required_argument, NULL, 'f' }, "NF id to connect to monitor" },
+
+	{ { "umem-id", required_argument, NULL, 'u' }, "Umem id to connect to monitor" },
+
 	{ { "app-stats", no_argument, NULL, 'a' }, "Display application (syscall) statistics." },
-
-	{ { "apply-bp", no_argument, NULL, 'b' }, "apply back pressure" },
-
-	{ { "fwd-all", no_argument, NULL, 's' }, "Forward all packets" },
 
 	{ { "extra-stats", no_argument, NULL, 'x' }, "Display extra statistics." },
 
 	{ { "interval", required_argument, NULL, 'n' }, "Specify statistics update interval (default 1 sec)." },
 
-	{ { "nf_id", required_argument, NULL, 'f' }, "NF id to connect to monitor" },
-
-	{ { "umem_id", required_argument, NULL, 'u' }, "Umem id to connect to monitor" },
+	{ { "clock", required_argument, NULL, 'w' }, "Clock NAME (default MONOTONIC). -- not implemented yet" },
 
 	{ { "quiet", no_argument, NULL, 'Q' }, "Quiet mode (no output)" },
 
-	{ { "clock", required_argument, NULL, 'w' }, "Clock NAME (default MONOTONIC). -- not implemented yet" },
+	{ { "hybrid-poll", no_argument, NULL, 'p' }, "Hybrid polling mode" },
+
+	{ { "idle-timeout", no_argument, NULL, 'i' }, "Idle timeout for Hybrid polling mode" },
+
+	{ { "apply-bp", no_argument, NULL, 'b' }, "apply back pressure" },
+
+	{ { "fwd-all", no_argument, NULL, 's' }, "Forward all packets" },
 
 	{ { "frags", no_argument, NULL, 'F' }, "Enable frags (multi-buffer) support" },
 
@@ -132,13 +136,19 @@ static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper
 	}
 
 	/* Parse commands line args */
-	while ((opt = getopt_long(argc, argv, "absxhFQn:w:u:f:", long_options, &longindex)) != -1) {
+	while ((opt = getopt_long(argc, argv, "abpsxhFQn:w:u:f:", long_options, &longindex)) != -1) {
 		switch (opt) {
 		case 'a':
 			cfg->app_stats = true;
 			break;
 		case 'b':
 			cfg->backpressure = true;
+			break;
+		case 'p':
+			cfg->hybrid_poll = true;
+			break;
+		case 'i':
+			cfg->xsk->idle_timeout = atoi(optarg);
 			break;
 		case 's':
 			cfg->fwdall = true;
@@ -205,6 +215,8 @@ int flash__parse_cmdline_args(int argc, char **argv, struct config *cfg)
 	cfg->app_stats = false;
 	cfg->extra_stats = false;
 	cfg->verbose = true;
+	cfg->hybrid_poll = false;
+	cfg->xsk->idle_timeout = 1;
 
 	int ret = parse_cmdline_args(argc, argv, long_options, cfg, __doc__);
 

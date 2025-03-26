@@ -7,6 +7,61 @@
 
 #include "flash_nf.h"
 
+static uint64_t __hz;
+
+static inline uint64_t rdtsc(void)
+{
+	union {
+		uint64_t tsc_64;
+		struct {
+			uint32_t lo_32;
+			uint32_t hi_32;
+		};
+	} tsc;
+
+	asm volatile("rdtsc" : "=a"(tsc.lo_32), "=d"(tsc.hi_32));
+
+	return tsc.tsc_64;
+}
+
+static inline uint64_t rdtsc_precise(void)
+{
+	asm volatile("mfence");
+	return rdtsc();
+}
+
+static uint64_t get_tsc_freq(struct config *cfg)
+{
+#define NS_PER_SEC 1E9
+
+	struct timespec sleeptime = { .tv_nsec = NS_PER_SEC / 10 }; /* 1/10 second */
+
+	struct timespec t_start, t_end;
+	uint64_t tsc_hz;
+
+	if (clock_gettime(cfg->clock, &t_start) == 0) {
+		uint64_t ns, end, start = rdtsc();
+		nanosleep(&sleeptime, NULL);
+		clock_gettime(cfg->clock, &t_end);
+		end = rdtsc();
+		ns = ((t_end.tv_sec - t_start.tv_sec) * NS_PER_SEC);
+		ns += (t_end.tv_nsec - t_start.tv_nsec);
+
+		double secs = (double)ns / NS_PER_SEC;
+		tsc_hz = (uint64_t)((end - start) / secs);
+		return tsc_hz;
+	}
+	return 0;
+}
+
+static uint64_t get_timer_hz(struct config *cfg)
+{
+	if (__hz == 0)
+		__hz = get_tsc_freq(cfg);
+
+	return __hz;
+}
+
 int flash__poll(struct socket *xsk, struct pollfd *fds, nfds_t nfds, int timeout)
 {
 #ifdef STATS
@@ -148,6 +203,7 @@ static void __hex_dump(void *pkt, size_t length, __u64 addr)
 
 size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg, int flags)
 {
+	int ret;
 	__u32 idx_rx = 0;
 	unsigned int rcvd, i, eop_cnt = 0;
 
@@ -156,6 +212,26 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *
 	else {
 		/* Not implemented */
 	}
+
+	if (cfg->hybrid_poll && xsk->idle) {
+		uint64_t tstamp = rdtsc();
+
+		if (cfg->xsk->idle_timeout && xsk->idle_timestamp == 0) {
+			xsk->idle_timestamp = tstamp + ((get_timer_hz(cfg) / MS_PER_S) * cfg->xsk->idle_timeout);
+			return 0;
+		}
+
+		if (xsk->idle_timestamp && (tstamp > xsk->idle_timestamp)) {
+			xsk->idle_timestamp = 0;
+
+			ret = flash__poll(xsk, &xsk->idle_fd, 1, cfg->xsk->poll_timeout);
+			if (ret < 0 || ret > 1)
+				return 0;
+		}
+
+	} else
+		xsk->idle_timestamp = 0;
+
 	rcvd = xsk_ring_cons__peek(&xsk->rx, cfg->xsk->batch_size, &idx_rx);
 	if (!rcvd) {
 		if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
@@ -164,8 +240,11 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *
 #endif
 			recvfrom(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL, NULL);
 		}
+		xsk->idle = true;
 		return 0;
 	}
+
+	xsk->idle = false;
 
 	/* Backpresure mechanism */
 	if (cfg->backpressure && !cfg->fwdall) {
@@ -233,6 +312,7 @@ size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec **ms
 		struct xdp_desc *tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, idx_tx++);
 
 		tx_desc->options = eop ? 0 : XDP_PKT_CONTD;
+		tx_desc->options |= (xv->options & 0xFFFF0000);
 		tx_desc->addr = addr;
 		tx_desc->len = len;
 

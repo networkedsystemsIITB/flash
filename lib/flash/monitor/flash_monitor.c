@@ -136,6 +136,7 @@ const char *process_input(char *input)
 		return input;
 	} else if (strcmp(input, "load route") == 0) {
 		load(0);
+		return input;
 	} else {
 		return "Invalid command";
 	}

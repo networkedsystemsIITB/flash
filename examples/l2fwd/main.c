@@ -107,17 +107,15 @@ static void *socket_routine(void *arg)
 		}
 
 		nrecv = flash__recvmsg(cfg, nf->thread[socket_id]->socket, &msg, flags);
-		struct xskvec* send[nrecv];
+		struct xskvec *send[nrecv];
 		unsigned int tot_pkt_send = 0;
 		for (i = 0; i < nrecv; i++) {
 			struct xskvec *xv = &msg.msg_iov[i];
 			bool eop = IS_EOP_DESC(xv->options);
 
 			if (next_size != 0) {
-				xv->options |= ((count % next_size) << 16);
+				xv->options = ((count % next_size) << 16) | (xv->options & 0xFFFF);
 				count++;
-				// log_info("COUNT: %d NEXT: %d", count,
-				// 	 (xv->options) >> 16);
 			}
 			char *pkt = xv->data;
 
