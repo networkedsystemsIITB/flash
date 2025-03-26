@@ -1,22 +1,17 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2025 Debojeet Das
+ *
+ * simplefwd: A simple NF that forwards packets without modification
  */
-
-/*
-	We store pointers to msg.iov we want to drop in one array, and those we wish to send in another array
-*/
-
-#include <flash_nf.h>
-#include <flash_params.h>
 
 #include <signal.h>
 #include <pthread.h>
 #include <net/ethernet.h>
 #include <locale.h>
 #include <stdlib.h>
-#include <linux/ip.h>
-#include <linux/icmp.h>
-#include <netinet/in.h>
+
+#include <flash_nf.h>
+#include <flash_params.h>
 #include <log.h>
 
 bool done = false;
@@ -64,33 +59,10 @@ static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int 
 		}
 }
 
-// static void swap_mac_addresses(void *data)
-// {
-// 	struct ether_header *eth = (struct ether_header *)data;
-// 	struct ether_addr *src_addr = (struct ether_addr *)&eth->ether_shost;
-// 	struct ether_addr *dst_addr = (struct ether_addr *)&eth->ether_dhost;
-// 	struct ether_addr tmp;
-// 	tmp = *src_addr;
-// 	*src_addr = *dst_addr;
-// 	*dst_addr = tmp;
-// }
-
-static inline __sum16 csum16_add(__sum16 csum, __be16 addend)
+static void do_noting(void *data)
 {
-	uint16_t res = (uint16_t)csum;
-
-	res += (__u16)addend;
-	return (__sum16)(res + (res < (__u16)addend));
-}
-
-static inline __sum16 csum16_sub(__sum16 csum, __be16 addend)
-{
-	return csum16_add(csum, ~addend);
-}
-
-static inline void csum_replace2(__sum16 *sum, __be16 old, __be16 new)
-{
-	*sum = ~csum16_add(csum16_sub(~(*sum), old), new);
+	/* This is stupid but it makes sure that compiler doesn't through any errors */
+	(void)data;
 }
 
 struct Args {
@@ -99,33 +71,21 @@ struct Args {
 	int next_size;
 };
 
-unsigned int count = 1;
-
 static void *socket_routine(void *arg)
 {
 	struct Args *a = (struct Args *)arg;
 	int socket_id = a->socket_id;
-	int *next = a->next;
-	int next_size = a->next_size;
-	// free(arg);
 	log_info("SOCKET_ID: %d", socket_id);
-	// static __u32 nb_frags;
+	static __u32 nb_frags;
 	int i, ret, nfds = 1, nrecv;
-	int flags = FLASH__RXTX | FLASH__BACKP;
 	struct pollfd fds[1] = {};
 	struct xskmsghdr msg = {};
-
-	log_info("2_NEXT_SIZE: %d", next_size);
-
-	for (int i = 0; i < next_size; i++) {
-		log_info("2_NEXT_ITEM_%d %d", i, next[i]);
-	}
 
 	msg.msg_iov = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
 
 	fds[0].fd = nf->thread[socket_id]->socket->fd;
 	fds[0].events = POLLIN;
-	// unsigned int count = 0;
+
 	for (;;) {
 		if (cfg->xsk->mode & FLASH__POLL) {
 			ret = flash__poll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
@@ -133,100 +93,29 @@ static void *socket_routine(void *arg)
 				continue;
 		}
 
-		nrecv = flash__recvmsg(cfg, nf->thread[socket_id]->socket, &msg, flags);
-
-		struct xskvec* drop[nrecv];
-		unsigned int tot_pkt_drop = 0;
-		struct xskvec* send[nrecv];
+		nrecv = flash__recvmsg(cfg, nf->thread[socket_id]->socket, &msg);
+		struct xskvec *send[nrecv];
 		unsigned int tot_pkt_send = 0;
-
 		for (i = 0; i < nrecv; i++) {
-			/*
-			if (dec == drop){
-				drop[tot_pkt_drop++] = &msg.msg_iov[i];
-			}
-			else{
-				send[tot_pkt_send++] = &msg.msg_iov[i];
-			}
-		*/
-
 			struct xskvec *xv = &msg.msg_iov[i];
-			// bool eop = IS_EOP_DESC(xv->options);
-			void *data = xv->data;
-			// uint32_t len = xv->len;
+			bool eop = IS_EOP_DESC(xv->options);
 
-			// void *data_end = data + len;
-			uint8_t tmp_mac[ETH_ALEN];
-			// struct in_addr tmp_ip;
-			struct ethhdr *eth = (struct ethhdr *)data;
-			// if ((void *)(eth + 1) > data_end) {
-			// 	drop[tot_pkt_drop++] = &msg.msg_iov[i];
-			// }
+			char *pkt = xv->data;
 
-			// printf("%d\n", eth->h_proto);
-			// if (ntohs(eth->h_proto) == ETH_P_IP) {
-			// 	struct iphdr *ip = (struct iphdr *)(eth + 1);
-			// 	if ((void *)(ip + 1) > data_end) {
-			// 		drop[tot_pkt_drop++] = &msg.msg_iov[i];
-			// 	}
+			if (!nb_frags++)
+				do_noting(pkt);
 
-			// 	struct icmphdr *icmp = (struct icmphdr *)(ip + 1);
-			// 	if ((void *)(icmp + 1) > data_end) {
-			// 		drop[tot_pkt_drop++] = &msg.msg_iov[i];
-			// 	}
-
-			// 	if (ntohs(eth->h_proto) != ETH_P_IP || len < (sizeof(*eth) + sizeof(*ip) + sizeof(*icmp)) ||
-			// 	    ip->protocol != IPPROTO_ICMP || icmp->type != ICMP_ECHO) {
-			// 		drop[tot_pkt_drop++] = &msg.msg_iov[i];
-			// 	}
-				memcpy(tmp_mac, eth->h_dest, ETH_ALEN);
-				memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
-				memcpy(eth->h_source, tmp_mac, ETH_ALEN);
-
-				// memcpy(&tmp_ip, &ip->saddr, sizeof(tmp_ip));
-				// memcpy(&ip->saddr, &ip->daddr, sizeof(tmp_ip));
-				// memcpy(&ip->daddr, &tmp_ip, sizeof(tmp_ip));
-
-				// icmp->type = ICMP_ECHOREPLY;
-
-				// csum_replace2(&icmp->checksum, htons(ICMP_ECHO << 8), htons(ICMP_ECHOREPLY << 8));
-				if (count == 1) {
-					send[tot_pkt_send++] = &msg.msg_iov[i];
-					count = 0;
-				} else {
-					drop[tot_pkt_drop++] = &msg.msg_iov[i];
-					count = 1;
-				}
-			// }
-
-			// if (next_size != 0) {
-			//     xv->options |= ((count % next_size) << 16);
-			//     count++;
-			//     // log_info("COUNT: %d NEXT: %d", count,
-			//     // 	 (xv->options) >> 16);
-			// }
-			// char *pkt = xv->data;
-
-			// if (!nb_frags++)
-			//     swap_mac_addresses(pkt);
-
-			// if (eop)
-			// 	nb_frags = 0;
+			send[tot_pkt_send++] = &msg.msg_iov[i];
+			if (eop)
+				nb_frags = 0;
 		}
 
 		if (nrecv) {
-			size_t ret_send = flash__sendmsg(cfg, nf->thread[socket_id]->socket, send, tot_pkt_send);
-			size_t ret_drop = flash__dropmsg(cfg, nf->thread[socket_id]->socket, drop, tot_pkt_drop);
-			if (ret_send != tot_pkt_send || ret_drop != tot_pkt_drop) {
+			ret = flash__sendmsg(cfg, nf->thread[socket_id]->socket, send, tot_pkt_send);
+			if (ret != nrecv) {
 				log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
 				exit(EXIT_FAILURE);
 			}
-
-			// ret = flash__sendmsg(cfg, nf->thread[socket_id]->socket, &msg, flags);
-			// if (ret != nrecv) {
-			// 	log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
-			// 	exit(EXIT_FAILURE);
-			// }
 		}
 
 		if (done)

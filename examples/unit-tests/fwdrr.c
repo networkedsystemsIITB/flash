@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2025 Debojeet Das
  *
- * l2fwd: A simple NF that forwards packets between two interfaces
+ * fwdrr: A simple NF that forwards packets to many destinations in a round-robin fashion
  */
 
 #include <signal.h>
@@ -94,15 +94,15 @@ static void update_dest_mac(void *data)
 	struct ether_header *eth = (struct ether_header *)data;
 	struct ether_addr *dst_addr = (struct ether_addr *)&eth->ether_dhost;
 	struct ether_addr tmp = {
-		.ether_addr_octet = {
-			app_conf.dest_ether_addr_octet[0],
-			app_conf.dest_ether_addr_octet[1],
-			app_conf.dest_ether_addr_octet[2],
-			app_conf.dest_ether_addr_octet[3],
-			app_conf.dest_ether_addr_octet[4],
-			app_conf.dest_ether_addr_octet[5],
-		},
-	};
+          .ether_addr_octet = {
+              app_conf.dest_ether_addr_octet[0],
+              app_conf.dest_ether_addr_octet[1],
+              app_conf.dest_ether_addr_octet[2],
+              app_conf.dest_ether_addr_octet[3],
+              app_conf.dest_ether_addr_octet[4],
+              app_conf.dest_ether_addr_octet[5],
+          },
+      };
 	*dst_addr = tmp;
 }
 
@@ -128,17 +128,26 @@ static void *socket_routine(void *arg)
 {
 	struct Args *a = (struct Args *)arg;
 	int socket_id = a->socket_id;
+	int *next = a->next;
+	int next_size = a->next_size;
+	// free(arg);
 	log_info("SOCKET_ID: %d", socket_id);
 	static __u32 nb_frags;
 	int i, ret, nfds = 1, nrecv;
 	struct pollfd fds[1] = {};
 	struct xskmsghdr msg = {};
 
+	log_info("2_NEXT_SIZE: %d", next_size);
+
+	for (int i = 0; i < next_size; i++) {
+		log_info("2_NEXT_ITEM_%d %d", i, next[i]);
+	}
+
 	msg.msg_iov = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
 
 	fds[0].fd = nf->thread[socket_id]->socket->fd;
 	fds[0].events = POLLIN;
-
+	unsigned int count = 0;
 	for (;;) {
 		if (cfg->xsk->mode & FLASH__POLL) {
 			ret = flash__poll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
@@ -153,6 +162,10 @@ static void *socket_routine(void *arg)
 			struct xskvec *xv = &msg.msg_iov[i];
 			bool eop = IS_EOP_DESC(xv->options);
 
+			if (next_size != 0) {
+				xv->options = ((count % next_size) << 16) | (xv->options & 0xFFFF);
+				count++;
+			}
 			char *pkt = xv->data;
 
 			if (!nb_frags++)

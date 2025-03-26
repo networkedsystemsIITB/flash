@@ -350,7 +350,6 @@ static void *socket_routine(void *arg)
 	log_info("SOCKET_ID: %d", socket_id);
 	// static __u32 nb_frags;
 	int i, ret, nfds = 1, nrecv;
-	int flags = FLASH__RXTX | FLASH__BACKP;
 	struct pollfd fds[1] = {};
 	struct xskmsghdr msg = {};
 
@@ -373,7 +372,7 @@ static void *socket_routine(void *arg)
 			if (ret <= 0 || ret > 1)
 				continue;
 		}
-		nrecv = flash__recvmsg(cfg, nf->thread[socket_id]->socket, &msg, flags);
+		nrecv = flash__recvmsg(cfg, nf->thread[socket_id]->socket, &msg);
 
 		struct xskvec *drop[nrecv];
 		unsigned int tot_pkt_drop = 0;

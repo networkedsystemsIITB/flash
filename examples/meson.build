@@ -4,8 +4,9 @@
 dirs = [
     'unit-tests',
     'helloworld',
+    'simplefwd',
     'l2fwd',
-    'fwddrop',
+    'ip4ping',
     'maglev',
 ]
 

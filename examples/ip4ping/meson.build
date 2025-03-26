@@ -3,4 +3,4 @@
 
 sources = files('main.c')
 
-executable('fwddrop', sources, c_args: cflags, install: true, dependencies: deps)
+executable('ip4ping', sources, c_args: cflags, install: true, dependencies: deps)

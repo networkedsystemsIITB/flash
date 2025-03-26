@@ -90,11 +90,11 @@ static inline void __complete_tx_rx_first(struct config *cfg, struct socket *xsk
 		return;
 
 	/**
-     * In copy mode, Tx is driven by a syscall so we need to use e.g. sendto() to
-     * really send the packets. In zero-copy mode we do not have to do this, since Tx
-     * is driven by the NAPI loop. So as an optimization, we do not have to call
-     * sendto() all the time in zero-copy mode.
-     */
+	  * In copy mode, Tx is driven by a syscall so we need to use e.g. sendto() to
+	  * really send the packets. In zero-copy mode we do not have to do this, since Tx
+	  * is driven by the NAPI loop. So as an optimization, we do not have to call
+	  * sendto() all the time in zero-copy mode.
+	  */
 	if (cfg->xsk->bind_flags & XDP_COPY) {
 #ifdef STATS
 		xsk->app_stats.copy_tx_sendtos++;
@@ -201,17 +201,17 @@ static void __hex_dump(void *pkt, size_t length, __u64 addr)
 	printf("\n");
 }
 
-size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg, int flags)
+size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg)
 {
 	int ret;
 	__u32 idx_rx = 0;
 	unsigned int rcvd, i, eop_cnt = 0;
 
-	if (!(flags & FLASH__NOSENDER))
-		__complete_tx_rx_first(cfg, xsk);
-	else {
-		/* Not implemented */
-	}
+	/* Only Tx currently is not supported 
+	  * in that scenario we need to call the following 
+	  * function somewhere else in the code
+	  */
+	__complete_tx_rx_first(cfg, xsk);
 
 	if (cfg->hybrid_poll && xsk->idle) {
 		uint64_t tstamp = rdtsc();

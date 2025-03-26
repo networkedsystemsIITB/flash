@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2025 Debojeet Das
+ *
+ * helloworld: A simple helloworld NF that shows control plane setup using Flash monitor
  */
 
 #include <signal.h>
 #include <pthread.h>
-#include <net/ethernet.h>
 #include <stdlib.h>
 
 #include <flash_nf.h>

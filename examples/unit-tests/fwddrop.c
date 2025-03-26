@@ -1,17 +1,21 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2025 Debojeet Das
  *
- * l2fwd: A simple NF that forwards packets between two interfaces
+ * fwddrop: unit-test to check forward and drop capabilities of Flash framework
+ * We store pointers to msg.iov we want to drop in one array, and those we wish to send in another array
  */
+
+#include <flash_nf.h>
+#include <flash_params.h>
 
 #include <signal.h>
 #include <pthread.h>
 #include <net/ethernet.h>
 #include <locale.h>
 #include <stdlib.h>
-
-#include <flash_nf.h>
-#include <flash_params.h>
+#include <linux/ip.h>
+#include <linux/icmp.h>
+#include <netinet/in.h>
 #include <log.h>
 
 bool done = false;
@@ -28,32 +32,7 @@ struct appconf {
 	int cpu_start;
 	int cpu_end;
 	int stats_cpu;
-	bool sriov;
-	uint8_t *dest_ether_addr_octet;
 } app_conf;
-
-static int hex2int(char ch)
-{
-	if (ch >= '0' && ch <= '9')
-		return ch - '0';
-	if (ch >= 'A' && ch <= 'F')
-		return ch - 'A' + 10;
-	if (ch >= 'a' && ch <= 'f')
-		return ch - 'a' + 10;
-	return -1;
-}
-
-static uint8_t *get_mac_addr(char *mac_addr)
-{
-	uint8_t *dest_ether_addr_octet = (uint8_t *)malloc(6 * sizeof(uint8_t));
-	for (int i = 0; i < 6; i++) {
-		dest_ether_addr_octet[i] = hex2int(mac_addr[0]) * 16;
-		mac_addr++;
-		dest_ether_addr_octet[i] += hex2int(mac_addr[0]);
-		mac_addr += 2;
-	}
-	return dest_ether_addr_octet;
-}
 
 static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
 {
@@ -64,12 +43,11 @@ static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int 
 	app_conf->cpu_start = 0;
 	app_conf->cpu_end = 0;
 	app_conf->stats_cpu = 1;
-	app_conf->sriov = false;
 
 	argc -= shift;
 	argv += shift;
 
-	while ((c = getopt(argc, argv, "c:e:s:S:")) != -1)
+	while ((c = getopt(argc, argv, "c:e:s:")) != -1)
 		switch (c) {
 		case 'c':
 			app_conf->cpu_start = atoi(optarg);
@@ -80,42 +58,9 @@ static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int 
 		case 's':
 			app_conf->stats_cpu = atoi(optarg);
 			break;
-		case 'S':
-			app_conf->dest_ether_addr_octet = get_mac_addr(optarg);
-			app_conf->sriov = true;
-			break;
 		default:
 			abort();
 		}
-}
-
-static void update_dest_mac(void *data)
-{
-	struct ether_header *eth = (struct ether_header *)data;
-	struct ether_addr *dst_addr = (struct ether_addr *)&eth->ether_dhost;
-	struct ether_addr tmp = {
-		.ether_addr_octet = {
-			app_conf.dest_ether_addr_octet[0],
-			app_conf.dest_ether_addr_octet[1],
-			app_conf.dest_ether_addr_octet[2],
-			app_conf.dest_ether_addr_octet[3],
-			app_conf.dest_ether_addr_octet[4],
-			app_conf.dest_ether_addr_octet[5],
-		},
-	};
-	*dst_addr = tmp;
-}
-
-static void swap_mac_addresses(void *data)
-{
-	struct ether_header *eth = (struct ether_header *)data;
-	struct ether_addr *src_addr = (struct ether_addr *)&eth->ether_shost;
-	struct ether_addr *dst_addr = (struct ether_addr *)&eth->ether_dhost;
-	struct ether_addr tmp;
-
-	tmp = *src_addr;
-	*src_addr = *dst_addr;
-	*dst_addr = tmp;
 }
 
 struct Args {
@@ -124,21 +69,29 @@ struct Args {
 	int next_size;
 };
 
+unsigned int count = 1;
+
 static void *socket_routine(void *arg)
 {
 	struct Args *a = (struct Args *)arg;
 	int socket_id = a->socket_id;
+	int *next = a->next;
+	int next_size = a->next_size;
 	log_info("SOCKET_ID: %d", socket_id);
-	static __u32 nb_frags;
 	int i, ret, nfds = 1, nrecv;
 	struct pollfd fds[1] = {};
 	struct xskmsghdr msg = {};
+
+	log_info("2_NEXT_SIZE: %d", next_size);
+
+	for (int i = 0; i < next_size; i++) {
+		log_info("2_NEXT_ITEM_%d %d", i, next[i]);
+	}
 
 	msg.msg_iov = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
 
 	fds[0].fd = nf->thread[socket_id]->socket->fd;
 	fds[0].events = POLLIN;
-
 	for (;;) {
 		if (cfg->xsk->mode & FLASH__POLL) {
 			ret = flash__poll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
@@ -147,25 +100,37 @@ static void *socket_routine(void *arg)
 		}
 
 		nrecv = flash__recvmsg(cfg, nf->thread[socket_id]->socket, &msg);
+
+		struct xskvec *drop[nrecv];
 		struct xskvec *send[nrecv];
+		unsigned int tot_pkt_drop = 0;
 		unsigned int tot_pkt_send = 0;
+
 		for (i = 0; i < nrecv; i++) {
 			struct xskvec *xv = &msg.msg_iov[i];
-			bool eop = IS_EOP_DESC(xv->options);
+			void *data = xv->data;
 
-			char *pkt = xv->data;
+			uint8_t tmp_mac[ETH_ALEN];
+			struct ethhdr *eth = (struct ethhdr *)data;
 
-			if (!nb_frags++)
-				app_conf.sriov ? update_dest_mac(pkt) : swap_mac_addresses(pkt);
+			memcpy(tmp_mac, eth->h_dest, ETH_ALEN);
+			memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
+			memcpy(eth->h_source, tmp_mac, ETH_ALEN);
 
-			send[tot_pkt_send++] = &msg.msg_iov[i];
-			if (eop)
-				nb_frags = 0;
+			/* fwd 50% packets and drop 50% packets */
+			if (count == 1) {
+				send[tot_pkt_send++] = &msg.msg_iov[i];
+				count = 0;
+			} else {
+				drop[tot_pkt_drop++] = &msg.msg_iov[i];
+				count = 1;
+			}
 		}
 
 		if (nrecv) {
-			ret = flash__sendmsg(cfg, nf->thread[socket_id]->socket, send, tot_pkt_send);
-			if (ret != nrecv) {
+			size_t ret_send = flash__sendmsg(cfg, nf->thread[socket_id]->socket, send, tot_pkt_send);
+			size_t ret_drop = flash__dropmsg(cfg, nf->thread[socket_id]->socket, drop, tot_pkt_drop);
+			if (ret_send != tot_pkt_send || ret_drop != tot_pkt_drop) {
 				log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
 				exit(EXIT_FAILURE);
 			}
