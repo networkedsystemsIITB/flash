@@ -99,7 +99,7 @@ static void *worker__stats(void *arg)
 			if (system("clear") != 0)
 				log_error("Terminal clear error");
 			for (int i = 0; i < cfg->total_sockets; i++) {
-				flash__dump_stats(cfg, nf->thread[i]->socket, FLASH__RXTX | FLASH__BACKP);
+				flash__dump_stats(cfg, nf->thread[i]->socket);
 			}
 		}
 	}

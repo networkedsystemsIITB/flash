@@ -112,7 +112,7 @@ static void __dump_driver_stats(struct config *cfg, struct socket *xsk, long dif
 	xsk->drv_stats.prev_intrs = xsk->drv_stats.intrs;
 }
 
-void flash__dump_stats(struct config *cfg, struct socket *xsk, int flags)
+void flash__dump_stats(struct config *cfg, struct socket *xsk)
 {
 	unsigned long now = flash__get_nsecs(cfg);
 	long diff = now - xsk->timestamp;
