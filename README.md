@@ -58,10 +58,10 @@ Docker containers enable the consistent and isolated deployment of NFs in a port
 
 ```bash
 # For NFs
-docker build -t flash:dev .
+make docker
 
 # For Monitor
-docker built -t flash:mon -f Dockerfile.monitor .
+make docker_mon
 ```
 
 It is noteworthy that in this setup, the monitor should be placed within a network namespace where the network interface (NIC) that the NFs will utilize is present. Additionally, the monitor requires root privileges to facilitate deployment. However, NFs can be isolated within unprivileged containers. The monitor can be initiated in the host otherwise within a privileged container using the following command:

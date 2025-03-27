@@ -1,7 +1,7 @@
 ARG BASE_IMAGE=ubuntu:latest
 ARG DEBIAN_FRONTEND=noninteractive
 
-FROM ${BASE_IMAGE} as xdp-build
+FROM ${BASE_IMAGE} AS build
 
 ARG DEBIAN_FRONTEND
 
@@ -10,7 +10,14 @@ RUN \
     apt-get install -y \
     build-essential \
     libbpf-dev \
-    pkg-config \
+    pkg-config
+
+FROM build AS xdp
+
+ARG DEBIAN_FRONTEND
+
+RUN \
+    apt-get install -y \
     git \
     clang \
     llvm \
@@ -24,36 +31,32 @@ RUN \
     make -j -C xdp-tools libxdp && \
     make -j -C xdp-tools libxdp_install
 
-FROM ${BASE_IMAGE} as xdp
-
-COPY --from=xdp-build /usr/local/include/xdp /usr/local/include/xdp
-COPY --from=xdp-build /usr/local/lib/pkgconfig/libxdp.pc /usr/local/lib/pkgconfig/
-COPY --from=xdp-build /usr/local/lib/bpf /usr/local/lib/bpf
-COPY --from=xdp-build /usr/local/lib/libxdp.* /usr/local/lib/
-COPY --from=xdp-build /usr/include/linux/if_xdp.h /usr/include/linux/
-COPY --from=xdp-build /usr/include/linux/xdp_diag.h /usr/include/linux/
-
-FROM xdp as flash
+FROM build AS flash-build
 
 ARG DEBIAN_FRONTEND
 
 WORKDIR /flash
 
 RUN \
-    apt-get update && \
     apt-get install -y \
-    build-essential \
     meson \
-    libbpf-dev \
-    pkg-config \
     gcc-multilib \
     libcjson-dev \
     libncurses-dev && \
     rm -rf /var/lib/apt/lists/*
 
+COPY --from=xdp /usr/local/include/xdp /usr/local/include/xdp
+COPY --from=xdp /usr/local/lib/pkgconfig/libxdp.pc /usr/local/lib/pkgconfig/
+COPY --from=xdp /usr/local/lib/bpf /usr/local/lib/bpf
+COPY --from=xdp /usr/local/lib/libxdp.* /usr/local/lib/
+COPY --from=xdp /usr/include/linux/if_xdp.h /usr/include/linux/
+COPY --from=xdp /usr/include/linux/xdp_diag.h /usr/include/linux/
+
 COPY . .
 
 RUN make
+
+FROM flash-build
 
 RUN useradd -d /flash flash
 
