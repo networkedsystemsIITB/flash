@@ -179,6 +179,10 @@ int recv_fd(int sockfd, int *_fd)
 	}
 
 	cmsg = CMSG_FIRSTHDR(&msg);
+	if (cmsg == NULL) {
+		log_error("No ancillary data.\n");
+		exit(EXIT_FAILURE);
+	}
 	*_fd = *(int *)CMSG_DATA(cmsg);
 
 	return 0;

@@ -23,6 +23,8 @@
 #define FLASH__GET_POLL_TIMEOUT 11
 #define FLASH__GET_FRAGS_ENABLED 12
 #define FLASH__GET_IFNAME 13
+#define FLASH__GET_IP_ADDR 14
+#define FLASH__GET_DST_IP_ADDR 15
 
 int send_fd(int sockfd, int fd);
 int start_uds_server(void);

@@ -1,25 +1,46 @@
 #include <stdlib.h>
-#include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <sys/wait.h>
 #include <log.h>
 #include <linux/if_link.h>
 
 #include "flash_cfgparser.h"
 
-static int *get_ifqueues(__u32 ifqueue_mask, int total_sockets)
+static void configure_nic(char *ifname, int total_queues, int mode)
 {
-	log_info("QUEUE MASK: %d", ifqueue_mask);
-	int *ifqueue = (int *)calloc(total_sockets, sizeof(int));
-	int count = 0, thread = 0;
-	while (ifqueue_mask != 0) {
-		if ((ifqueue_mask & (1 << 0)) == 1)
-			ifqueue[thread++] = count;
-		ifqueue_mask >>= 1;
-		count++;
-	}
-	return ifqueue;
-}
+	char total_queues_str[10];
+	char script_path[256] = "./usertools/netdev/setup_mlx5.sh";
+	char interface_flag[3] = "-i";
+	char queues_flag[3] = "-q";
+	char busy_poll_flag[3] = "-b";
+	sprintf(total_queues_str, "%d", total_queues);
 
+	// redirect stdout to /dev/null
+
+	if (fork() == 0) {
+		if (freopen("/dev/null", "w", stdout) == NULL) {
+			log_error("Error in freopen");
+		}
+		if (mode == FLASH__BUSY_POLL) {
+			char *argv[] = { script_path, interface_flag, ifname, queues_flag, total_queues_str, busy_poll_flag, NULL };
+			if (execvp(argv[0], argv)) {
+				log_error("Error in execvp");
+			}
+			exit(0);
+		} else {
+			char *argv[] = { script_path, interface_flag, ifname, queues_flag, total_queues_str, NULL };
+			if (execvp(argv[0], argv)) {
+				log_error("Error in execvp");
+			}
+			exit(0);
+		}
+	} else {
+		log_info("Waiting for NIC configuration to complete...");
+		wait(NULL);
+		log_info("NIC configuration completed");
+	}
+}
 static __u32 get_flags(char *flag)
 {
 	if (strlen(flag) != 1) {
@@ -49,16 +70,6 @@ static __u32 get_flags(char *flag)
 	exit(EXIT_FAILURE);
 }
 
-static int count_ones(__u32 mask)
-{
-	int count = 0;
-	while (mask) {
-		count += mask & 1;
-		mask >>= 1;
-	}
-	return count;
-}
-
 struct NFGroup *parse_json(const char *filename)
 {
 	FILE *file = fopen(filename, "r");
@@ -86,6 +97,8 @@ struct NFGroup *parse_json(const char *filename)
 
 	free(json_data);
 
+	int mode = 0, num_queues = 0;
+	char ifname[IF_NAMESIZE + 1];
 	// Extract "umem" array
 	cJSON *umem_array = cJSON_GetObjectItem(root, "umem");
 	if (!cJSON_IsArray(umem_array)) {
@@ -114,21 +127,13 @@ struct NFGroup *parse_json(const char *filename)
 			cJSON_Delete(root);
 			return NULL;
 		}
-		char *ifname = strdup(ifname_obj->valuestring);
+		char *_ifname = strdup(ifname_obj->valuestring);
 
-		// Extract "ifqueue_mask"
-		cJSON *mask_obj = cJSON_GetObjectItem(umem_obj, "ifqueue_mask");
-		if (!cJSON_IsString(mask_obj)) {
-			log_error("Invalid or missing 'ifqueue_mask'");
-			cJSON_Delete(root);
-			return NULL;
-		}
-		__u32 ifqueue_mask = strtoul(mask_obj->valuestring, NULL, 16);
-
-		int total_queues = count_ones(ifqueue_mask);
 		nf_group->umem[i]->cfg = calloc(1, sizeof(struct config));
-		strncpy(nf_group->umem[i]->cfg->ifname, ifname, IF_NAMESIZE);
-		nf_group->umem[i]->cfg->ifqueue = get_ifqueues(ifqueue_mask, total_queues);
+		strncpy(nf_group->umem[i]->cfg->ifname, _ifname, IF_NAMESIZE);
+		log_info("ifname: %s", nf_group->umem[i]->cfg->ifname);
+		nf_group->umem[i]->cfg->umem_id = nf_group->umem[i]->id;
+		nf_group->umem[i]->cfg->nf_id = -1;
 		nf_group->umem[i]->cfg->umem = calloc(1, sizeof(struct umem_config));
 		nf_group->umem[i]->cfg->xsk = calloc(1, sizeof(struct xsk_config));
 
@@ -141,6 +146,7 @@ struct NFGroup *parse_json(const char *filename)
 		}
 		char *xdp_flags = strdup(xdp_flags_obj->valuestring);
 		nf_group->umem[i]->cfg->xsk->xdp_flags = get_flags(xdp_flags);
+		log_info("xdp_flags: %s", xdp_flags);
 
 		// Extract "bind_flags"
 		cJSON *bind_flags_obj = cJSON_GetObjectItem(umem_obj, "bind_flags");
@@ -151,6 +157,7 @@ struct NFGroup *parse_json(const char *filename)
 		}
 		char *bind_flags = strdup(bind_flags_obj->valuestring);
 		nf_group->umem[i]->cfg->xsk->bind_flags = get_flags(bind_flags);
+		log_info("bind_flags: %s", bind_flags);
 
 		if (xdp_flags[0] == 's' && bind_flags[0] == 'z') {
 			log_error("Invalid combination of xdp_flags and bind_flags");
@@ -165,22 +172,13 @@ struct NFGroup *parse_json(const char *filename)
 			cJSON_Delete(root);
 			return NULL;
 		}
-		char *mode = strdup(mode_obj->valuestring);
-		if (strlen(mode) == 0) {
+		char *_mode = strdup(mode_obj->valuestring);
+		if (strlen(_mode) == 0) {
 			nf_group->umem[i]->cfg->xsk->bind_flags |= XDP_USE_NEED_WAKEUP;
 		} else {
-			nf_group->umem[i]->cfg->xsk->mode = get_flags(mode);
-			nf_group->umem[i]->cfg->xsk->poll_timeout = -1;
-			if (nf_group->umem[i]->cfg->xsk->mode & FLASH__POLL) {
-				cJSON *poll_timeout_obj = cJSON_GetObjectItem(umem_obj, "poll_timeout");
-				if (!cJSON_IsNumber(poll_timeout_obj)) {
-					log_error("Invalid or missing 'poll_timeout'");
-					cJSON_Delete(root);
-					return NULL;
-				}
-				nf_group->umem[i]->cfg->xsk->poll_timeout = poll_timeout_obj->valueint;
-			}
+			nf_group->umem[i]->cfg->xsk->mode = get_flags(_mode);
 		}
+		log_info("mode: %s", _mode);
 
 		// Extract "custom_xsk" array
 		cJSON *custom_xsk_bool = cJSON_GetObjectItem(umem_obj, "custom_xsk");
@@ -194,7 +192,7 @@ struct NFGroup *parse_json(const char *filename)
 		if (nf_group->umem[i]->cfg->custom_xsk) {
 			log_warn("PLEASE MAKE SURE YOU LOADED CUSTOM XDP PROGRAM!");
 		} else {
-			log_info("FINE");
+			log_info("USING DEFAULT XDP PROGRAM");
 		}
 
 		// Extract "frags_enabled" array
@@ -225,6 +223,24 @@ struct NFGroup *parse_json(const char *filename)
 			nf_group->umem[i]->nf[j] = (struct nf *)calloc(1, sizeof(struct nf));
 			nf_group->umem[i]->nf[j]->id = cJSON_GetObjectItem(nf_obj, "nf_id")->valueint;
 			nf_group->umem[i]->nf[j]->is_up = false;
+			cJSON *ip_obj = cJSON_GetObjectItem(nf_obj, "nf_ip");
+			if (!cJSON_IsString(ip_obj)) {
+				log_error("Invalid or missing 'nf_ip'");
+				cJSON_Delete(root);
+				return NULL;
+			}
+			strncpy(nf_group->umem[i]->nf[j]->ip, ip_obj->valuestring, INET_ADDRSTRLEN - 1);
+			nf_group->umem[i]->nf[j]->ip[INET_ADDRSTRLEN - 1] = '\0'; // Ensure null-termination
+			cJSON *port_obj = cJSON_GetObjectItem(nf_obj, "nf_port");
+			if (!cJSON_IsNumber(port_obj)) {
+				log_error("Invalid or missing 'nf_port'");
+				cJSON_Delete(root);
+				return NULL;
+			}
+			nf_group->umem[i]->nf[j]->port = (uint16_t)port_obj->valueint;
+
+			log_info("nf_id: %d, nf_ip: %s, nf_port: %d", nf_group->umem[i]->nf[j]->id, nf_group->umem[i]->nf[j]->ip,
+				 nf_group->umem[i]->nf[j]->port);
 
 			char nf_id[5];
 			sprintf(nf_id, "%d", nf_group->umem[i]->nf[j]->id);
@@ -268,6 +284,15 @@ struct NFGroup *parse_json(const char *filename)
 				cJSON *thread_obj = cJSON_GetArrayItem(thread_array, k);
 				nf_group->umem[i]->nf[j]->thread[k] = (struct thread *)calloc(1, sizeof(struct thread));
 				nf_group->umem[i]->nf[j]->thread[k]->id = cJSON_GetObjectItem(thread_obj, "thread_id")->valueint;
+				cJSON *queue_obj = cJSON_GetObjectItem(thread_obj, "queue");
+				if (!cJSON_IsNumber(queue_obj)) {
+					log_error("Invalid or missing 'queue'");
+					cJSON_Delete(root);
+					return NULL;
+				}
+				nf_group->umem[i]->nf[j]->thread[k]->ifqueue = (uint8_t)cJSON_GetNumberValue(queue_obj);
+				log_info("thread_id: %d, queue: %d", nf_group->umem[i]->nf[j]->thread[k]->id,
+					 nf_group->umem[i]->nf[j]->thread[k]->ifqueue);
 				nf_group->umem[i]->nf[j]->thread[k]->socket = NULL;
 				nf_group->umem[i]->nf[j]->thread[k]->xsk = NULL;
 				nf_group->umem[i]->nf[j]->thread[k]->umem_offset = total_threads;
@@ -278,17 +303,17 @@ struct NFGroup *parse_json(const char *filename)
 		}
 		nf_group->umem[i]->cfg->total_sockets = total_threads;
 
-		// Validate ifqueue_mask against total threads
-		if (total_queues < total_threads) {
-			log_error("Error: ifqueue_mask has %d active queues, but there are %d total threads!", total_queues,
-				  total_threads);
-			cJSON_Delete(root);
-			free_nf_group(nf_group);
-			return NULL;
+		if (i == nf_group->umem_count - 1) {
+			strncpy(ifname, _ifname, IF_NAMESIZE);
+			mode = nf_group->umem[i]->cfg->xsk->mode;
 		}
+
+		num_queues += total_threads;
 	}
 
+	configure_nic(ifname, num_queues, mode);
 	cJSON_Delete(root);
+
 	return nf_group;
 }
 
@@ -315,7 +340,6 @@ void free_nf_group(struct NFGroup *nf_group)
 			free(nf_group->umem[i]->nf);
 			free(nf_group->umem[i]->cfg->xsk);
 			free(nf_group->umem[i]->cfg->umem);
-			free(nf_group->umem[i]->cfg->ifqueue);
 			free(nf_group->umem[i]->cfg);
 			free(nf_group->umem[i]);
 		}

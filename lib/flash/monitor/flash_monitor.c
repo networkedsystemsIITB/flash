@@ -8,7 +8,6 @@
 #include <sched.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <asm-generic/socket.h>
 
 #include <flash_uds.h>
 #include <log.h>
@@ -256,7 +255,7 @@ static struct socket *flash__setup_xsk(struct umem *umem, int nf_id)
 	int sock_opt;
 	int umem_ref_count = umem->cfg->current_socket_count;
 	int nf_thread_count = umem->nf[nf_id]->current_thread_count;
-	int ifqueue = umem->cfg->ifqueue[nf_id * umem->nf[nf_id]->thread_count + nf_thread_count];
+	int ifqueue = umem->nf[nf_id]->thread[nf_thread_count]->ifqueue;
 	char *ifname = umem->cfg->ifname;
 
 	struct xsk_socket *xsk;

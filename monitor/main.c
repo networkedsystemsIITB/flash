@@ -92,6 +92,21 @@ static void *handle_nf(void *arg)
 			send_data(msgsock, &umem->cfg->ifname, IF_NAMESIZE + 1);
 			break;
 
+		case FLASH__GET_IP_ADDR:
+			send_data(msgsock, umem->nf[data->nf_id]->ip, INET_ADDRSTRLEN);
+			log_info("NF IP: %s", umem->nf[data->nf_id]->ip);
+			break;
+
+		case FLASH__GET_DST_IP_ADDR:
+			send_data(msgsock, &umem->nf[data->nf_id]->next_size, sizeof(int));
+			log_info("Number of Backends: %d", umem->nf[data->nf_id]->next_size);
+			for (int i = 0; i < umem->nf[data->nf_id]->next_size; i++) {
+				log_info("Sending IP %s", umem->nf[umem->nf[data->nf_id]->next[i]]->ip);
+				log_info("Next NF: %d", umem->nf[data->nf_id]->next[i]);
+				send_data(msgsock, umem->nf[umem->nf[data->nf_id]->next[i]]->ip, INET_ADDRSTRLEN);
+			}
+			break;
+
 		case FLASH__CLOSE_CONN:
 			close_nf(umem, data->umem_id, data->nf_id);
 			goto exit;

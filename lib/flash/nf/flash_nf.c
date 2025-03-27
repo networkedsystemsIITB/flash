@@ -13,10 +13,9 @@
 
 #include "flash_nf.h"
 
-int uds_sockfd;
 bool done;
 
-static int set_nonblocking(int sockfd)
+int set_nonblocking(int sockfd)
 {
 	int flags = fcntl(sockfd, F_GETFL, 0);
 	if (flags == -1) {
@@ -33,11 +32,11 @@ static int set_nonblocking(int sockfd)
 	return 0;
 }
 
-void wait_for_cmd(void)
+void wait_for_cmd(struct config *cfg)
 {
 	int cmd;
 	while (!done) {
-		int bytes_received = read(uds_sockfd, &cmd, sizeof(int));
+		int bytes_received = read(cfg->uds_sockfd, &cmd, sizeof(int));
 		if (bytes_received < 0) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK) {
 				usleep(500000);
@@ -56,16 +55,17 @@ void wait_for_cmd(void)
 	}
 }
 
-static void close_uds_conn(void)
+static void close_uds_conn(struct config *cfg)
 {
-	send_cmd(uds_sockfd, FLASH__CLOSE_CONN);
-	close(uds_sockfd);
+	send_cmd(cfg->uds_sockfd, FLASH__CLOSE_CONN);
+	close(cfg->uds_sockfd);
 	return;
 }
 
 static int *__configure(struct config *cfg, struct nf *nf)
 {
-	uds_sockfd = start_uds_client();
+	int uds_sockfd = start_uds_client();
+	cfg->uds_sockfd = uds_sockfd;
 	struct nf_data data;
 	data.nf_id = cfg->nf_id;
 	data.umem_id = cfg->umem_id;
@@ -128,8 +128,7 @@ static int *__configure(struct config *cfg, struct nf *nf)
 
 	send_cmd(uds_sockfd, FLASH__GET_IFNAME);
 	recv_data(uds_sockfd, cfg->ifname, IF_NAMESIZE + 1);
-
-	set_nonblocking(uds_sockfd);
+	log_info("IFNAME: %s", cfg->ifname);
 
 	return received_fd;
 }
@@ -261,7 +260,7 @@ void flash__xsk_close(struct config *cfg, struct nf *nf)
 {
 	log_info("Shutting down...");
 
-	close_uds_conn();
+	close_uds_conn(cfg);
 
 	size_t desc_sz = sizeof(struct xdp_desc);
 	struct xdp_mmap_offsets off;

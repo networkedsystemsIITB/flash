@@ -34,6 +34,6 @@ size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec **ms
 size_t flash__dropmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, unsigned int ndrop);
 unsigned long flash__get_nsecs(struct config *cfg);
 void flash__dump_stats(struct config *cfg, struct socket *xsk);
-void wait_for_cmd(void);
-
+void wait_for_cmd(struct config *cfg);
+int set_nonblocking(int sockfd);
 #endif /* __FLASH_NF_H */

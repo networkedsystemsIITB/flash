@@ -504,7 +504,7 @@ int main(int argc, char **argv)
 	}
 	pthread_detach(stats_thread);
 
-	wait_for_cmd();
+	wait_for_cmd(cfg);
 
 	flash__xsk_close(cfg, nf);
 

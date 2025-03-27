@@ -5,15 +5,39 @@
             "nf": [
                 {
                     "nf_id": 0,
+                    "nf_ip": "192.168.0.1",
+                    "nf_port": 1234,
                     "thread": [
                         {
-                            "thread_id": 0
+                            "thread_id": 0,
+                            "queue": 0
+                        }
+                    ]
+                },
+                {
+                    "nf_id": 1,
+                    "nf_ip": "192.168.0.2",
+                    "nf_port": 1234,
+                    "thread": [
+                        {
+                            "thread_id": 0,
+                            "queue": 1
+                        }
+                    ]
+                },
+                {
+                    "nf_id": 2,
+                    "nf_ip": "192.168.0.3",
+                    "nf_port": 1234,
+                    "thread": [
+                        {
+                            "thread_id": 0,
+                            "queue": 2
                         }
                     ]
                 }
             ],
-            "ifname": "ens865f0np0",
-            "ifqueue_mask": "0x1",
+            "ifname": "ens23f0np0",
             "xdp_flags": "d",
             "bind_flags": "z",
             "mode": "b",
@@ -22,6 +46,11 @@
         }
     ],
     "route": {
-        "0": []
+        "0": [
+            1,
+            2
+        ],
+        "1": [],
+        "2": []
     }
 }

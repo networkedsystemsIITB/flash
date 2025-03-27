@@ -213,6 +213,7 @@ int main(int argc, char **argv)
 	int n = flash__parse_cmdline_args(argc, argv, cfg);
 	parse_app_args(argc, argv, &app_conf, n);
 	flash__configure_nf(&nf, cfg);
+	set_nonblocking(cfg->uds_sockfd);
 	flash__populate_fill_ring(nf->thread, cfg->umem->frame_size, cfg->total_sockets, cfg->umem_offset);
 
 	log_info("Control Plane Setup Done");
@@ -263,7 +264,7 @@ int main(int argc, char **argv)
 	}
 	pthread_detach(stats_thread);
 
-	wait_for_cmd();
+	wait_for_cmd(cfg);
 
 	flash__xsk_close(cfg, nf);
 

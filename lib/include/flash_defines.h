@@ -14,6 +14,7 @@
 
 #include <flash_list.h>
 #include <time.h>
+#include <netinet/in.h>
 
 #define FRAME_SIZE XSK_UMEM__DEFAULT_FRAME_SIZE
 #define NUM_FRAMES (4 * 1024)
@@ -46,6 +47,7 @@ struct umem_config {
 
 struct config {
 	int umem_fd;
+	int uds_sockfd;
 	int total_sockets;
 	int current_socket_count;
 	char ifname[IF_NAMESIZE + 1];
@@ -169,7 +171,7 @@ struct xsk_app_stats {
 
 struct socket {
 	int fd;
-	int ifqueue;
+	uint8_t ifqueue;
 	struct xsk_ring_cons rx;
 	struct xsk_ring_prod tx;
 	struct xsk_ring_prod fill;
@@ -191,6 +193,7 @@ struct socket {
 
 struct thread {
 	int id;
+	uint8_t ifqueue;
 	int umem_offset;
 	struct socket *socket;
 	struct xsk_socket *xsk;
@@ -198,6 +201,8 @@ struct thread {
 
 struct nf {
 	int id;
+	char ip[INET_ADDRSTRLEN];
+	uint16_t port;
 	int *next;
 	int next_size;
 	struct thread **thread;
