@@ -35,6 +35,8 @@ int set_nonblocking(int sockfd)
 void wait_for_cmd(struct config *cfg)
 {
 	int cmd;
+	set_nonblocking(cfg->uds_sockfd);
+
 	while (!done) {
 		int bytes_received = read(cfg->uds_sockfd, &cmd, sizeof(int));
 		if (bytes_received < 0) {
@@ -80,6 +82,9 @@ static int *__configure(struct config *cfg, struct nf *nf)
 
 	recv_data(uds_sockfd, &cfg->umem->size, sizeof(int));
 	log_info("UMEM SIZE: %d", cfg->umem->size);
+
+	recv_data(uds_sockfd, &cfg->umem_scale, sizeof(int));
+	log_info("UMEM SCALE: %d", cfg->umem_scale);
 
 	send_cmd(uds_sockfd, FLASH__GET_UMEM_OFFSET);
 	recv_data(uds_sockfd, &cfg->umem_offset, sizeof(int));
@@ -236,10 +241,10 @@ out_mmap_comp:
 	return err;
 }
 
-void flash__populate_fill_ring(struct thread **thread, int frame_size, int total_sockets, int umem_offset)
+void flash__populate_fill_ring(struct thread **thread, int frame_size, int total_sockets, int umem_offset, int umem_scale)
 {
 	int ret, i;
-	int nr_frames = (size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS * (size_t)2;
+	int nr_frames = (size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS * (size_t)2 * (size_t)umem_scale;
 	__u32 idx = 0;
 
 	for (int t = 0; t < total_sockets; t++) {

@@ -25,8 +25,8 @@ void setup_xsk_config(struct xsk_socket_config **_xsk_config, struct xsk_umem_co
 {
 	log_info("SETTING XSK_CONFIG");
 	struct xsk_socket_config *xsk_config = calloc(1, sizeof(struct xsk_socket_config));
-	xsk_config->rx_size = (size_t)XSK_RING_CONS__DEFAULT_NUM_DESCS;
-	xsk_config->tx_size = (size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS;
+	xsk_config->rx_size = (size_t)XSK_RING_CONS__DEFAULT_NUM_DESCS * (size_t)cfg->umem_scale;
+	xsk_config->tx_size = (size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS * (size_t)cfg->umem_scale;
 	xsk_config->libbpf_flags = cfg->custom_xsk ? XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD : 0;
 	xsk_config->xdp_flags = cfg->xsk->xdp_flags;
 	xsk_config->bind_flags = cfg->xsk->bind_flags;
@@ -43,8 +43,8 @@ void setup_xsk_config(struct xsk_socket_config **_xsk_config, struct xsk_umem_co
 	 * that should be rare.
 	 */
 	struct xsk_umem_config *umem_config = calloc(1, sizeof(struct xsk_umem_config));
-	umem_config->fill_size = (size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS * (size_t)2;
-	umem_config->comp_size = (size_t)XSK_RING_CONS__DEFAULT_NUM_DESCS;
+	umem_config->fill_size = (size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS * (size_t)2 * (size_t)cfg->umem_scale;
+	umem_config->comp_size = (size_t)XSK_RING_CONS__DEFAULT_NUM_DESCS * (size_t)cfg->umem_scale;
 	umem_config->frame_size = cfg->umem->frame_size;
 	umem_config->frame_headroom = XSK_UMEM__DEFAULT_FRAME_HEADROOM;
 	umem_config->flags = cfg->umem->flags;

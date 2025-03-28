@@ -48,6 +48,7 @@ static void *handle_nf(void *arg)
 			send_fd(msgsock, umem->cfg->umem_fd);
 			send_data(msgsock, &umem->nf[data->nf_id]->thread_count, sizeof(int));
 			send_data(msgsock, &umem->cfg->umem->size, sizeof(int));
+			send_data(msgsock, &umem->cfg->umem_scale, sizeof(int));
 			break;
 
 		case FLASH__CREATE_SOCKET:

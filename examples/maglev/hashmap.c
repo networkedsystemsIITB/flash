@@ -11,7 +11,6 @@ static inline int hashmap_hash(struct hashmap *map, void *key)
 // Initialize hashmap
 int hashmap_init(struct hashmap *map, size_t key_size, size_t value_size, size_t max_entries)
 {
-	map = malloc(sizeof(struct hashmap));
 	if (!map)
 		return 0;
 
@@ -21,7 +20,6 @@ int hashmap_init(struct hashmap *map, size_t key_size, size_t value_size, size_t
 	map->buckets = calloc(max_entries, sizeof(struct hashmap_entry *));
 
 	if (!map->buckets) {
-		free(map);
 		return 0;
 	}
 	return 1;
@@ -51,7 +49,7 @@ int hashmap_insert_elem(struct hashmap *map, void *key, void *value)
 
 	entry->next = map->buckets[hash];
 	map->buckets[hash] = entry;
-    return 1;
+	return 1;
 }
 
 // Lookup a value by key
@@ -117,5 +115,4 @@ void hashmap_free(struct hashmap *map)
 		}
 	}
 	free(map->buckets);
-	free(map);
 }

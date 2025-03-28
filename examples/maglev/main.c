@@ -1,40 +1,35 @@
-#include "hashmap.h"
-#include "load_balancer.h"
-#include <flash_nf.h>
-#include <flash_params.h>
-
 #include <signal.h>
 #include <pthread.h>
 #include <net/ethernet.h>
 #include <locale.h>
 #include <stdlib.h>
-#include <netinet/in.h>
 #include <log.h>
 #include <arpa/inet.h>
-
-////// Added only to get ip from ifname //////
-#include <sys/ioctl.h>
-#include <netinet/in.h>
-#include <net/if.h>
-////// ip form ifname header end //////
-
 #include <linux/ip.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
-
-// #include "../exnfc/exnfc.h"
 #include <cjson/cJSON.h>
-#include <string.h>
 
-#include <stdint.h>
+#include <flash_nf.h>
+#include <flash_params.h>
+#include <flash_uds.h>
 
-#define IP_STRLEN 16
+#include "hashmap.h"
+#include "load_balancer.h"
+
 #define PROTO_STRLEN 4
-#define IFNAME_STRLEN 256
 
 bool done = false;
 struct config *cfg = NULL;
 struct nf *nf;
+
+char bkd_addr[MAX_BACKENDS][INET_ADDRSTRLEN];
+char srv_addr[INET_ADDRSTRLEN];
+int nbackends = 0;
+
+struct hashmap services;
+struct hashmap backends;
+struct hashmap maglev_tables;
 
 static void int_exit(int sig)
 {
@@ -106,80 +101,8 @@ static void *worker__stats(void *arg)
 	return NULL;
 }
 
-char bkd_addr[MAX_BACKENDS][IP_STRLEN]; char srv_addr[IP_STRLEN];
-int nbackends;
-
-struct hashmap services;
-struct hashmap backends;
-struct hashmap maglev_tables;
-
-
-static int get_ip_address(const char *ifname)
-{
-	int fd;
-	struct ifreq ifr;
-
-	// Create a socket
-	fd = socket(AF_INET, SOCK_DGRAM, 0);
-	if (fd < 0) {
-		perror("socket");
-		return -1;
-	}
-
-	// Copy interface name into ifreq struct
-	strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
-	ifr.ifr_name[IFNAMSIZ - 1] = '\0'; // Ensure null termination
-
-	// Get IP address of the interface
-	if (ioctl(fd, SIOCGIFADDR, &ifr) < 0) {
-		perror("ioctl");
-		close(fd);
-		return -1;
-	}
-
-	// Extract and store IP address
-	struct sockaddr_in *ipaddr = (struct sockaddr_in *)&ifr.ifr_addr;
-	strncpy(srv_addr, inet_ntoa(ipaddr->sin_addr), IP_STRLEN - 1);
-	srv_addr[IP_STRLEN - 1] = '\0'; // Ensure null termination
-
-	// Close socket
-	close(fd);
-	return 0; // Success
-}
-
-static char *read_file(const char *filename)
-{
-	FILE *file = fopen(filename, "r");
-	if (!file) {
-		perror("Failed to open file");
-		return NULL;
-	}
-
-	fseek(file, 0, SEEK_END);
-	long length = ftell(file);
-	rewind(file);
-
-	char *data = (char *)malloc(length + 1);
-	if (!data) {
-		perror("Memory allocation failed");
-		fclose(file);
-		return NULL;
-	}
-
-	if (fread(data, 1, length, file) <= 0){
-		perror("Can't read from config");
-		fclose(file);
-		return NULL;
-	};
-	data[length] = '\0'; // Null-terminate the string
-
-	fclose(file);
-	return data;
-}
-
 static void configure(struct maglev *mag, int num_bkds)
 {
-	// uint32_t bkd_mapping[MAGLEV_LOOKUP_SIZE];
 	int *bkd_mapping = mag->bkd_mapping;
 	int next[num_bkds];
 	// populate each bkd first
@@ -189,7 +112,7 @@ static void configure(struct maglev *mag, int num_bkds)
 		int offset = hashval % MAGLEV_LOOKUP_SIZE;
 		int skip = hashval % (MAGLEV_LOOKUP_SIZE - 1) + 1;
 		for (int j = 0; j < MAGLEV_LOOKUP_SIZE; j++) {
-			permutation[i][j] = (offset + j * skip) % MAGLEV_LOOKUP_SIZE;
+			permutation[i][j] = (((offset + j * skip) % MAGLEV_LOOKUP_SIZE) + MAGLEV_LOOKUP_SIZE) % MAGLEV_LOOKUP_SIZE;
 		}
 	}
 
@@ -204,17 +127,47 @@ static void configure(struct maglev *mag, int num_bkds)
 	uint32_t filled = 0;
 	while (1) {
 		for (int i = 0; i < num_bkds; i++) {
+			if (next[i] >= MAGLEV_LOOKUP_SIZE)
+				continue;
 			int c = permutation[i][next[i]];
 			while (bkd_mapping[c] >= 0) {
 				next[i]++;
+				if (next[i] >= MAGLEV_LOOKUP_SIZE) {
+					break;
+				}
 				c = permutation[i][next[i]];
 			}
 			bkd_mapping[c] = i;
 			next[i]++;
 			filled++;
-			if (filled == MAGLEV_LOOKUP_SIZE)
+			if (filled == MAGLEV_LOOKUP_SIZE) {
 				return;
+			}
 		}
+		bool end = true;
+		for (int i = 0; i < num_bkds; i++) {
+			if (next[i] < MAGLEV_LOOKUP_SIZE) {
+				end = false;
+				break;
+			}
+		}
+		if (end) {
+			break;
+		}
+	}
+
+	int bkd = 0;
+	int bkd1 = 0, bkd2 = 0;
+	for (int i = 0; i < MAGLEV_LOOKUP_SIZE; i++) {
+		if (bkd_mapping[i] < 0) {
+			bkd_mapping[i] = bkd;
+			bkd++;
+			bkd %= num_bkds;
+		}
+		if (bkd_mapping[i] == 0)
+			bkd1++;
+		else
+			bkd2++;
 	}
 }
 
@@ -229,16 +182,21 @@ struct backend_entry {
 	struct backend_id key;
 	struct backend_info value;
 };
-/*
- * This map should be handled in a LRU way, clearing older sessions when the map
- * is full. This is not done for simplicity.
- * In the eBPF LRU_HASH_MAP every bucket is handled as a LRU queue, this is
- * possible since it has a static size
- */
-// struct hashmap active_sessions;
 
 static void load_services(void)
 {
+	send_cmd(cfg->uds_sockfd, FLASH__GET_IP_ADDR);
+	recv_data(cfg->uds_sockfd, srv_addr, INET_ADDRSTRLEN);
+	log_info("NF IP: %s", srv_addr);
+
+	send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
+	recv_data(cfg->uds_sockfd, &nbackends, sizeof(int));
+	log_info("Number of Backends: %d", nbackends);
+	for (int i = 0; i < nbackends; i++) {
+		recv_data(cfg->uds_sockfd, bkd_addr[i], INET_ADDRSTRLEN);
+		log_info("Backend %d IP: %s", i, bkd_addr[i]);
+	}
+
 	char proto[PROTO_STRLEN];
 	unsigned srv_port, bkd_port;
 	uint8_t mac_addr[6];
@@ -259,20 +217,19 @@ static void load_services(void)
 	backend_entries = malloc(sizeof(struct backend_entry) * nbackends);
 	hashmap_init(&srv_to_index, sizeof(struct service_id), sizeof(int), nservices);
 
-	mac_addr[0] = 0x00;
-	mac_addr[1] = 0x11;
-	mac_addr[2] = 0x22;
-	mac_addr[3] = 0x33;
-	mac_addr[4] = 0x44;
-	mac_addr[5] = 0x55;
+	mac_addr[0] = 0x11;
+	mac_addr[1] = 0x22;
+	mac_addr[2] = 0x33;
+	mac_addr[3] = 0x44;
+	mac_addr[4] = 0x55;
+	mac_addr[5] = 0x66;
 	// Manually add services and backends
 	// Service 1: UDP from 192.168.1.1:80 to backend 192.168.1.2:8080
 	// strcpy(srv_addr, "192.168.1.1"); Stored from main fn itself
 	srv_port = 80;
 	bkd_port = 8080;
 	strcpy(proto, "UDP");
-	for (int index = 0; index < nbackends; index++)
-	{
+	for (int index = 0; index < nbackends; index++) {
 		bkd_entry = &backend_entries[index];
 		inet_aton(srv_addr, &addr);
 		bkd_entry->key.service.vaddr = addr.s_addr;
@@ -291,7 +248,7 @@ static void load_services(void)
 			srv_entry->value.backends = 0;
 			srv_info = &srv_entry->value;
 
-			if (hashmap_insert_elem(&srv_to_index, &srv_entry->key, &service_first_free)) {
+			if (hashmap_insert_elem(&srv_to_index, &srv_entry->key, &service_first_free) != 1) {
 				fprintf(stderr, "ERROR: unable to add service index to hash map\n");
 				exit(EXIT_FAILURE);
 			}
@@ -307,14 +264,14 @@ static void load_services(void)
 
 	for (int i = 0; i < nservices; i++) {
 		// printf("%u, %u\n", service_entries[i].key.vaddr, (__u32)(service_entries[i].key.vport));
-		if (hashmap_insert_elem(&services, &service_entries[i].key, &service_entries[i].value)) {
+		if (hashmap_insert_elem(&services, &service_entries[i].key, &service_entries[i].value) != 1) {
 			fprintf(stderr, "ERROR: unable to add service to hash map\n");
 			exit(EXIT_FAILURE);
 		}
 	}
 
 	for (int i = 0; i < nbackends; i++) {
-		if (hashmap_insert_elem(&backends, &backend_entries[i].key, &backend_entries[i].value)) {
+		if (hashmap_insert_elem(&backends, &backend_entries[i].key, &backend_entries[i].value) != 1) {
 			fprintf(stderr, "ERROR: unable to add backend to hash map\n");
 			exit(EXIT_FAILURE);
 		}
@@ -325,7 +282,7 @@ static void load_services(void)
 		struct maglev *lookup = malloc(sizeof(struct maglev));
 		uint32_t num_bkds = service_entries[i].value.backends;
 		configure(lookup, num_bkds);
-		if (hashmap_insert_elem(&maglev_tables, &service_entries[i].key, &lookup)) {
+		if (hashmap_insert_elem(&maglev_tables, &service_entries[i].key, lookup) != 1) {
 			fprintf(stderr, "ERROR: unable to add maglev table to hash map\n");
 			exit(EXIT_FAILURE);
 		}
@@ -344,20 +301,9 @@ static void *socket_routine(void *arg)
 {
 	struct Args *a = (struct Args *)arg;
 	int socket_id = a->socket_id;
-	int *next = a->next;
-	int next_size = a->next_size;
-	// free(arg);
-	log_info("SOCKET_ID: %d", socket_id);
-	// static __u32 nb_frags;
 	int i, ret, nfds = 1, nrecv;
 	struct pollfd fds[1] = {};
 	struct xskmsghdr msg = {};
-
-	log_info("2_NEXT_SIZE: %d", next_size);
-
-	for (int i = 0; i < next_size; i++) {
-		log_info("2_NEXT_ITEM_%d %d", i, next[i]);
-	}
 
 	msg.msg_iov = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
 
@@ -386,17 +332,20 @@ static void *socket_routine(void *arg)
 			struct ethhdr *eth = pkt;
 			if ((void *)(eth + 1) > pkt_end) {
 				drop[tot_pkt_drop++] = &msg.msg_iov[i];
+				log_info("INVALID PACKET Dropping packet: %d", tot_pkt_drop);
 				continue;
 			}
 
 			if (eth->h_proto != htons(ETH_P_IP)) {
 				drop[tot_pkt_drop++] = &msg.msg_iov[i];
+				log_info("INVALID ETH PROTO Dropping packet: %d", tot_pkt_drop);
 				continue;
 			}
 
 			struct iphdr *iph = (void *)(eth + 1);
 			if ((void *)(iph + 1) > pkt_end) {
 				drop[tot_pkt_drop++] = &msg.msg_iov[i];
+				log_info("INVALID IPHDR Dropping packet: %d", tot_pkt_drop);
 				continue;
 			}
 
@@ -409,6 +358,7 @@ static void *socket_routine(void *arg)
 				struct tcphdr *tcph = next;
 				if ((void *)(tcph + 1) > pkt_end) {
 					drop[tot_pkt_drop++] = &msg.msg_iov[i];
+					log_info("INVALID TCPHDR Dropping packet: %d", tot_pkt_drop);
 					continue;
 				}
 
@@ -422,6 +372,7 @@ static void *socket_routine(void *arg)
 				struct udphdr *udph = next;
 				if ((void *)(udph + 1) > pkt_end) {
 					drop[tot_pkt_drop++] = &msg.msg_iov[i];
+					log_info("INVALID UDPHDR Dropping packet: %d", tot_pkt_drop);
 					continue;
 				}
 
@@ -433,6 +384,7 @@ static void *socket_routine(void *arg)
 
 			default:
 				drop[tot_pkt_drop++] = &msg.msg_iov[i];
+				log_info("DEFAULT Dropping packet: %d", tot_pkt_drop);
 				continue;
 			}
 
@@ -455,13 +407,14 @@ static void *socket_routine(void *arg)
 
 			/* New session, apply load balancing logic */
 			struct service_id srvid = { .vaddr = iph->daddr, .vport = *dport, .proto = iph->protocol };
-			// printf("%u, %u, %u\n", srvid.vaddr, (__u32)(srvid.vport), (__u32)(srvid.proto));
+			printf("%u, %u, %u\n", srvid.vaddr, (__u32)(srvid.vport), (__u32)(srvid.proto));
 			struct service_info *srvinfo = hashmap_lookup_elem(&services, &srvid);
 			if (!srvinfo) {
 				drop[tot_pkt_drop++] = &msg.msg_iov[i];
+				log_info("ERROR: missing service --> DROPPING\n");
 				continue;
 			}
-			// (struct maglev *)hashmap_lookup_elem(&maglev_tables, &srvid);
+
 			struct backend_id bkdid = {
 				.service = srvid,
 				.index = ((struct maglev *)hashmap_lookup_elem(&maglev_tables, &srvid))
@@ -469,8 +422,8 @@ static void *socket_routine(void *arg)
 			};
 			struct backend_info *bkdinfo = hashmap_lookup_elem(&backends, &bkdid);
 			if (!bkdinfo) {
-				fprintf(stderr, "ERROR: missing backend\n");
 				drop[tot_pkt_drop++] = &msg.msg_iov[i];
+				log_info("ERROR: missing backend --> DROPPING\n");
 				continue;
 			}
 
@@ -479,9 +432,10 @@ static void *socket_routine(void *arg)
 			fwd_rep.dir = DIR_TO_BACKEND;
 			fwd_rep.addr = bkdinfo->addr;
 			fwd_rep.port = bkdinfo->port;
+			fwd_rep.bkdindex = bkdid.index;
 			__builtin_memcpy(fwd_rep.mac_addr, &bkdinfo->mac_addr, sizeof(fwd_rep.mac_addr));
 			rep = &fwd_rep;
-			if (hashmap_insert_elem(&active_sessions, &sid, &fwd_rep)) {
+			if (hashmap_insert_elem(&active_sessions, &sid, &fwd_rep) != 1) {
 				fprintf(stderr, "ERROR: unable to add forward session to map\n");
 				goto insert;
 			}
@@ -496,7 +450,7 @@ static void *socket_routine(void *arg)
 			sid.dport = sid.sport;
 			sid.saddr = bkdinfo->addr;
 			sid.sport = bkdinfo->port;
-			if (hashmap_insert_elem(&active_sessions, &sid, &bwd_rep)) {
+			if (hashmap_insert_elem(&active_sessions, &sid, &bwd_rep) != 1) {
 				fprintf(stderr, "ERROR: unable to add backward session to map\n");
 				goto insert;
 			}
@@ -532,13 +486,14 @@ insert:
 			csum = csum_add(csum, new_port);
 			*l4check = csum_fold(csum);
 
-			xv->options |= (bkdid.index << 16);
+			xv->options = (rep->bkdindex << 16) | (xv->options & 0xFFFF);
 			send[tot_pkt_send++] = &msg.msg_iov[i];
 		}
 
 		if (nrecv) {
 			size_t ret_send = flash__sendmsg(cfg, nf->thread[socket_id]->socket, send, tot_pkt_send);
 			size_t ret_drop = flash__dropmsg(cfg, nf->thread[socket_id]->socket, drop, tot_pkt_drop);
+
 			if (ret_send != tot_pkt_send || ret_drop != tot_pkt_drop) {
 				log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
 				exit(EXIT_FAILURE);
@@ -565,43 +520,10 @@ int main(int argc, char **argv)
 	int n = flash__parse_cmdline_args(argc, argv, cfg);
 	parse_app_args(argc, argv, &app_conf, n);
 	flash__configure_nf(&nf, cfg);
-	flash__populate_fill_ring(nf->thread, cfg->umem->frame_size, cfg->total_sockets, cfg->umem_offset);
+	flash__populate_fill_ring(nf->thread, cfg->umem->frame_size, cfg->total_sockets, cfg->umem_offset, cfg->umem_scale);
 
 	log_info("Control Plane Setup Done");
 
-	const char *filename = "config.json";
-	// Read JSON file into a string
-	char *json_string = read_file(filename);
-	if (!json_string)
-		return 1;
-	// Parse JSON
-	cJSON *json = cJSON_Parse(json_string);
-	if (!json) {
-		printf("JSON parsing failed!\n");
-		free(json_string);
-		return 1;
-	}
-	// Extract num_backends
-	cJSON *num_backends = cJSON_GetObjectItem(json, "num_backends");
-	nbackends = num_backends->valueint;
-	// Extract each bkd ip
-	cJSON *bkd_addresses = cJSON_GetObjectItem(json, "bkd_addresses");
-	int size = cJSON_GetArraySize(bkd_addresses);
-
-	for (int i = 0; i < size; i++) {
-		cJSON *addr = cJSON_GetArrayItem(bkd_addresses, i);
-		if (cJSON_IsString(addr)) {
-			strncpy(bkd_addr[i], addr->valuestring, IP_STRLEN - 1);
-			bkd_addr[i][IP_STRLEN - 1] = '\0'; // Ensure null termination
-		}
-	}
-	// Cleanup
-	cJSON_Delete(json);
-	free(json_string);
-	// get ip corr to ifname
-	if (get_ip_address(cfg->ifname) != 0) {
-		printf("Failed to get IP address\n");
-	}
 	load_services();
 
 	signal(SIGINT, int_exit);
@@ -648,6 +570,7 @@ int main(int argc, char **argv)
 		log_error("ERROR: Unable to set thread affinity: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
+
 	pthread_detach(stats_thread);
 
 	wait_for_cmd(cfg);

@@ -32,7 +32,7 @@ int main(int argc, char **argv)
 
 	flash__parse_cmdline_args(argc, argv, cfg);
 	flash__configure_nf(&nf, cfg);
-	flash__populate_fill_ring(nf->thread, cfg->umem->frame_size, cfg->total_sockets, cfg->umem_offset);
+	flash__populate_fill_ring(nf->thread, cfg->umem->frame_size, cfg->total_sockets, cfg->umem_offset, cfg->umem_scale);
 
 	log_info("Control Plane Setup Done");
 

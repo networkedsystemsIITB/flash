@@ -47,6 +47,7 @@ enum direction {
 
 struct replace_info {
 	enum direction dir;
+	int bkdindex;
 	uint32_t addr;
 	uint16_t port;
 	uint8_t mac_addr[6];

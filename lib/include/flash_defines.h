@@ -48,6 +48,7 @@ struct umem_config {
 struct config {
 	int umem_fd;
 	int uds_sockfd;
+	int umem_scale;
 	int total_sockets;
 	int current_socket_count;
 	char ifname[IF_NAMESIZE + 1];

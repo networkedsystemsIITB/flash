@@ -218,7 +218,7 @@ static void flash__setup_umem(struct umem *umem)
 
 	log_info("TOTAL SOCKET IN JSON: %d", umem->cfg->total_sockets);
 
-	size = (size_t)NUM_FRAMES * (size_t)umem->cfg->umem->frame_size * (size_t)umem->cfg->total_sockets;
+	size = (size_t)NUM_FRAMES * (size_t)umem->cfg->umem->frame_size * (size_t)umem->cfg->total_sockets * umem->cfg->umem_scale;
 
 	log_info("UMEM size: %lu", size);
 

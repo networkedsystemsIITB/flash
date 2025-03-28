@@ -42,16 +42,16 @@
             "bind_flags": "z",
             "mode": "b",
             "custom_xsk": false,
-            "frags_enabled": false,
-            "umem_scale": 2
+            "frags_enabled": false
         }
     ],
     "route": {
         "0": [
-            1,
+            1
+        ],
+        "1": [
             2
         ],
-        "1": [],
         "2": []
     }
 }

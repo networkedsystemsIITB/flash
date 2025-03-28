@@ -445,7 +445,7 @@ int main(int argc, char **argv)
 	int n = flash__parse_cmdline_args(argc, argv, cfg);
 	parse_app_args(argc, argv, &app_conf, n);
 	flash__configure_nf(&nf, cfg);
-	flash__populate_fill_ring(nf->thread, cfg->umem->frame_size, cfg->total_sockets, cfg->umem_offset);
+	flash__populate_fill_ring(nf->thread, cfg->umem->frame_size, cfg->total_sockets, cfg->umem_offset, cfg->umem_scale);
 
 	stats_arr = calloc(cfg->total_sockets, sizeof(struct test_stats));
 	stats_arr->even_next = 0;

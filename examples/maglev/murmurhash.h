@@ -14,7 +14,9 @@ static inline uint32_t murmurhash(const void *key, size_t key_size, uint32_t see
 
 	// Process 4-byte chunks
 	for (int i = 0; i < nblocks; i++) {
-		memcpy(&k, data + (i * 4), 4);
+		// Extract 32-bit value safely
+		memcpy(&k, data + (i * 4), sizeof(k));
+
 		k *= c1;
 		k = (k << 15) | (k >> 17);
 		k *= c2;

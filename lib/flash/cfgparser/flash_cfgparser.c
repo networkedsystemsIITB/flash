@@ -137,6 +137,13 @@ struct NFGroup *parse_json(const char *filename)
 		nf_group->umem[i]->cfg->umem = calloc(1, sizeof(struct umem_config));
 		nf_group->umem[i]->cfg->xsk = calloc(1, sizeof(struct xsk_config));
 
+		cJSON *umem_scale = cJSON_GetObjectItem(umem_obj, "umem_scale");
+		if (!cJSON_IsNumber(umem_scale)) {
+			nf_group->umem[i]->cfg->umem_scale = 1;
+		} else {
+			nf_group->umem[i]->cfg->umem_scale = (uint16_t)umem_scale->valueint;
+		}
+
 		// Extract "xdp_flags"
 		cJSON *xdp_flags_obj = cJSON_GetObjectItem(umem_obj, "xdp_flags");
 		if (!cJSON_IsString(xdp_flags_obj)) {

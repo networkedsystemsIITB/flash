@@ -25,7 +25,7 @@ struct xskmsghdr {
 
 extern bool done;
 
-void flash__populate_fill_ring(struct thread **thread, int frame_size, int total_sockets, int umem_offset);
+void flash__populate_fill_ring(struct thread **thread, int frame_size, int total_sockets, int umem_offset, int umem_scale);
 void flash__configure_nf(struct nf **_nf, struct config *cfg);
 void flash__xsk_close(struct config *cfg, struct nf *nf);
 int flash__poll(struct socket *xsk, struct pollfd *fds, nfds_t nfds, int timeout);
