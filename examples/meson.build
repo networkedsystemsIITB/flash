@@ -8,6 +8,8 @@ dirs = [
     'l2fwd',
     'ip4ping',
     'maglev',
+    'firewall',
+    'arpresolver',
 ]
 
 def_deps = [include, log, nf, params, uds]
