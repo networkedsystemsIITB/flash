@@ -9,6 +9,30 @@
 
 static uint64_t __hz;
 
+#if defined(__ARM_ARCH_ISA_A64)
+// ARM64 based implementation
+static inline uint64_t rdtsc(void)
+{
+	uint64_t cntvct;
+	asm volatile("mrs %0, cntvct_el0; " : "=r"(cntvct)::"memory");
+	return cntvct;
+}
+
+static inline uint64_t rdtsc_precise(void)
+{
+	uint64_t cntvct;
+	asm volatile("isb; mrs %0, cntvct_el0; isb; " : "=r"(cntvct)::"memory");
+	return cntvct;
+}
+
+static inline uint64_t get_tsc_freq(__attribute__((unused)) struct config *cfg)
+{
+	uint32_t freq_hz;
+	asm volatile("mrs %0, cntfrq_el0; isb; " : "=r"(freq_hz)::"memory");
+	return freq_hz;
+}
+#elif defined(__x86_64__)
+// AMD64 based implementation
 static inline uint64_t rdtsc(void)
 {
 	union {
@@ -53,6 +77,7 @@ static uint64_t get_tsc_freq(struct config *cfg)
 	}
 	return 0;
 }
+#endif
 
 static uint64_t get_timer_hz(struct config *cfg)
 {
