@@ -9,3 +9,6 @@ executable('fwddrop', fwd_drop, c_args: cflags, install: true, dependencies: dep
 
 fwd_rr = files('fwdrr.c')
 executable('fwdrr', fwd_rr, c_args: cflags, install: true, dependencies: deps)
+
+uschain = files('userspace-chain.c')
+executable('userspace-chain', uschain, c_args: cflags, install: true, dependencies: deps)
