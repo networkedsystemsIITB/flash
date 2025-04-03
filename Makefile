@@ -12,6 +12,9 @@ configure:
 build: configure
 	meson compile -C $(BUILD_DIR)
 
+rust:
+	cargo build --release --target-dir build
+
 ci_build:
 	./tools/ci_build.sh
 
@@ -24,4 +27,4 @@ docker_mon:
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: all configure build ci_build docker docker_mon clean
+.PHONY: all configure build rust ci_build docker docker_mon clean

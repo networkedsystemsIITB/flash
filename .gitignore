@@ -6,3 +6,7 @@ build/
 # retains the lib/usr directory.
 usr/
 !lib/usr/
+
+# Rust
+**/target/
+**/Cargo.lock
