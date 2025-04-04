@@ -83,3 +83,7 @@ const uint32_t sbox[] =
         0x3C034CBA, 0xACDA62FC, 0x11923B8B, 0x45EF170A,
     };
 
+uint64_t hash(const uint8_t *key, size_t len)
+{
+	return CityHash64((const char *)key, len);
+}

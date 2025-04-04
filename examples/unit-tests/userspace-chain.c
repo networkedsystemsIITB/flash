@@ -276,7 +276,7 @@ static int guest_init_queue(struct owner_queue *oq, struct guest_queue **gq)
 {
 	struct guest_queue *q;
 
-	if (oq || oq->nentries == 0 || *gq || !is_power_of_2(oq->nentries))
+	if (!oq || oq->nentries == 0 || *gq || !is_power_of_2(oq->nentries))
 		return -EINVAL;
 
 	q = calloc(1, sizeof(*q));
@@ -290,7 +290,6 @@ static int guest_init_queue(struct owner_queue *oq, struct guest_queue **gq)
 	q->mask = oq->ring_mask;
 	q->ring = oq->ring + offsetof(struct owner_rxtx_ring, desc);
 
-	sleep(1);
 	*gq = q;
 	return 0;
 }
@@ -412,7 +411,7 @@ static void *socket_routine(void *arg)
 	struct xskmsghdr msg = {};
 
 	msg.msg_iov = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
-
+	struct xdp_desc descs[cfg->xsk->batch_size];
 	fds[0].fd = nf->thread[socket_id]->socket->fd;
 	fds[0].events = POLLIN;
 
@@ -423,7 +422,26 @@ static void *socket_routine(void *arg)
 				continue;
 		}
 
-		nrecv = flash__recvmsg(cfg, nf->thread[socket_id]->socket, &msg);
+		if (socket_id == 0)
+			nrecv = flash__recvmsg(cfg, nf->thread[socket_id]->socket, &msg);
+		else {
+			nrecv = owner_bulk_dequeue_rxtx(owner_queues[socket_id], descs, cfg->xsk->batch_size);
+
+			for (i = 0; i < nrecv; i++) {
+				__u64 addr = descs[i].addr;
+				__u32 len = descs[i].len;
+				__u64 orig = addr;
+
+				addr = xsk_umem__add_offset_to_addr(addr);
+				__u64 *pkt = xsk_umem__get_data(cfg->umem->buffer, addr);
+
+				msg.msg_iov[i].data = pkt;
+				msg.msg_iov[i].len = len;
+				msg.msg_iov[i].addr = orig;
+				msg.msg_iov[i].options = descs[i].options;
+			}
+		}
+
 		struct xskvec *send[nrecv];
 		unsigned int tot_pkt_send = 0;
 		for (i = 0; i < nrecv; i++) {
@@ -441,7 +459,12 @@ static void *socket_routine(void *arg)
 		}
 
 		if (nrecv) {
-			ret = flash__sendmsg(cfg, nf->thread[socket_id]->socket, send, tot_pkt_send);
+			if (socket_id == cfg->total_sockets - 1)
+				ret = flash__sendmsg_spsc(cfg, nf->thread[socket_id]->socket, nf->thread[0]->socket, send,
+							  tot_pkt_send);
+			else {
+				ret = guest_bulk_enqueue_rxtx(guest_queues[socket_id][socket_id + 1], descs, tot_pkt_send);
+			}
 			if (ret != nrecv) {
 				log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
 				exit(EXIT_FAILURE);
@@ -501,22 +524,25 @@ int main(int argc, char **argv)
 	log_info("STARTING Data Path");
 
 	for (int i = 0; i < cfg->total_sockets; i++) {
-		struct Args *args = calloc(1, sizeof(struct Args));
-		args->socket_id = i;
-		args->next = nf->next;
-		args->next_size = nf->next_size;
-
 		// setting up the owner queue
 		if (owner_init_queue(cfg->umem->frame_size, &owner_queues[i]) != 0) {
 			log_error("Error creating owner queue");
 			exit(EXIT_FAILURE);
 		}
 
-		log_info("2_NEXT_SIZE: %d", args->next_size);
-
-		for (int i = 0; i < args->next_size; i++) {
-			log_info("2_NEXT_ITEM_%d %d", i, nf->next[i]);
+		for (int j = 0; j < cfg->total_sockets; j++) {
+			if (guest_init_queue(owner_queues[i], &guest_queues[i][j]) != 0) {
+				log_error("Error creating guest queue");
+				exit(EXIT_FAILURE);
+			}
 		}
+	}
+
+	for (int i = 0; i < cfg->total_sockets; i++) {
+		struct Args *args = calloc(1, sizeof(struct Args));
+		args->socket_id = i;
+		args->next = nf->next;
+		args->next_size = nf->next_size;
 
 		pthread_t socket_thread;
 		if (pthread_create(&socket_thread, NULL, socket_routine, args)) {
@@ -531,16 +557,6 @@ int main(int argc, char **argv)
 		}
 
 		pthread_detach(socket_thread);
-	}
-
-	// Setting up the guest queue
-	for (int i = 0; i < cfg->total_sockets; i++) {
-		for (int j = 0; j < cfg->total_sockets; j++) {
-			if (guest_init_queue(owner_queues[i], &guest_queues[i][j]) != 0) {
-				log_error("Error creating guest queue");
-				exit(EXIT_FAILURE);
-			}
-		}
 	}
 
 	pthread_t stats_thread;

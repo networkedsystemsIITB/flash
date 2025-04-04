@@ -154,6 +154,54 @@ static inline void __complete_tx_rx_first(struct config *cfg, struct socket *xsk
 	}
 }
 
+static inline void __complete_tx_rx_first__spsc(struct config *cfg, struct socket *xsk_first, struct socket *xsk)
+{
+	__u32 idx_cq = 0, idx_fq = 0;
+	unsigned int completed, num_outstanding;
+
+	if (!xsk->outstanding_tx)
+		return;
+
+	/**
+	  * In copy mode, Tx is driven by a syscall so we need to use e.g. sendto() to
+	  * really send the packets. In zero-copy mode we do not have to do this, since Tx
+	  * is driven by the NAPI loop. So as an optimization, we do not have to call
+	  * sendto() all the time in zero-copy mode.
+	  */
+	if (cfg->xsk->bind_flags & XDP_COPY) {
+#ifdef STATS
+		xsk->app_stats.copy_tx_sendtos++;
+#endif
+		__kick_tx(xsk);
+	}
+
+	num_outstanding = xsk->outstanding_tx > cfg->xsk->batch_size ? cfg->xsk->batch_size : xsk->outstanding_tx;
+
+	/* Re-add completed TX buffers */
+	completed = xsk_ring_cons__peek(&xsk->comp, num_outstanding, &idx_cq);
+	if (completed > 0) {
+		unsigned int i, ret;
+
+		ret = xsk_ring_prod__reserve(&xsk_first->fill, completed, &idx_fq);
+		while (ret != completed) {
+			if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk_first->fill)) {
+#ifdef STATS
+				xsk->app_stats.fill_fail_polls++;
+#endif
+				recvfrom(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL, NULL);
+			}
+			ret = xsk_ring_prod__reserve(&xsk_first->fill, completed, &idx_fq);
+		}
+
+		for (i = 0; i < completed; i++)
+			*xsk_ring_prod__fill_addr(&xsk_first->fill, idx_fq++) = *xsk_ring_cons__comp_addr(&xsk->comp, idx_cq++);
+
+		xsk_ring_prod__submit(&xsk_first->fill, completed);
+		xsk_ring_cons__release(&xsk->comp, completed);
+		xsk->outstanding_tx -= completed;
+	}
+}
+
 static inline void __reserve_fq(struct config *cfg, struct socket *xsk, unsigned int num)
 {
 	__u32 idx_fq = 0;
@@ -180,6 +228,25 @@ static inline void __reserve_tx(struct config *cfg, struct socket *xsk, unsigned
 	ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
 	while (ret != num) {
 		__complete_tx_rx_first(cfg, xsk);
+		if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->tx)) {
+#ifdef STATS
+			xsk->app_stats.tx_wakeup_sendtos++;
+#endif
+			__kick_tx(xsk);
+		}
+		ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
+	}
+	xsk->idx_tx_bp = idx_tx;
+}
+
+static inline void __reserve_tx_spsc(struct config *cfg, struct socket *xsk, struct socket *xsk_first, unsigned int num)
+{
+	__u32 idx_tx = 0;
+	unsigned int ret;
+
+	ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
+	while (ret != num) {
+		__complete_tx_rx_first__spsc(cfg, xsk_first, xsk);
 		if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->tx)) {
 #ifdef STATS
 			xsk->app_stats.tx_wakeup_sendtos++;
@@ -324,6 +391,52 @@ size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec **ms
 
 	if (!cfg->backpressure) {
 		__reserve_tx(cfg, xsk, nsend);
+	}
+	__u32 idx_tx = xsk->idx_tx_bp;
+	for (i = 0; i < nsend; i++) {
+		struct xskvec *xv = msgiov[i];
+		bool eop = IS_EOP_DESC(xv->options);
+		__u64 addr = xv->addr;
+
+		__u32 len = xv->len;
+		nb_frags++;
+
+		struct xdp_desc *tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, idx_tx++);
+
+		tx_desc->options = eop ? 0 : XDP_PKT_CONTD;
+		tx_desc->options |= (xv->options & 0xFFFF0000);
+		tx_desc->addr = addr;
+		tx_desc->len = len;
+
+		__hex_dump(xv->data, xv->len, addr);
+
+		if (eop) {
+			frags_done += nb_frags;
+			nb_frags = 0;
+			eop_cnt++;
+		}
+	}
+	xsk_ring_prod__submit(&xsk->tx, frags_done);
+	xsk->outstanding_tx += frags_done;
+#ifdef STATS
+	xsk->ring_stats.tx_npkts += eop_cnt;
+	xsk->ring_stats.tx_frags += nsend;
+#endif
+	return nsend;
+}
+
+size_t flash__sendmsg_spsc(struct config *cfg, struct socket *xsk, struct socket *xsk_first, struct xskvec **msgiov,
+			   unsigned int nsend)
+{
+	unsigned int i;
+	__u32 frags_done = 0, eop_cnt = 0;
+	__u32 nb_frags = 0;
+
+	if (!nsend)
+		return 0;
+
+	if (!cfg->backpressure) {
+		__complete_tx_rx_first__spsc(cfg, xsk_first, xsk);
 	}
 	__u32 idx_tx = xsk->idx_tx_bp;
 	for (i = 0; i < nsend; i++) {

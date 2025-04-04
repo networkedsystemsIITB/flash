@@ -29,6 +29,8 @@ void flash__populate_fill_ring(struct thread **thread, int frame_size, int total
 void flash__configure_nf(struct nf **_nf, struct config *cfg);
 void flash__xsk_close(struct config *cfg, struct nf *nf);
 int flash__poll(struct socket *xsk, struct pollfd *fds, nfds_t nfds, int timeout);
+size_t flash__sendmsg_spsc(struct config *cfg, struct socket *xsk, struct socket *xsk_first, struct xskvec **msgiov,
+			   unsigned int nsend);
 size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg);
 size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, unsigned int nsend);
 size_t flash__dropmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, unsigned int ndrop);

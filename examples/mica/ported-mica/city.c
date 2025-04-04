@@ -74,13 +74,13 @@ static uint32 UNALIGNED_LOAD32(const char *p) {
 
 #endif  // WORDS_BIGENDIAN
 
-#if !defined(LIKELY)
-#if HAVE_BUILTIN_EXPECT
-#define LIKELY(x) (__builtin_expect(!!(x), 1))
-#else
+// #if !defined(LIKELY)
+// #if HAVE_BUILTIN_EXPECT
+// #define LIKELY(x) (__builtin_expect(!!(x), 1))
+// #else
 #define LIKELY(x) (x)
-#endif
-#endif
+// #endif
+// #endif
 
 static uint64 Fetch64(const char *p) {
   return uint64_in_expected_order(UNALIGNED_LOAD64(p));
@@ -170,7 +170,7 @@ static uint64 HashLen17to32(const char *s, size_t len) {
 // Return a 16-byte hash for 48 bytes.  Quick and dirty.
 // Callers do best to use "random-looking" values for a and b.
 // static pair<uint64, uint64> WeakHashLen32WithSeeds(
-uint128 WeakHashLen32WithSeeds6(
+static uint128 WeakHashLen32WithSeeds6(
     uint64 w, uint64 x, uint64 y, uint64 z, uint64 a, uint64 b) {
   a += w;
   b = Rotate(b + a + z, 21);
@@ -187,7 +187,7 @@ uint128 WeakHashLen32WithSeeds6(
 
 // Return a 16-byte hash for s[0] ... s[31], a, and b.  Quick and dirty.
 // static pair<uint64, uint64> WeakHashLen32WithSeeds(
-uint128 WeakHashLen32WithSeeds(
+static uint128 WeakHashLen32WithSeeds(
     const char* s, uint64 a, uint64 b) {
   return WeakHashLen32WithSeeds6(Fetch64(s),
                                 Fetch64(s + 8),

@@ -104,7 +104,7 @@ mehcached_read_version_begin(const struct mehcached_table *table MEHCACHED_UNUSE
         while (true)
         {
             // uint64_t v = *(volatile uint64_t *)&bucket->version;
-            uint32_t v = *(volatile uint32_t *)&bucket->version;
+            uint32_t v = *(const volatile uint32_t *)&bucket->version;
             memory_barrier();
             // if ((v & 1UL) != 0UL)
             if ((v & 1U) != 0U)
@@ -131,7 +131,7 @@ mehcached_read_version_end(const struct mehcached_table *table MEHCACHED_UNUSED,
     {
         memory_barrier();
         // uint64_t v = *(volatile uint64_t *)&bucket->version;
-        uint32_t v = *(volatile uint32_t *)&bucket->version;
+        uint32_t v = *(const volatile uint32_t *)&bucket->version;
         return v;
     }
     else

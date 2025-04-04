@@ -93,6 +93,8 @@ static void *configure(void)
 				   sizeof(default_value), 0, false))
 			assert(false);
 	}
+
+	return NULL;
 }
 
 static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
@@ -172,14 +174,14 @@ static uint16_t iph_checksum(void *vdata, size_t length)
 
 static uint16_t udph_checksum(struct udphdr *udph, struct iphdr *iph, uint8_t *payload, size_t payload_len)
 {
-	struct pseudo_header{
+	struct pseudo_header {
 		uint32_t src;
 		uint32_t dst;
 		uint8_t zero;
 		uint8_t protocol;
 		uint16_t udp_length;
 	};
-	struct pseudo_header pseudo_hdr = {0};
+	struct pseudo_header pseudo_hdr = { 0 };
 	pseudo_hdr.src = iph->saddr;
 	pseudo_hdr.dst = iph->daddr;
 	pseudo_hdr.zero = 0;
@@ -191,12 +193,12 @@ static uint16_t udph_checksum(struct udphdr *udph, struct iphdr *iph, uint8_t *p
 
 	// Add pseudo-header
 	ptr = (uint16_t *)&pseudo_hdr;
-	for (int i = 0; i < sizeof(pseudo_hdr) / 2; i++)
+	for (int i = 0; i < (int)sizeof(pseudo_hdr) / 2; i++)
 		sum += ptr[i];
 
 	// Add UDP header
 	ptr = (uint16_t *)udph;
-	for (int i = 0; i < sizeof(struct udphdr) / 2; i++)
+	for (int i = 0; i < (int)sizeof(struct udphdr) / 2; i++)
 		sum += ptr[i];
 
 	// Add payload
@@ -219,20 +221,12 @@ static void *socket_routine(void *arg)
 {
 	struct Args *a = (struct Args *)arg;
 	int socket_id = a->socket_id;
-	int *next = a->next;
-	int next_size = a->next_size;
 	// free(arg);
 	log_info("SOCKET_ID: %d", socket_id);
 	// static __u32 nb_frags;
 	int i, ret, nfds = 1, nrecv;
 	struct pollfd fds[1] = {};
 	struct xskmsghdr msg = {};
-
-	log_info("2_NEXT_SIZE: %d", next_size);
-
-	for (int i = 0; i < next_size; i++) {
-		log_info("2_NEXT_ITEM_%d %d", i, next[i]);
-	}
 
 	msg.msg_iov = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
 
@@ -292,8 +286,7 @@ static void *socket_routine(void *arg)
 			key = default_keys[keys_index];
 			keys_index = (keys_index + 1) % NUM_KEYS;
 			// GET
-			if (flag)
-			{
+			if (flag) {
 				uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
 				size_t value_length = sizeof(value);
 
@@ -302,7 +295,7 @@ static void *socket_routine(void *arg)
 					assert(value_length == sizeof(value));
 
 				// send value
-				memcpy(payload + sizeof(size_t), &value, 256);
+				// memcpy(payload + sizeof(size_t), &value, 256);
 				// re-configuring the pkt to send
 				memcpy(tmp_mac, eth->h_dest, ETH_ALEN);
 				memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
@@ -327,9 +320,9 @@ static void *socket_routine(void *arg)
 			}
 
 			// STORE
-			else
-			{
-				memcpy(value, payload + sizeof(size_t), 256);
+			else {
+				// memcpy(value, payload + sizeof(size_t), 256);
+				memset(value, 'A', 255);
 				value[255] = '\0';
 				uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
 				if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key, sizeof(key), (const uint8_t *)&value,
@@ -337,7 +330,7 @@ static void *socket_routine(void *arg)
 					assert(false);
 
 				// send acknowledgement
-				memcpy(payload + sizeof(size_t), &value, 256);
+				// memcpy(payload + sizeof(size_t), &value, 256);
 				drop[tot_pkt_drop++] = &msg.msg_iov[i];
 			}
 		}
@@ -380,7 +373,6 @@ int main(int argc, char **argv)
 	signal(SIGABRT, int_exit);
 
 	log_info("STARTING Data Path");
-
 
 	for (int i = 0; i < cfg->total_sockets; i++) {
 		struct Args *args = calloc(1, sizeof(struct Args));

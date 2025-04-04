@@ -196,7 +196,7 @@ mehcached_pool_is_valid(const struct mehcached_pool *alloc, uint64_t pool_offset
     else
     {
         memory_barrier();
-        return ((*(volatile uint64_t *)&alloc->tail - pool_offset) & MEHCACHED_ITEM_OFFSET_MASK) <= alloc->size;
+        return ((*(const volatile uint64_t *)&alloc->tail - pool_offset) & MEHCACHED_ITEM_OFFSET_MASK) <= alloc->size;
     }
 }
 

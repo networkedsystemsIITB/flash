@@ -23,7 +23,7 @@
 #include <stdlib.h>
 #include <cjson/cJSON.h>
 
-#define CONFIG_FILE "config.json"
+#define CONFIG_FILE "./examples/firewall/config.json"
 
 #define IP_STRLEN 16
 #define PROTO_STRLEN 4
@@ -112,7 +112,7 @@ static void read_json_config(void)
 	if (cJSON_IsArray(valid_src)) {
 		int size = cJSON_GetArraySize(valid_src);
 		num_sessions = size;
-		if (num_sessions > MAX_VALID_SESSIONS){
+		if (num_sessions > MAX_VALID_SESSIONS) {
 			printf("num_sessions > MAX_VALID_SESSIONS\n");
 			exit(1);
 		}
@@ -122,7 +122,6 @@ static void read_json_config(void)
 			cJSON *src_port = cJSON_GetObjectItem(entry, "src_port");
 
 			if (cJSON_IsString(src_addr) && cJSON_IsNumber(src_port)) {
-				// printf("  - %s:%d\n", src_addr->valuestring, src_port->valueint);
 				valid_sessions[i].saddr = inet_addr(src_addr->valuestring);
 				valid_sessions[i].sport = htons(src_port->valueint);
 				valid_sessions[i].proto = IPPROTO_UDP;
@@ -142,7 +141,7 @@ static void *configure(void)
 	int nbackends;
 	send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
 	recv_data(cfg->uds_sockfd, &nbackends, sizeof(int));
-	if (nbackends != 1){
+	if (nbackends != 1) {
 		printf("Firewall is linked to %d load balancers", nbackends);
 		exit(1);
 	}
@@ -310,13 +309,7 @@ static void *socket_routine(void *arg)
 			sid.sport = *sport;
 			sid.dport = *dport;
 
-            // Checking only on proto, daddr, dport
-			// if (sid.proto == IPPROTO_UDP && sid.daddr == inet_addr("192.168.10.1") && sid.dport == htons(80))
-            // {
-			// 	send[tot_pkt_send++] = &msg.msg_iov[i];
-            //     continue;
-	        // }
-			if (hashmap_lookup_elem(&valid_sessions_map, (void*) &sid) == NULL){
+			if (hashmap_lookup_elem(&valid_sessions_map, (void *)&sid) == NULL) {
 				drop[tot_pkt_drop++] = &msg.msg_iov[i];
 				continue;
 			}
@@ -361,7 +354,6 @@ int main(int argc, char **argv)
 	signal(SIGABRT, int_exit);
 
 	log_info("STARTING Data Path");
-
 
 	for (int i = 0; i < cfg->total_sockets; i++) {
 		struct Args *args = calloc(1, sizeof(struct Args));
