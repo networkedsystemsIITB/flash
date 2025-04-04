@@ -10,6 +10,7 @@ dirs = [
     'maglev',
     'firewall',
     'arpresolver',
+    'mica',
 ]
 
 def_deps = [include, log, nf, params, uds]

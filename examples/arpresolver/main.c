@@ -33,7 +33,7 @@ struct config *cfg = NULL;
 struct nf *nf;
 
 int num_valid_ips;
-char resp_to_ips[MAX_IPS][IP_STRLEN];
+char ip4ping_ip[IP_STRLEN];
 uint8_t src_mac[ETH_ALEN];
 
 static int get_mac_address(void)
@@ -72,15 +72,13 @@ static void configure(void)
 	// Need to change so that we get IPS of all NFS, not just of our local dest
 	send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
 	recv_data(cfg->uds_sockfd, &num_valid_ips, sizeof(int));
-	if (num_valid_ips > MAX_IPS){
-		printf("num_valid_ips > MAX_IPS\n");
+	if (num_valid_ips != 1){
+		printf("Arp-resolver should be ran along with ip4ping only");
 		exit(1);
 	}
 	// log_info("Number of Backends: %d", num_valid_ips);
-	for (int i = 0; i < num_valid_ips; i++) {
-		recv_data(cfg->uds_sockfd, resp_to_ips[i], INET_ADDRSTRLEN);
-		log_info("IP no: %d IP: %s", i, resp_to_ips[i]);
-	}
+	recv_data(cfg->uds_sockfd, ip4ping_ip, INET_ADDRSTRLEN);
+	log_info("ip4ping_ip: %s", ip4ping_ip);
 
 	// configuring src_mac
 	if (get_mac_address() < 0){
@@ -238,10 +236,8 @@ static void *socket_routine(void *arg)
 			char query_ip[IP_STRLEN];
 			inet_ntop(AF_INET, (struct in_addr *)buff_ip, query_ip, sizeof(query_ip));
 
-			for (int i = 0; i < num_valid_ips; i++){
-				if (strcmp(resp_to_ips[i], query_ip) == 0){
-					goto send_arp_resp;
-				}
+			if (strcmp(ip4ping_ip, query_ip) == 0){
+				goto send_arp_resp;
 			}
 
 			drop[tot_pkt_drop++] = &msg.msg_iov[i];

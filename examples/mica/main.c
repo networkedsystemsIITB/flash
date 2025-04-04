@@ -14,22 +14,33 @@
 #include <linux/ip.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
-#include "hashmap.h"
 
 #include <string.h>
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <cjson/cJSON.h>
-
-#define CONFIG_FILE "config.json"
+#include "./ported-mica/hash.h"
+#include "./ported-mica/mehcached.h"
 
 #define IP_STRLEN 16
 #define PROTO_STRLEN 4
 #define IFNAME_STRLEN 256
 #define MAX_VALID_SESSIONS 100
 
+////// MICA PART ///////
+#define NUM_KEYS 2000
+#define VALUE_SIZE 256
+
+size_t default_keys[NUM_KEYS];
+int keys_index = 0;
+char default_value[VALUE_SIZE];
+
+struct mehcached_table table_o;
+struct mehcached_table *table;
+bool flag = false;
+
+///// MICA END ///////
 bool done = false;
 struct config *cfg = NULL;
 struct nf *nf;
@@ -52,111 +63,36 @@ struct Args {
 	int next_size;
 };
 
-struct session_id {
-	uint32_t saddr;
-	uint32_t daddr;
-	uint16_t sport;
-	uint16_t dport;
-	uint8_t proto;
-} __attribute__((packed));
-
-struct hashmap valid_sessions_map;
-struct session_id valid_sessions[MAX_VALID_SESSIONS];
-int num_sessions = 0;
-
-char load_balancer_addr[IP_STRLEN];
-unsigned int load_balancer_port = 80;
-
-static void read_json_config(void)
-{
-	struct in_addr addr;
-	inet_aton(load_balancer_addr, &addr);
-	FILE *file = fopen(CONFIG_FILE, "r");
-	if (!file) {
-		perror("Failed to open file");
-		return;
-	}
-
-	// Get file size
-	fseek(file, 0, SEEK_END);
-	size_t file_size = ftell(file);
-	rewind(file);
-
-	char *json_data = (char *)malloc(file_size + 1);
-	if (!json_data) {
-		perror("Memory allocation failed");
-		fclose(file);
-		return;
-	}
-
-	size_t read_size = fread(json_data, 1, file_size, file);
-	if (read_size != file_size) {
-		perror("Failed to read entire file");
-		free(json_data);
-		fclose(file);
-		exit(1);
-	}
-	json_data[file_size] = '\0';
-
-	fclose(file);
-
-	cJSON *json = cJSON_Parse(json_data);
-	free(json_data);
-	if (!json) {
-		printf("Error parsing JSON\n");
-		return;
-	}
-
-	cJSON *valid_src = cJSON_GetObjectItem(json, "valid_src");
-
-	if (cJSON_IsArray(valid_src)) {
-		int size = cJSON_GetArraySize(valid_src);
-		num_sessions = size;
-		if (num_sessions > MAX_VALID_SESSIONS){
-			printf("num_sessions > MAX_VALID_SESSIONS\n");
-			exit(1);
-		}
-		for (int i = 0; i < num_sessions; i++) {
-			cJSON *entry = cJSON_GetArrayItem(valid_src, i);
-			cJSON *src_addr = cJSON_GetObjectItem(entry, "src_addr");
-			cJSON *src_port = cJSON_GetObjectItem(entry, "src_port");
-
-			if (cJSON_IsString(src_addr) && cJSON_IsNumber(src_port)) {
-				// printf("  - %s:%d\n", src_addr->valuestring, src_port->valueint);
-				valid_sessions[i].saddr = inet_addr(src_addr->valuestring);
-				valid_sessions[i].sport = htons(src_port->valueint);
-				valid_sessions[i].proto = IPPROTO_UDP;
-				valid_sessions[i].daddr = addr.s_addr;
-				valid_sessions[i].dport = htons(load_balancer_port);
-			}
-		}
-	} else {
-		printf("Error: valid_src is not a valid array\n");
-	}
-
-	cJSON_Delete(json); // Clean up
-}
-
 static void *configure(void)
 {
-	int nbackends;
-	send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
-	recv_data(cfg->uds_sockfd, &nbackends, sizeof(int));
-	if (nbackends != 1){
-		printf("Firewall is linked to %d load balancers", nbackends);
-		exit(1);
-	}
-	recv_data(cfg->uds_sockfd, load_balancer_addr, INET_ADDRSTRLEN);
+	const size_t page_size = 1048576 * 2;
+	const size_t num_numa_nodes = 1;
+	const size_t num_pages_to_try = 16384;
+	const size_t num_pages_to_reserve = 16384 - 2048;
+	size_t alloc_overhead = sizeof(struct mehcached_item);
 
-	read_json_config();
+	mehcached_shm_init(page_size, num_numa_nodes, num_pages_to_try, num_pages_to_reserve);
 
-	hashmap_init(&valid_sessions_map, sizeof(struct session_id), sizeof(int), MAX_VALID_SESSIONS);
-	for (int session_num = 0; session_num < num_sessions; session_num++) {
-		struct session_id *key = &valid_sessions[session_num];
-		int val = 1;
-		hashmap_insert_elem(&valid_sessions_map, (void *)key, (void *)&val);
+	table = &table_o;
+	size_t numa_nodes[] = { (size_t)-1 };
+	// mehcached_table_init(table, 1, 1, 256, false, false, false, numa_nodes[0], numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
+	mehcached_table_init(table, (NUM_KEYS + MEHCACHED_ITEMS_PER_BUCKET - 1) / MEHCACHED_ITEMS_PER_BUCKET, 1,
+			     NUM_KEYS * /*MEHCACHED_ROUNDUP64*/ (alloc_overhead + 8 + 8), false, false, false, numa_nodes[0],
+			     numa_nodes, MEHCACHED_MTH_THRESHOLD_FIFO);
+	assert(table);
+
+	memset(default_value, 'A', 255);
+	default_value[255] = '\0';
+
+	for (size_t i = 0; i < NUM_KEYS; i++) {
+		size_t key = i;
+		default_keys[i] = key;
+
+		uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
+		if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key, sizeof(key), (const uint8_t *)&default_value,
+				   sizeof(default_value), 0, false))
+			assert(false);
 	}
-	return NULL;
 }
 
 static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
@@ -211,6 +147,74 @@ static void *worker__stats(void *arg)
 	return NULL;
 }
 
+static uint16_t iph_checksum(void *vdata, size_t length)
+{
+	uint32_t acc = 0;
+	uint16_t *data = vdata;
+
+	// Sum all 16-bit words
+	for (size_t i = 0; i < length / 2; i++) {
+		acc += data[i];
+	}
+
+	// If length is odd, add remaining byte
+	if (length & 1) {
+		acc += ((uint8_t *)data)[length - 1] << 8;
+	}
+
+	// Fold into 16 bits
+	while (acc >> 16) {
+		acc = (acc & 0xFFFF) + (acc >> 16);
+	}
+
+	return ~acc;
+}
+
+static uint16_t udph_checksum(struct udphdr *udph, struct iphdr *iph, uint8_t *payload, size_t payload_len)
+{
+	struct pseudo_header{
+		uint32_t src;
+		uint32_t dst;
+		uint8_t zero;
+		uint8_t protocol;
+		uint16_t udp_length;
+	};
+	struct pseudo_header pseudo_hdr = {0};
+	pseudo_hdr.src = iph->saddr;
+	pseudo_hdr.dst = iph->daddr;
+	pseudo_hdr.zero = 0;
+	pseudo_hdr.protocol = IPPROTO_UDP;
+	pseudo_hdr.udp_length = udph->len;
+
+	uint32_t sum = 0;
+	uint16_t *ptr;
+
+	// Add pseudo-header
+	ptr = (uint16_t *)&pseudo_hdr;
+	for (int i = 0; i < sizeof(pseudo_hdr) / 2; i++)
+		sum += ptr[i];
+
+	// Add UDP header
+	ptr = (uint16_t *)udph;
+	for (int i = 0; i < sizeof(struct udphdr) / 2; i++)
+		sum += ptr[i];
+
+	// Add payload
+	ptr = (uint16_t *)payload;
+	for (size_t i = 0; i < payload_len / 2; i++)
+		sum += ptr[i];
+
+	// Handle odd byte
+	if (payload_len & 1)
+		sum += ((uint8_t *)payload)[payload_len - 1] << 8;
+
+	// Fold 32-bit sum to 16-bit
+	while (sum >> 16)
+		sum = (sum & 0xFFFF) + (sum >> 16);
+
+	return ~sum;
+}
+
 static void *socket_routine(void *arg)
 {
 	struct Args *a = (struct Args *)arg;
@@ -252,6 +256,8 @@ static void *socket_routine(void *arg)
 			struct xskvec *xv = &msg.msg_iov[i];
 			void *pkt = xv->data;
 			void *pkt_end = pkt + xv->len;
+			uint8_t tmp_mac[ETH_ALEN];
+			struct in_addr tmp_ip;
 			struct ethhdr *eth = pkt;
 			if ((void *)(eth + 1) > pkt_end) {
 				drop[tot_pkt_drop++] = &msg.msg_iov[i];
@@ -270,57 +276,70 @@ static void *socket_routine(void *arg)
 			}
 
 			void *next = (void *)iph + (iph->ihl << 2);
+			// Assuming only UDP packets are coming
+			struct udphdr *udph = next;
+			unsigned char *payload = (unsigned char *)(udph + 1);
+			int udp_length = ntohs(udph->len);
+			int payload_len = udp_length - sizeof(struct udphdr);
 
-			uint16_t *sport, *dport;
+			size_t key;
+			char value[256];
 
-			switch (iph->protocol) {
-			case IPPROTO_TCP:;
-				struct tcphdr *tcph = next;
-				if ((void *)(tcph + 1) > pkt_end) {
-					drop[tot_pkt_drop++] = &msg.msg_iov[i];
-					continue;
-				}
+			// get key
+			memcpy(&key, payload, sizeof(size_t));
+			// Hardcoding so that half the packets are get, other half are store
+			flag = !flag;
+			key = default_keys[keys_index];
+			keys_index = (keys_index + 1) % NUM_KEYS;
+			// GET
+			if (flag)
+			{
+				uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
+				size_t value_length = sizeof(value);
 
-				sport = &tcph->source;
-				dport = &tcph->dest;
+				if (mehcached_get(0, table, key_hash, (const uint8_t *)&key, sizeof(key), (uint8_t *)&value,
+						  &value_length, NULL, false))
+					assert(value_length == sizeof(value));
 
-				break;
+				// send value
+				memcpy(payload + sizeof(size_t), &value, 256);
+				// re-configuring the pkt to send
+				memcpy(tmp_mac, eth->h_dest, ETH_ALEN);
+				memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
+				memcpy(eth->h_source, tmp_mac, ETH_ALEN);
 
-			case IPPROTO_UDP:;
-				struct udphdr *udph = next;
-				if ((void *)(udph + 1) > pkt_end) {
-					drop[tot_pkt_drop++] = &msg.msg_iov[i];
-					continue;
-				}
+				memcpy(&tmp_ip, &iph->saddr, sizeof(tmp_ip));
+				memcpy(&iph->saddr, &iph->daddr, sizeof(tmp_ip));
+				memcpy(&iph->daddr, &tmp_ip, sizeof(tmp_ip));
+				// Recalculating iph checksum
+				iph->check = 0; // Important: set to 0 before calculating
+				iph->check = iph_checksum(iph, sizeof(struct iphdr));
 
-				sport = &udph->source;
-				dport = &udph->dest;
+				uint16_t tmp_port;
+				memcpy(&tmp_port, &udph->source, sizeof(tmp_port));
+				memcpy(&udph->source, &udph->dest, sizeof(tmp_port));
+				memcpy(&udph->dest, &tmp_port, sizeof(tmp_port));
 
-				break;
-
-			default:
-				drop[tot_pkt_drop++] = &msg.msg_iov[i];
-				continue;
+				// Recalculate UDP checksum
+				udph->check = 0; // Must set to 0 before computing checksum
+				udph->check = udph_checksum(udph, iph, payload, payload_len);
+				send[tot_pkt_send++] = &msg.msg_iov[i];
 			}
 
-			struct session_id sid = { 0 };
-			sid.saddr = iph->saddr;
-			sid.daddr = iph->daddr;
-			sid.proto = iph->protocol;
-			sid.sport = *sport;
-			sid.dport = *dport;
+			// STORE
+			else
+			{
+				memcpy(value, payload + sizeof(size_t), 256);
+				value[255] = '\0';
+				uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
+				if (!mehcached_set(0, table, key_hash, (const uint8_t *)&key, sizeof(key), (const uint8_t *)&value,
+						   sizeof(value), 0, true))
+					assert(false);
 
-            // Checking only on proto, daddr, dport
-			// if (sid.proto == IPPROTO_UDP && sid.daddr == inet_addr("192.168.10.1") && sid.dport == htons(80))
-            // {
-			// 	send[tot_pkt_send++] = &msg.msg_iov[i];
-            //     continue;
-	        // }
-			if (hashmap_lookup_elem(&valid_sessions_map, (void*) &sid) == NULL){
+				// send acknowledgement
+				memcpy(payload + sizeof(size_t), &value, 256);
 				drop[tot_pkt_drop++] = &msg.msg_iov[i];
-				continue;
 			}
-			send[tot_pkt_send++] = &msg.msg_iov[i];
 		}
 
 		if (nrecv) {
