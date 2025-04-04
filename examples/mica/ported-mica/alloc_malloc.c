@@ -21,8 +21,8 @@ void
 mehcached_malloc_init(struct mehcached_malloc *alloc)
 {
     uint8_t *ptr = (uint8_t *)malloc(8);
-    free(ptr);
     alloc->pointer_base = ptr - 0x7fffffffUL;
+    free(ptr);
 }
 
 
