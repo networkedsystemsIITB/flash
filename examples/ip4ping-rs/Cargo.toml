@@ -1,0 +1,19 @@
+[package]
+name = "ip4ping"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.35", features = ["derive"] }
+core_affinity = "0.8.3"
+ctrlc = "3.4.5"
+flash = { path = "../../lib/flash-rs" }
+tracing = { version = "0.1.41", optional = true }
+tracing-subscriber = { version = "0.3.19", optional = true }
+
+[features]
+default = []
+tracing = ["dep:tracing", "dep:tracing-subscriber", "flash/tracing"]
+
+[lints.rust]
+unsafe_code = "forbid"
