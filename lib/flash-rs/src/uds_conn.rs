@@ -1,12 +1,35 @@
+#![allow(dead_code)]
+
 use std::{
     io::{self, Read, Write as _},
     os::unix::net::UnixStream,
 };
 
-use tracing::{error, info};
 use uds::UnixStreamExt;
 
-use crate::def::{FLASH_CLOSE_CONN, UNIX_SOCKET_PATH};
+const UNIX_SOCKET_PATH: &str = "/tmp/flash/uds.sock";
+
+macro_rules! flash_command {
+    ($name:ident, $value:expr) => {
+        pub(crate) const $name: [u8; 4] = ($value as u32).to_ne_bytes();
+    };
+}
+
+flash_command!(FLASH_CREATE_UMEM, 1);
+flash_command!(FLASH_GET_UMEM, 2);
+flash_command!(FLASH_CREATE_SOCKET, 3);
+flash_command!(FLASH_CLOSE_CONN, 4);
+flash_command!(FLASH_GET_THREAD_INFO, 5);
+flash_command!(FLASH_GET_UMEM_OFFSET, 6);
+flash_command!(FLASH_GET_ROUTE_INFO, 7);
+flash_command!(FLASH_GET_BIND_FLAGS, 8);
+flash_command!(FLASH_GET_XDP_FLAGS, 9);
+flash_command!(FLASH_GET_MODE, 10);
+flash_command!(FLASH_GET_POLL_TIMEOUT, 11);
+flash_command!(FLASH_GET_FRAGS_ENABLED, 12);
+flash_command!(FLASH_GET_IFNAME, 13);
+flash_command!(FLASH_GET_IP_ADDR, 14);
+flash_command!(FLASH_GET_DST_IP_ADDR, 15);
 
 #[derive(Debug)]
 pub(crate) struct UdsConn(UnixStream);
@@ -61,10 +84,13 @@ impl UdsConn {
 
 impl Drop for UdsConn {
     fn drop(&mut self) {
+        #[cfg(feature = "tracing")]
         if let Err(err) = self.0.write_all(&FLASH_CLOSE_CONN) {
-            error!("Failed to send FLASH_CLOSE_CONN: {err}");
+            tracing::error!("Error sending FLASH_CLOSE_CONN: {err}");
         } else {
-            info!("Sent FLASH_CLOSE_CONN: {FLASH_CLOSE_CONN:?}");
+            tracing::debug!("Sent FLASH_CLOSE_CONN: {FLASH_CLOSE_CONN:?}");
         }
+
+        let _ = self.0.write_all(&FLASH_CLOSE_CONN);
     }
 }

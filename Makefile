@@ -13,7 +13,10 @@ build: configure
 	meson compile -C $(BUILD_DIR)
 
 rust:
-	cargo build --release --target-dir build
+	cargo build --target-dir $(BUILD_DIR) -F tracing
+
+rust_release:
+	cargo build --target-dir $(BUILD_DIR) --release
 
 ci_build:
 	./tools/ci_build.sh

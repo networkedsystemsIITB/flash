@@ -1,3 +1,6 @@
+mod fd;
+mod ring;
+
 use std::{io, sync::Arc};
 
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS};
@@ -7,12 +10,13 @@ use libxdp_sys::{
 
 use crate::{
     config::{BindFlags, Mode, XskConfig},
-    fd::Fd,
-    ring::{CompRing, FillRing, RxRing, TxRing},
+    mem::Umem,
     uds_conn::UdsConn,
-    umem::Umem,
     util,
 };
+
+use fd::Fd;
+use ring::{CompRing, FillRing, RxRing, TxRing};
 
 const FRAME_SIZE: u64 = XSK_UMEM__DEFAULT_FRAME_SIZE as u64;
 
@@ -27,29 +31,33 @@ pub struct Socket {
     outstanding_tx: u32,
     idx_fq_bp: u32,
     idx_tx_bp: u32,
-    data: Arc<Data>,
+    umem: Umem,
+    shared: Arc<SocketShared>,
 }
 
 #[derive(Debug)]
-pub(crate) struct Data {
+pub(crate) struct SocketShared {
     pub(crate) _ifname: String,
     pub(crate) xsk_config: XskConfig,
-    pub(crate) _umem: Umem,
     _uds_conn: UdsConn,
+    back_pressure: bool,
+    fwd_all: bool,
 }
 
-impl Data {
+impl SocketShared {
     pub(crate) fn new(
         ifname: String,
         xsk_config: XskConfig,
-        umem: Umem,
         uds_conn: UdsConn,
+        back_pressure: bool,
+        fwd_all: bool,
     ) -> Self {
         Self {
             _ifname: ifname,
             xsk_config,
-            _umem: umem,
             _uds_conn: uds_conn,
+            back_pressure,
+            fwd_all,
         }
     }
 }
@@ -63,7 +71,12 @@ pub struct Desc {
 
 impl Socket {
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    pub(crate) fn new(fd: i32, ifqueue: i32, data: Arc<Data>) -> io::Result<Self> {
+    pub(crate) fn new(
+        fd: i32,
+        ifqueue: i32,
+        umem: Umem,
+        data: Arc<SocketShared>,
+    ) -> io::Result<Self> {
         let fd = Fd::new(fd)?;
         let off = fd.xdp_mmap_offsets()?;
 
@@ -77,7 +90,8 @@ impl Socket {
             outstanding_tx: 0,
             idx_fq_bp: 0,
             idx_tx_bp: 0,
-            data,
+            umem,
+            shared: data,
         })
     }
 
@@ -115,7 +129,8 @@ impl Socket {
         let mut ret = self.fill.reserve(num, &mut idx_fq);
 
         while ret != num {
-            if self.data.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL) || self.fill.needs_wakeup()
+            if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
+                || self.fill.needs_wakeup()
             {
                 self.fd.wakeup();
             }
@@ -131,9 +146,10 @@ impl Socket {
         let mut ret = self.tx.reserve(num, &mut idx_tx);
 
         while ret != num {
-            self.complete_tx_rx_first();
+            self.complete_tx_rx();
 
-            if self.data.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL) || self.tx.needs_wakeup() {
+            if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL) || self.tx.needs_wakeup()
+            {
                 self.kick_tx().unwrap();
             }
 
@@ -144,7 +160,7 @@ impl Socket {
     }
 
     #[allow(clippy::similar_names)]
-    fn complete_tx_rx_first(&mut self) {
+    fn complete_tx_rx(&mut self) {
         if self.outstanding_tx == 0 {
             return;
         }
@@ -153,7 +169,7 @@ impl Socket {
         let mut idx_fq = 0;
 
         if self
-            .data
+            .shared
             .xsk_config
             .bind_flags
             .contains(BindFlags::XDP_COPY)
@@ -161,13 +177,13 @@ impl Socket {
             self.kick_tx().unwrap();
         }
 
-        let num_outstanding = self.outstanding_tx.min(self.data.xsk_config.batch_size);
+        let num_outstanding = self.outstanding_tx.min(self.shared.xsk_config.batch_size);
         let completed = self.comp.peek(num_outstanding, &mut idx_cq);
 
         if completed > 0 {
             let mut ret = self.fill.reserve(completed, &mut idx_fq);
             while ret != completed {
-                if self.data.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
+                if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
                     || self.fill.needs_wakeup()
                 {
                     self.fd.wakeup();
@@ -188,16 +204,18 @@ impl Socket {
         }
     }
 
-    pub fn recv(&mut self, back_pressure: bool, fwd_all: bool) -> Result<Vec<Desc>, String> {
+    #[allow(clippy::missing_errors_doc)]
+    pub fn recv(&mut self) -> Result<Vec<Desc>, String> {
         let mut idx_rx = 0;
         let mut descs = Vec::new();
 
-        self.complete_tx_rx_first();
+        self.complete_tx_rx();
 
-        let rcvd = self.rx.peek(self.data.xsk_config.batch_size, &mut idx_rx);
+        let rcvd = self.rx.peek(self.shared.xsk_config.batch_size, &mut idx_rx);
 
         if rcvd == 0 {
-            if self.data.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL) || self.fill.needs_wakeup()
+            if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
+                || self.fill.needs_wakeup()
             {
                 self.fd.wakeup();
             }
@@ -205,8 +223,8 @@ impl Socket {
             return Ok(descs);
         }
 
-        if back_pressure {
-            if fwd_all {
+        if self.shared.back_pressure {
+            if self.shared.fwd_all {
                 self.reserve_tx(rcvd);
             } else {
                 self.reserve_fq(rcvd);
@@ -215,10 +233,10 @@ impl Socket {
             // unimplemented!("Not implemented");
         }
 
-        if rcvd > self.data.xsk_config.batch_size {
+        if rcvd > self.shared.xsk_config.batch_size {
             return Err(format!(
                 "batch_size: {} rcvd: {rcvd}",
-                self.data.xsk_config.batch_size
+                self.shared.xsk_config.batch_size
             ));
         }
 
@@ -241,13 +259,13 @@ impl Socket {
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    pub fn send(&mut self, back_pressure: bool, descs: Vec<Desc>) {
+    pub fn send(&mut self, descs: Vec<Desc>) {
         if descs.is_empty() {
             return;
         }
 
         let n = descs.len() as u32;
-        if !back_pressure {
+        if !self.shared.back_pressure {
             self.reserve_tx(n);
         }
 
@@ -267,13 +285,13 @@ impl Socket {
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    pub fn drop(&mut self, back_pressure: bool, descs: Vec<Desc>) {
+    pub fn drop(&mut self, descs: Vec<Desc>) {
         if descs.is_empty() {
             return;
         }
 
         let n = descs.len() as u32;
-        if !back_pressure {
+        if !self.shared.back_pressure {
             self.reserve_fq(n);
         }
 
@@ -285,5 +303,10 @@ impl Socket {
         }
 
         self.fill.submit(n);
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub fn read(&mut self, desc: &Desc) -> io::Result<&mut [u8]> {
+        self.umem.get_data(desc.addr, desc.len as usize)
     }
 }

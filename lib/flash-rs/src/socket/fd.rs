@@ -8,22 +8,22 @@ use libc::{
     xdp_ring_offset,
 };
 
-use crate::mmap::Mmap;
+use crate::mem::Mmap;
 
 #[allow(clippy::cast_possible_truncation)]
 const XDP_MMAP_OFFSETS_SIZEOF: u32 = mem::size_of::<xdp_mmap_offsets>() as _;
 
 #[derive(Clone, Debug)]
-pub(crate) struct Fd {
+pub(super) struct Fd {
     id: i32,
 }
 
 impl Fd {
-    pub(crate) fn new(id: i32) -> io::Result<Self> {
+    pub(super) fn new(id: i32) -> io::Result<Self> {
         if id < 0 {
             Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Invalid file descriptor",
+                "invalid file descriptor",
             ))
         } else {
             Ok(Fd { id })
@@ -31,17 +31,17 @@ impl Fd {
     }
 
     #[inline]
-    pub(crate) fn mmap(&self, len: usize, offset: i64) -> io::Result<Mmap> {
+    pub(super) fn mmap(&self, len: usize, offset: i64) -> io::Result<Mmap> {
         Mmap::new(len, self.id, offset)
     }
 
     #[inline]
-    pub(crate) fn kick(&self) -> ssize_t {
+    pub(super) fn kick(&self) -> ssize_t {
         unsafe { sendto(self.id, ptr::null(), 0, MSG_DONTWAIT, ptr::null(), 0) }
     }
 
     #[inline]
-    pub(crate) fn wakeup(&self) {
+    pub(super) fn wakeup(&self) {
         unsafe {
             recvfrom(
                 self.id,
@@ -54,7 +54,7 @@ impl Fd {
         }
     }
 
-    pub(crate) fn xdp_mmap_offsets(&self) -> io::Result<XdpMmapOffsets> {
+    pub(super) fn xdp_mmap_offsets(&self) -> io::Result<XdpMmapOffsets> {
         let mut off = XdpMmapOffsets::default();
         let mut optlen = XDP_MMAP_OFFSETS_SIZEOF;
 
@@ -80,7 +80,7 @@ impl Fd {
     }
 }
 
-pub(crate) struct XdpMmapOffsets(xdp_mmap_offsets);
+pub(super) struct XdpMmapOffsets(xdp_mmap_offsets);
 
 impl Default for XdpMmapOffsets {
     fn default() -> Self {
@@ -104,22 +104,22 @@ fn new_xdp_ring_offset() -> xdp_ring_offset {
 
 impl XdpMmapOffsets {
     #[inline]
-    pub(crate) fn rx(&self) -> &xdp_ring_offset {
+    pub(super) fn rx(&self) -> &xdp_ring_offset {
         &self.0.rx
     }
 
     #[inline]
-    pub(crate) fn tx(&self) -> &xdp_ring_offset {
+    pub(super) fn tx(&self) -> &xdp_ring_offset {
         &self.0.tx
     }
 
     #[inline]
-    pub(crate) fn fr(&self) -> &xdp_ring_offset {
+    pub(super) fn fr(&self) -> &xdp_ring_offset {
         &self.0.fr
     }
 
     #[inline]
-    pub(crate) fn cr(&self) -> &xdp_ring_offset {
+    pub(super) fn cr(&self) -> &xdp_ring_offset {
         &self.0.cr
     }
 }
