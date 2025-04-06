@@ -26,12 +26,6 @@ enabled_libs = []
 # to pass comma separated values to the linker
 add_project_link_arguments('-Wl,--no-as-needed', language: 'c')
 
-# to enable debugging in release builds
-if get_option('buildtype') == 'release'
-    # for enabling debugging in release builds
-    add_project_arguments('-g', language: 'c')
-endif
-
 # use pthreads library
 add_project_link_arguments('-pthread', language: 'c')
 

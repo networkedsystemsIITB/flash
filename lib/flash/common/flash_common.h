@@ -1,3 +1,7 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2025 Debojeet Das
+ */
+
 #ifndef __FLASH_COMMON_H
 #define __FLASH_COMMON_H
 

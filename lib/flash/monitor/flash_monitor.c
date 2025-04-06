@@ -11,7 +11,6 @@
 
 #include <flash_uds.h>
 #include <log.h>
-#include <flash_cfgparser.h>
 #include <flash_common.h>
 
 #include "flash_monitor.h"
@@ -174,16 +173,16 @@ static void __configure_umem(struct umem *umem)
 	}
 
 	/**
-     * This library call does the following steps of the AF_XDP control path:
-     * 1. Socket creation with socket() syscall
-     * 2. setsockopt for UMEM registration.
-     * 3. Creation of FQ and CQ with setsockopt(), getsockopt() and mmap()
-     *
-     * If the user doesn't want to do the socket() syscall for any privilege
-     * issues it can use xsk_umem__create_with_fd() library call where the fd
-     * is passed. The fd can be procured from other privileged program which
-     * has opened the AF_XDP socket.
-     */
+	  * This library call does the following steps of the AF_XDP control path:
+	  * 1. Socket creation with socket() syscall
+	  * 2. setsockopt for UMEM registration.
+	  * 3. Creation of FQ and CQ with setsockopt(), getsockopt() and mmap()
+	  *
+	  * If the user doesn't want to do the socket() syscall for any privilege
+	  * issues it can use xsk_umem__create_with_fd() library call where the fd
+	  * is passed. The fd can be procured from other privileged program which
+	  * has opened the AF_XDP socket.
+	  */
 	int ret = 0;
 	ret = xsk_umem__create(&umem->umem_info->umem, umem->cfg->umem->buffer, umem->cfg->umem->size, &umem->umem_info->fq,
 			       &umem->umem_info->cq, umem->cfg->umem_config);
@@ -241,14 +240,14 @@ static void flash__setup_umem(struct umem *umem)
 }
 
 /**
- * @brief Configure the AF_XDP Sockets and its rings. In case of shared UMEM the socket
- * is created with the shared UMEM. The function also updates the xsk_map with the
- * socket fd.
- *
- * @param cfg
- * @param umem
- * @return struct xsk_socket_info*
- */
+  * @brief Configure the AF_XDP Sockets and its rings. In case of shared UMEM the socket
+  * is created with the shared UMEM. The function also updates the xsk_map with the
+  * socket fd.
+  *
+  * @param cfg
+  * @param umem
+  * @return struct xsk_socket_info*
+  */
 static struct socket *flash__setup_xsk(struct umem *umem, int nf_id)
 {
 	int ret;
@@ -269,14 +268,14 @@ static struct socket *flash__setup_xsk(struct umem *umem, int nf_id)
 	}
 
 	/**
-     * The library call does the following steps of the AF_XDP control path:
-     * 1. If UMEM is shared with another socket it creates a new socket.
-     * 2. If required it creates new FQ and CQ for the socket.
-     * 	  (On unique ifindex + queue + netnscookie)
-     * 3. It creates new TX/RX rings if required. (Debo: When?)
-     * 4. Binds the socket to the given interface and queue.
-     * 5. Loads the default XDP program (if required).
-     */
+	  * The library call does the following steps of the AF_XDP control path:
+	  * 1. If UMEM is shared with another socket it creates a new socket.
+	  * 2. If required it creates new FQ and CQ for the socket.
+	  * 	  (On unique ifindex + queue + netnscookie)
+	  * 3. It creates new TX/RX rings if required. (Debo: When?)
+	  * 4. Binds the socket to the given interface and queue.
+	  * 5. Loads the default XDP program (if required).
+	  */
 	if (umem_ref_count == 0) {
 		log_info("Creating socket #%d for a UMEM with queue #%d", umem_ref_count, ifqueue);
 		ret = xsk_socket__create(&xsk, ifname, ifqueue, _umem, &socket->rx, &socket->tx, xsk_config);

@@ -11,9 +11,7 @@
 
 #include <flash_monitor.h>
 #include <flash_uds.h>
-#include <flash_params.h>
 #include <log.h>
-#include <flash_display.h>
 
 static bool done = false;
 

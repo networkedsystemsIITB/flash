@@ -12,8 +12,7 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 
-#include <flash_monitor.h>
-#include "flash_display.h"
+#include "flash_monitor.h"
 
 #define HISTORY_SIZE 10
 #define MAX(a, b) ((a) > (b) ? (a) : (b))

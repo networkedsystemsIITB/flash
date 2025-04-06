@@ -1,22 +1,26 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2025 Debojeet Das
+ */
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <log.h>
 #include <linux/if_link.h>
+#include <cjson/cJSON.h>
 
-#include "flash_cfgparser.h"
+#include "flash_monitor.h"
 
 static void configure_nic(char *ifname, int total_queues, int mode)
 {
 	char total_queues_str[10];
+	// Need to modify this path based on the system and NIC
 	char script_path[256] = "./usertools/netdev/setup_mlx5.sh";
 	char interface_flag[3] = "-i";
 	char queues_flag[3] = "-q";
 	char busy_poll_flag[3] = "-b";
 	sprintf(total_queues_str, "%d", total_queues);
-
-	// redirect stdout to /dev/null
 
 	if (fork() == 0) {
 		if (freopen("/dev/null", "w", stdout) == NULL) {

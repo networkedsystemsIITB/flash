@@ -1,3 +1,7 @@
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2025 Debojeet Das
+ */
+
 #include <log.h>
 #include <limits.h>
 

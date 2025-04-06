@@ -5,7 +5,7 @@ special_dirs = [
     'log',
 ]
 
-dirs = ['uds', 'cfgparser', 'common', 'monitor', 'display', 'params', 'nf']
+dirs = ['uds', 'common', 'monitor', 'params', 'nf']
 
 foreach special_dir : special_dirs
     sources = []
