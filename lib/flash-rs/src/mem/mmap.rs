@@ -1,11 +1,14 @@
-use std::{io, ptr::NonNull};
+use std::{
+    io,
+    ptr::{self, NonNull},
+};
 
 use libc::{
     _SC_PAGESIZE, MAP_FAILED, MAP_POPULATE, MAP_SHARED, PROT_READ, PROT_WRITE, c_void,
     xdp_ring_offset,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct Mmap {
     pub(super) addr: NonNull<c_void>,
     pub(super) len: usize,
@@ -15,13 +18,17 @@ unsafe impl Send for Mmap {}
 unsafe impl Sync for Mmap {}
 
 impl Mmap {
-    pub(crate) fn new(len: usize, fd: i32, offset: i64) -> io::Result<Self> {
+    pub(crate) fn new(len: usize, fd: i32, offset: i64, populate: bool) -> io::Result<Self> {
         let addr = unsafe {
             libc::mmap(
-                core::ptr::null_mut(),
+                ptr::null_mut(),
                 len,
                 PROT_READ | PROT_WRITE,
-                MAP_SHARED | MAP_POPULATE,
+                if populate {
+                    MAP_SHARED | MAP_POPULATE
+                } else {
+                    MAP_SHARED
+                },
                 fd,
                 offset,
             )
@@ -98,11 +105,17 @@ impl Mmap {
 
 impl Drop for Mmap {
     fn drop(&mut self) {
-        debug_assert_eq!(
-            unsafe { libc::munmap(self.addr.as_ptr(), self.len) },
-            0,
-            "`munmap()` failed with error: {}",
-            io::Error::last_os_error()
-        );
+        #[cfg(feature = "tracing")]
+        if unsafe { libc::munmap(self.addr.as_ptr(), self.len) } != 0 {
+            tracing::error!(
+                "`munmap()` failed with error: {}",
+                io::Error::last_os_error()
+            );
+        }
+
+        #[cfg(not(feature = "tracing"))]
+        unsafe {
+            libc::munmap(self.addr.as_ptr(), self.len);
+        }
     }
 }

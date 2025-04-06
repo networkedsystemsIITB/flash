@@ -235,7 +235,6 @@ pub fn connect(
 
     uds_conn.set_nonblocking(true)?;
 
-    let umem = Umem::new(umem_fd, umem_size)?;
     let xsk_config = XskConfig {
         bind_flags: xsk_bind_flags,
         _xdp_flags: xsk_xdp_flags,
@@ -253,7 +252,7 @@ pub fn connect(
 
     let mut sockets = fd_ifqueue
         .into_iter()
-        .map(|(fd, ifqueue)| Socket::new(fd, ifqueue, umem.clone(), data.clone()))
+        .map(|(fd, ifqueue)| Socket::new(fd, ifqueue, Umem::new(umem_fd, umem_size)?, data.clone()))
         .collect::<Result<Vec<_>, _>>()?;
 
     let nr_frames = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2 * umem_scale;

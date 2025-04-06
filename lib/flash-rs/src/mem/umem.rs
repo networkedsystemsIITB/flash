@@ -4,14 +4,14 @@ use libxdp_sys::xsk_umem__get_data;
 
 use super::mmap::Mmap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct Umem {
     mmap: Mmap,
 }
 
 impl Umem {
     pub(crate) fn new(fd: i32, size: usize) -> io::Result<Self> {
-        let mmap = Mmap::new(size, fd, 0)?; // don't populate
+        let mmap = Mmap::new(size, fd, 0, false)?;
         if !mmap.is_xsk_page_aligned() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

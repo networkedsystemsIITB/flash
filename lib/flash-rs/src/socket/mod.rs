@@ -37,8 +37,8 @@ pub struct Socket {
 
 #[derive(Debug)]
 pub(crate) struct SocketShared {
-    pub(crate) _ifname: String,
-    pub(crate) xsk_config: XskConfig,
+    _ifname: String,
+    xsk_config: XskConfig,
     _uds_conn: UdsConn,
     back_pressure: bool,
     fwd_all: bool,
@@ -111,6 +111,7 @@ impl Socket {
         Ok(())
     }
 
+    #[inline]
     fn kick_tx(&self) -> Result<(), ()> {
         if self.fd.kick() >= 0 {
             Ok(())
@@ -124,6 +125,7 @@ impl Socket {
         }
     }
 
+    #[inline]
     fn reserve_fq(&mut self, num: u32) {
         let mut idx_fq = 0;
         let mut ret = self.fill.reserve(num, &mut idx_fq);
@@ -141,6 +143,7 @@ impl Socket {
         self.idx_fq_bp = idx_fq;
     }
 
+    #[inline]
     fn reserve_tx(&mut self, num: u32) {
         let mut idx_tx = 0;
         let mut ret = self.tx.reserve(num, &mut idx_tx);
@@ -160,6 +163,7 @@ impl Socket {
     }
 
     #[allow(clippy::similar_names)]
+    #[inline]
     fn complete_tx_rx(&mut self) {
         if self.outstanding_tx == 0 {
             return;
@@ -205,9 +209,8 @@ impl Socket {
     }
 
     #[allow(clippy::missing_errors_doc)]
-    pub fn recv(&mut self) -> Result<Vec<Desc>, String> {
+    pub fn recv(&mut self) -> io::Result<Vec<Desc>> {
         let mut idx_rx = 0;
-        let mut descs = Vec::new();
 
         self.complete_tx_rx();
 
@@ -220,7 +223,7 @@ impl Socket {
                 self.fd.wakeup();
             }
 
-            return Ok(descs);
+            return Ok(vec![]);
         }
 
         if self.shared.back_pressure {
@@ -234,12 +237,13 @@ impl Socket {
         }
 
         if rcvd > self.shared.xsk_config.batch_size {
-            return Err(format!(
-                "batch_size: {} rcvd: {rcvd}",
-                self.shared.xsk_config.batch_size
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("rcvd: {rcvd} > batch size",),
             ));
         }
 
+        let mut descs = Vec::with_capacity(rcvd as usize);
         for _ in 0..rcvd {
             let desc = self.rx.desc(idx_rx);
             idx_rx += 1;
@@ -306,6 +310,7 @@ impl Socket {
     }
 
     #[allow(clippy::missing_errors_doc)]
+    #[inline]
     pub fn read(&mut self, desc: &Desc) -> io::Result<&mut [u8]> {
         self.umem.get_data(desc.addr, desc.len as usize)
     }

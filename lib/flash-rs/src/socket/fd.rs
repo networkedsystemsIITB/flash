@@ -32,7 +32,7 @@ impl Fd {
 
     #[inline]
     pub(super) fn mmap(&self, len: usize, offset: i64) -> io::Result<Mmap> {
-        Mmap::new(len, self.id, offset)
+        Mmap::new(len, self.id, offset, true)
     }
 
     #[inline]
