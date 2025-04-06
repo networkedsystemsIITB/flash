@@ -37,6 +37,12 @@ const struct option_wrapper long_options[] = {
 
 	{ { "fwd-all", no_argument, NULL, 's' }, "Forward all packets" },
 
+	{ { "numavail-thres", required_argument, NULL, 'y' }, "tx-rx num-available threshold" },
+
+	{ { "numoutstd-thres", required_argument, NULL, 'z' }, "tx-rx num-outstanding threshold" },
+
+	{ { "sleep-txrx", required_argument, NULL, 'e' }, "tx-rx sleep time" },
+
 	{ { "frags", no_argument, NULL, 'F' }, "Enable frags (multi-buffer) support" },
 
 	{ { "help", no_argument, NULL, 'h' }, "Show help", false },
@@ -152,6 +158,15 @@ static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper
 			break;
 		case 's':
 			cfg->fwdall = true;
+			break;
+		case 'y':
+			cfg->numavail_thres = atoi(optarg);
+			break;
+		case 'z':
+			cfg->numoutstd_thres = atoi(optarg);
+			break;
+		case 'e':
+			cfg->sleep_txrx = atoi(optarg);
 			break;
 		case 'x':
 			cfg->extra_stats = true;
