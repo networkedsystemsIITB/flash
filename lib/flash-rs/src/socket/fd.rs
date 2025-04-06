@@ -1,25 +1,18 @@
-use std::{
-    io::{self, ErrorKind},
-    mem, ptr,
-};
+use std::{io, ptr};
 
-use libc::{
-    MSG_DONTWAIT, SOL_XDP, XDP_MMAP_OFFSETS, recvfrom, sendto, ssize_t, xdp_mmap_offsets,
-    xdp_ring_offset,
-};
+use libc::{MSG_DONTWAIT, SOL_XDP, XDP_MMAP_OFFSETS, XDP_STATISTICS, recvfrom, sendto, ssize_t};
 
 use crate::mem::Mmap;
 
-#[allow(clippy::cast_possible_truncation)]
-const XDP_MMAP_OFFSETS_SIZEOF: u32 = mem::size_of::<xdp_mmap_offsets>() as _;
+use super::xdp::{XDP_MMAP_OFFSETS_SIZEOF, XDP_STATISTICS_SIZEOF, XdpMmapOffsets, XdpStatistics};
 
 #[derive(Clone, Debug)]
-pub(super) struct Fd {
+pub(crate) struct Fd {
     id: i32,
 }
 
 impl Fd {
-    pub(super) fn new(id: i32) -> io::Result<Self> {
+    pub(crate) fn new(id: i32) -> io::Result<Self> {
         if id < 0 {
             Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -73,53 +66,34 @@ impl Fd {
             Ok(off)
         } else {
             Err(io::Error::new(
-                ErrorKind::Other,
+                io::ErrorKind::Other,
                 "`optlen` returned from `getsockopt` does not match `xdp_mmap_offsets` struct size",
             ))
         }
     }
-}
 
-pub(super) struct XdpMmapOffsets(xdp_mmap_offsets);
+    pub(super) fn xdp_statistics(&self) -> io::Result<XdpStatistics> {
+        let mut stats = XdpStatistics::default();
+        let mut optlen = XDP_STATISTICS_SIZEOF;
 
-impl Default for XdpMmapOffsets {
-    fn default() -> Self {
-        Self(xdp_mmap_offsets {
-            rx: new_xdp_ring_offset(),
-            tx: new_xdp_ring_offset(),
-            fr: new_xdp_ring_offset(),
-            cr: new_xdp_ring_offset(),
-        })
-    }
-}
-
-fn new_xdp_ring_offset() -> xdp_ring_offset {
-    xdp_ring_offset {
-        producer: 0,
-        consumer: 0,
-        desc: 0,
-        flags: 0,
-    }
-}
-
-impl XdpMmapOffsets {
-    #[inline]
-    pub(super) fn rx(&self) -> &xdp_ring_offset {
-        &self.0.rx
-    }
-
-    #[inline]
-    pub(super) fn tx(&self) -> &xdp_ring_offset {
-        &self.0.tx
-    }
-
-    #[inline]
-    pub(super) fn fr(&self) -> &xdp_ring_offset {
-        &self.0.fr
-    }
-
-    #[inline]
-    pub(super) fn cr(&self) -> &xdp_ring_offset {
-        &self.0.cr
+        if unsafe {
+            libc::getsockopt(
+                self.id,
+                SOL_XDP,
+                XDP_STATISTICS,
+                (&raw mut stats).cast(),
+                &mut optlen,
+            )
+        } != 0
+        {
+            Err(io::Error::last_os_error())
+        } else if optlen == XDP_STATISTICS_SIZEOF {
+            Ok(stats)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "`optlen` returned from `getsockopt` does not match `xdp_statistics` struct size",
+            ))
+        }
     }
 }

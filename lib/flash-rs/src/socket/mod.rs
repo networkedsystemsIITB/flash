@@ -1,5 +1,7 @@
 mod fd;
 mod ring;
+mod stats;
+mod xdp;
 
 use std::{io, sync::Arc};
 
@@ -15,15 +17,16 @@ use crate::{
     util,
 };
 
-use fd::Fd;
 use ring::{CompRing, FillRing, RxRing, TxRing};
+
+pub(crate) use fd::Fd;
+pub use stats::Stats;
 
 const FRAME_SIZE: u64 = XSK_UMEM__DEFAULT_FRAME_SIZE as u64;
 
 #[derive(Debug)]
 pub struct Socket {
     fd: Fd,
-    _ifqueue: i32,
     rx: RxRing,
     tx: TxRing,
     fill: FillRing,
@@ -32,28 +35,26 @@ pub struct Socket {
     idx_fq_bp: u32,
     idx_tx_bp: u32,
     umem: Umem,
+    stats: Arc<Stats>,
     shared: Arc<SocketShared>,
 }
 
 #[derive(Debug)]
 pub(crate) struct SocketShared {
-    _ifname: String,
     xsk_config: XskConfig,
-    _uds_conn: UdsConn,
     back_pressure: bool,
     fwd_all: bool,
+    _uds_conn: UdsConn,
 }
 
 impl SocketShared {
     pub(crate) fn new(
-        ifname: String,
         xsk_config: XskConfig,
         uds_conn: UdsConn,
         back_pressure: bool,
         fwd_all: bool,
     ) -> Self {
         Self {
-            _ifname: ifname,
             xsk_config,
             _uds_conn: uds_conn,
             back_pressure,
@@ -72,17 +73,16 @@ pub struct Desc {
 impl Socket {
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
     pub(crate) fn new(
-        fd: i32,
-        ifqueue: i32,
+        fd: Fd,
+        ifname: String,
+        ifqueue: u32,
         umem: Umem,
         data: Arc<SocketShared>,
     ) -> io::Result<Self> {
-        let fd = Fd::new(fd)?;
         let off = fd.xdp_mmap_offsets()?;
 
         Ok(Self {
             fd: fd.clone(),
-            _ifqueue: ifqueue,
             rx: RxRing::new(&fd, off.rx())?,
             tx: TxRing::new(&fd, off.tx())?,
             comp: CompRing::new(&fd, off.cr())?,
@@ -91,6 +91,7 @@ impl Socket {
             idx_fq_bp: 0,
             idx_tx_bp: 0,
             umem,
+            stats: Arc::new(Stats::new(fd, ifname, ifqueue)),
             shared: data,
         })
     }
@@ -134,6 +135,9 @@ impl Socket {
             if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
                 || self.fill.needs_wakeup()
             {
+                unsafe {
+                    (*self.stats.app.get()).fill_fail_polls += 1;
+                }
                 self.fd.wakeup();
             }
 
@@ -153,6 +157,9 @@ impl Socket {
 
             if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL) || self.tx.needs_wakeup()
             {
+                unsafe {
+                    (*self.stats.app.get()).tx_wakeup_sendtos += 1;
+                }
                 self.kick_tx().unwrap();
             }
 
@@ -178,6 +185,9 @@ impl Socket {
             .bind_flags
             .contains(BindFlags::XDP_COPY)
         {
+            unsafe {
+                (*self.stats.app.get()).tx_copy_sendtos += 1;
+            }
             self.kick_tx().unwrap();
         }
 
@@ -190,6 +200,9 @@ impl Socket {
                 if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
                     || self.fill.needs_wakeup()
                 {
+                    unsafe {
+                        (*self.stats.app.get()).fill_fail_polls += 1;
+                    }
                     self.fd.wakeup();
                 }
 
@@ -220,6 +233,9 @@ impl Socket {
             if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
                 || self.fill.needs_wakeup()
             {
+                unsafe {
+                    (*self.stats.app.get()).rx_empty_polls += 1;
+                }
                 self.fd.wakeup();
             }
 
@@ -259,6 +275,10 @@ impl Socket {
 
         self.rx.release(rcvd);
 
+        unsafe {
+            (*self.stats.ring.get()).rx += u64::from(rcvd);
+        }
+
         Ok(descs)
     }
 
@@ -286,6 +306,10 @@ impl Socket {
 
         self.tx.submit(n);
         self.outstanding_tx += n;
+
+        unsafe {
+            (*self.stats.ring.get()).tx += u64::from(n);
+        }
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -307,11 +331,20 @@ impl Socket {
         }
 
         self.fill.submit(n);
+
+        unsafe {
+            (*self.stats.ring.get()).dx += u64::from(n);
+        }
     }
 
     #[allow(clippy::missing_errors_doc)]
     #[inline]
     pub fn read(&mut self, desc: &Desc) -> io::Result<&mut [u8]> {
         self.umem.get_data(desc.addr, desc.len as usize)
+    }
+
+    #[allow(clippy::must_use_candidate)]
+    pub fn stats(&self) -> Arc<Stats> {
+        self.stats.clone()
     }
 }

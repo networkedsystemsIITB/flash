@@ -6,7 +6,7 @@ use crate::{
     Socket,
     config::{BindFlags, Mode, XdpFlags, XskConfig},
     mem::Umem,
-    socket::SocketShared,
+    socket::{Fd, SocketShared},
     uds_conn::{
         FLASH_CREATE_SOCKET, FLASH_GET_BIND_FLAGS, FLASH_GET_FRAGS_ENABLED, FLASH_GET_IFNAME,
         FLASH_GET_MODE, FLASH_GET_POLL_TIMEOUT, FLASH_GET_ROUTE_INFO, FLASH_GET_UMEM,
@@ -97,60 +97,6 @@ pub fn connect(
     }
     let umem_offset = umem_offset as u64;
 
-    let mut fd_ifqueue = Vec::with_capacity(total_sockets);
-
-    for _ in 0..total_sockets {
-        #[cfg(feature = "tracing")]
-        tracing::debug!("Sending FLASH_CREATE_SOCKET: {FLASH_CREATE_SOCKET:?}");
-
-        uds_conn.write_all(&FLASH_CREATE_SOCKET)?;
-
-        let fd = uds_conn.recv_fd()?;
-        if fd < 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid socket fd: {fd}"),
-            ));
-        }
-
-        let ifqueue = uds_conn.recv_i32()?;
-        if ifqueue < 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid socket ifqueue: {ifqueue}"),
-            ));
-        }
-
-        fd_ifqueue.push((fd, ifqueue));
-
-        #[cfg(feature = "tracing")]
-        tracing::debug!(
-            "Socket: {} :: FD: {fd}, IFQUEUE: {ifqueue}",
-            fd_ifqueue.len()
-        );
-    }
-
-    #[cfg(feature = "tracing")]
-    tracing::debug!("Sending FLASH_GET_ROUTE_INFO: {FLASH_GET_ROUTE_INFO:?}");
-
-    uds_conn.write_all(&FLASH_GET_ROUTE_INFO)?;
-
-    let next_size = uds_conn.recv_i32()?;
-    if next_size < 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid next size: {next_size}"),
-        ));
-    }
-    let next_size = next_size as usize;
-
-    let _next = (0..next_size)
-        .map(|_| uds_conn.recv_i32())
-        .collect::<Result<Vec<_>, _>>()?;
-
-    #[cfg(feature = "tracing")]
-    tracing::debug!("Next: {_next:?}");
-
     #[cfg(feature = "tracing")]
     tracing::debug!("Sending FLASH_GET_BIND_FLAGS: {FLASH_GET_BIND_FLAGS:?}");
 
@@ -216,6 +162,56 @@ pub fn connect(
         0
     };
 
+    let mut fd_ifqueue = Vec::with_capacity(total_sockets);
+
+    for _ in 0..total_sockets {
+        #[cfg(feature = "tracing")]
+        tracing::debug!("Sending FLASH_CREATE_SOCKET: {FLASH_CREATE_SOCKET:?}");
+
+        uds_conn.write_all(&FLASH_CREATE_SOCKET)?;
+
+        let fd = Fd::new(uds_conn.recv_fd()?)?;
+
+        let ifqueue = uds_conn.recv_i32()?;
+        if ifqueue < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid socket ifqueue: {ifqueue}"),
+            ));
+        }
+
+        let ifqueue = ifqueue as u32;
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            "Socket: {} :: FD: {fd:?}, IFQUEUE: {ifqueue}",
+            fd_ifqueue.len()
+        );
+
+        fd_ifqueue.push((fd, ifqueue));
+    }
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Sending FLASH_GET_ROUTE_INFO: {FLASH_GET_ROUTE_INFO:?}");
+
+    uds_conn.write_all(&FLASH_GET_ROUTE_INFO)?;
+
+    let next_size = uds_conn.recv_i32()?;
+    if next_size < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid next size: {next_size}"),
+        ));
+    }
+    let next_size = next_size as usize;
+
+    let _next = (0..next_size)
+        .map(|_| uds_conn.recv_i32())
+        .collect::<Result<Vec<_>, _>>()?;
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!("Next: {_next:?}");
+
     #[cfg(feature = "tracing")]
     tracing::debug!("Sending FLASH_GET_FRAGS_ENABLED: {FLASH_GET_FRAGS_ENABLED:?}");
 
@@ -243,7 +239,6 @@ pub fn connect(
     };
 
     let data = Arc::new(SocketShared::new(
-        ifname,
         xsk_config,
         uds_conn,
         back_pressure,
@@ -252,7 +247,15 @@ pub fn connect(
 
     let mut sockets = fd_ifqueue
         .into_iter()
-        .map(|(fd, ifqueue)| Socket::new(fd, ifqueue, Umem::new(umem_fd, umem_size)?, data.clone()))
+        .map(|(fd, ifqueue)| {
+            Socket::new(
+                fd,
+                ifname.clone(),
+                ifqueue,
+                Umem::new(umem_fd, umem_size)?,
+                data.clone(),
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     let nr_frames = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2 * umem_scale;
