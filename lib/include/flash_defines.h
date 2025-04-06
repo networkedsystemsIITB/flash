@@ -59,8 +59,8 @@ struct config {
 	struct xsk_socket_config *xsk_config;
 	bool backpressure;
 	bool fwdall;
-	int numavail_thres;
-	int numoutstd_thres;
+	__u32 numavail_thres;
+	__u32 numoutstd_thres;
 	int sleep_txrx;
 	bool custom_xsk;
 	bool hybrid_poll;

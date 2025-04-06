@@ -4,6 +4,7 @@
 
 #include <stdlib.h>
 #include <log.h>
+#include <unistd.h>
 
 #include "flash_nf.h"
 
@@ -237,7 +238,7 @@ static inline void __reserve_tx(struct config *cfg, struct socket *xsk, unsigned
 		ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
 		if (ret != num) {
 			if (ret < cfg->numavail_thres && xsk->outstanding_tx > cfg->numoutstd_thres) 
-				sleep(cfg->sleep_txrx);
+				usleep(cfg->sleep_txrx);
 		}
 	}
 	xsk->idx_tx_bp = idx_tx;

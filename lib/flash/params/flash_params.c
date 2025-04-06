@@ -232,6 +232,9 @@ int flash__parse_cmdline_args(int argc, char **argv, struct config *cfg)
 	cfg->verbose = true;
 	cfg->hybrid_poll = false;
 	cfg->xsk->idle_timeout = 1;
+	cfg->sleep_txrx = 1;
+	cfg->numavail_thres = 1;
+	cfg->numoutstd_thres = 1024;
 
 	int ret = parse_cmdline_args(argc, argv, long_options, cfg, __doc__);
 
