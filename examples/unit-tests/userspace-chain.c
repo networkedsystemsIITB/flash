@@ -22,8 +22,8 @@ struct nf *nf;
 #define FLASH_MAX_SOCKETS 8
 
 ///////////// owner ring buffer /////////////
-#define struct_size(p, member, count)                                            \
-	({                                                                       \
+#define struct_size(p, member, count)                                    \
+	({                                                                   \
 		size_t __size = sizeof(*(p)) + (count) * sizeof((p)->member[0]); \
 		(__size < sizeof(*(p))) ? SIZE_MAX : __size;                     \
 	})
@@ -76,8 +76,8 @@ struct guest_queue *guest_queues[FLASH_MAX_SOCKETS][FLASH_MAX_SOCKETS];
 
 ///////////// guest ring buffer operations /////////////
 
-#define guest_cpu_relax()                               \
-	do {                                            \
+#define guest_cpu_relax()                       \
+	do {                                        \
 		asm volatile("pause\n" : : : "memory"); \
 	} while (0)
 
@@ -169,27 +169,15 @@ static inline void __owner_cons_peek(struct owner_queue *q)
 
 static inline void owner_cons_get_entries(struct owner_queue *q)
 {
-	// printf("owner_cons_get_entries prod: %u\n", __atomic_load_n(&q->ring->producer, __ATOMIC_ACQUIRE));
 	__owner_cons_release(q);
 	__owner_cons_peek(q);
-	// if(__atomic_load_n(&q->ring->producer, __ATOMIC_ACQUIRE) > 0){
-	// 	printf("owner_cons_get_entries prod: %u\n", __atomic_load_n(&q->ring->producer, __ATOMIC_ACQUIRE));
-	// 	printf("q->cached_prod: %u\n", q->cached_prod);
-	// 	printf("q->cached_cons: %u\n", q->cached_cons);
-	// }
 }
 
 static inline bool owner_cons_read_desc(struct owner_queue *q, struct xdp_desc *desc)
 {
-	// __u32 c_prod = __atomic_load_n(&q->cached_prod, __ATOMIC_ACQUIRE);
-	// if(c_prod > 0){
-	// 	printf("owner_cons_read_desc prod: %u\n", __atomic_load_n(&q->ring->producer, __ATOMIC_ACQUIRE));
-	// 	printf("owner_cons_read_desc q->cached_prod: %u\n", c_prod);
-	// }
 	if (q->cached_cons != q->cached_prod) {
 		struct owner_rxtx_ring *ring = (struct owner_rxtx_ring *)q->ring;
 		__u32 idx = q->cached_cons & q->ring_mask;
-
 		*desc = ring->desc[idx];
 
 		return true;
@@ -199,16 +187,8 @@ static inline bool owner_cons_read_desc(struct owner_queue *q, struct xdp_desc *
 
 static inline bool owner_cons_peek_desc(struct owner_queue *q, struct xdp_desc *desc)
 {
-	// volatile __u32 prod = __atomic_load_n(&q->ring->producer, __ATOMIC_ACQUIRE);
-	// if(prod > 0)
-	// 	printf("owner_cons_peek_desc prod: %u\n", prod);
-	if (q->cached_prod == q->cached_cons) {
-		// if(prod > 0)
-		// 	printf("get entries\n");
+	if (q->cached_prod == q->cached_cons)
 		owner_cons_get_entries(q);
-	}
-	// if(prod > 0)
-	// 	printf("end\n");
 	return owner_cons_read_desc(q, desc);
 }
 
@@ -233,7 +213,6 @@ static inline __u32 owner_bulk_dequeue_rxtx(struct owner_queue *q, struct xdp_de
 
 	while (nb_pkts < max_entries && owner_peek_desc(q, &descs[nb_pkts])) {
 		nb_pkts++;
-		// printf("nb_pkts: %d\n", nb_pkts);
 	}
 
 	__owner_cons_release(q);
@@ -272,7 +251,7 @@ static struct owner_queue *ownerq_create(__u32 nentries)
 		return NULL;
 	}
 
-	q->ring = malloc(size);
+	q->ring = (struct owner_us_ring *)malloc(size);
 	if (!q->ring) {
 		free(q);
 		return NULL;
@@ -317,7 +296,7 @@ static int guest_init_queue(struct owner_queue *oq, struct guest_queue **gq)
 	q->producer_head = &oq->ring->producer_head;
 	q->size = oq->nentries;
 	q->mask = oq->ring_mask;
-	q->ring = oq->ring + offsetof(struct owner_rxtx_ring, desc);
+	q->ring = ((struct owner_rxtx_ring *)oq->ring)->desc;
 	q->cached_prod = 0;
 	q->cached_cons = 0;
 
@@ -399,32 +378,32 @@ static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int 
 static void update_dest_mac(void *data)
 {
 	data = (void *)data;
-	// struct ether_header *eth = (struct ether_header *)data;
-	// struct ether_addr *dst_addr = (struct ether_addr *)&eth->ether_dhost;
-	// struct ether_addr tmp = {
-	//      .ether_addr_octet = {
-	//          app_conf.dest_ether_addr_octet[0],
-	//          app_conf.dest_ether_addr_octet[1],
-	//          app_conf.dest_ether_addr_octet[2],
-	//          app_conf.dest_ether_addr_octet[3],
-	//          app_conf.dest_ether_addr_octet[4],
-	//          app_conf.dest_ether_addr_octet[5],
-	//      },
-	//  };
-	// *dst_addr = tmp;
+	struct ether_header *eth = (struct ether_header *)data;
+	struct ether_addr *dst_addr = (struct ether_addr *)&eth->ether_dhost;
+	struct ether_addr tmp = {
+	     .ether_addr_octet = {
+	         app_conf.dest_ether_addr_octet[0],
+	         app_conf.dest_ether_addr_octet[1],
+	         app_conf.dest_ether_addr_octet[2],
+	         app_conf.dest_ether_addr_octet[3],
+	         app_conf.dest_ether_addr_octet[4],
+	         app_conf.dest_ether_addr_octet[5],
+	     },
+	 };
+	*dst_addr = tmp;
 }
 
 static void swap_mac_addresses(void *data)
 {
 	data = (void *)data;
-	// struct ether_header *eth = (struct ether_header *)data;
-	// struct ether_addr *src_addr = (struct ether_addr *)&eth->ether_shost;
-	// struct ether_addr *dst_addr = (struct ether_addr *)&eth->ether_dhost;
-	// struct ether_addr tmp;
+	struct ether_header *eth = (struct ether_header *)data;
+	struct ether_addr *src_addr = (struct ether_addr *)&eth->ether_shost;
+	struct ether_addr *dst_addr = (struct ether_addr *)&eth->ether_dhost;
+	struct ether_addr tmp;
 
-	// tmp = *src_addr;
-	// *src_addr = *dst_addr;
-	// *dst_addr = tmp;
+	tmp = *src_addr;
+	*src_addr = *dst_addr;
+	*dst_addr = tmp;
 }
 
 struct Args {
@@ -449,7 +428,6 @@ static void *socket_routine(void *arg)
 		if (socket_id == 0)
 			nrecv = flash__recvmsg_us(cfg, nf->thread[socket_id]->socket, nf->thread[0]->socket, &msg);
 		else {
-			// printf("recv prod: %u\n", __atomic_load_n(&owner_queues[socket_id]->ring->producer, __ATOMIC_ACQUIRE));
 			nrecv = owner_bulk_dequeue_rxtx(owner_queues[socket_id], descs, cfg->xsk->batch_size);
 
 			for (i = 0; i < nrecv; i++) {
@@ -484,6 +462,10 @@ static void *socket_routine(void *arg)
 			if (!nb_frags++)
 				app_conf.sriov ? update_dest_mac(pkt) : swap_mac_addresses(pkt);
 
+			descs[i].addr = xv->addr;
+			descs[i].len = xv->len;
+			descs[i].options = xv->options;
+
 			send[tot_pkt_send++] = &msg.msg_iov[i];
 			if (eop)
 				nb_frags = 0;
@@ -495,13 +477,10 @@ static void *socket_routine(void *arg)
 			} else {
 				ret = guest_bulk_enqueue_rxtx(guest_queues[socket_id][socket_id + 1], descs, tot_pkt_send);
 
-				// printf("prod: %u\n", __atomic_load_n(guest_queues[socket_id][socket_id + 1]->producer, __ATOMIC_RELAXED));
-				// printf("prod: %u\n", __atomic_load_n(&owner_queues[socket_id + 1]->ring->producer, __ATOMIC_RELAXED));
-
-				// #ifdef STATS
-				// 	nf->thread[socket_id]->socket->ring_stats.tx_npkts += ret;
-				// 	nf->thread[socket_id]->socket->ring_stats.tx_frags += ret;
-				// #endif
+				#ifdef STATS
+					nf->thread[socket_id]->socket->ring_stats.tx_npkts += ret;
+					nf->thread[socket_id]->socket->ring_stats.tx_frags += ret;
+				#endif
 			}
 			if (ret != nrecv) {
 				log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
@@ -529,8 +508,8 @@ static void *worker__stats(void *arg)
 
 		while (!done) {
 			sleep(interval);
-			// if (system("clear") != 0)
-			// 	log_error("Terminal clear error");
+			if (system("clear") != 0)
+				log_error("Terminal clear error");
 			for (int i = 0; i < cfg->total_sockets; i++) {
 				flash__dump_stats(cfg, nf->thread[i]->socket);
 			}

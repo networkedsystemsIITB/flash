@@ -202,6 +202,8 @@ size_t flash__sendmsg_us(struct config *cfg, struct socket *xsk, struct socket *
 	__u32 frags_done = 0, eop_cnt = 0;
 	__u32 nb_frags = 0;
 
+	__complete_tx_rx_first__us(cfg, xsk_first, xsk);
+
 	if (!nsend)
 		return 0;
 
