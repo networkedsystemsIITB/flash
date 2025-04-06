@@ -34,8 +34,11 @@ struct xsk_config {
 	__u32 xdp_flags;
 	__u32 mode;
 	__u32 batch_size;
+	__u32 idle_thres;
+	__u32 bp_thres;
 	int poll_timeout;
 	int idle_timeout;
+	int bp_timeout;
 };
 
 struct umem_config {
@@ -57,13 +60,8 @@ struct config {
 	struct xsk_config *xsk;
 	struct xsk_umem_config *umem_config;
 	struct xsk_socket_config *xsk_config;
-	bool backpressure;
-	bool fwdall;
-	__u32 numavail_thres;
-	__u32 numoutstd_thres;
-	int sleep_txrx;
+	bool smart_poll;
 	bool custom_xsk;
-	bool hybrid_poll;
 	int umem_id;
 	int nf_id;
 	int umem_offset;
@@ -183,8 +181,6 @@ struct socket {
 	struct pollfd idle_fd;
 	bool idle;
 	__u32 outstanding_tx;
-	__u32 idx_fq_bp;
-	__u32 idx_tx_bp;
 	__u64 idle_timestamp;
 
 #ifdef STATS

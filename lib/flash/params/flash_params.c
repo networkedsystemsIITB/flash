@@ -11,39 +11,36 @@
 
 #define BUFSIZE 30
 
-const char *__doc__ = "AF_XDP NF Library\n";
+const char *__doc__ = "FLASH AF_XDP NF Library\n";
 
 const struct option_wrapper long_options[] = {
 
-	{ { "nf-id", required_argument, NULL, 'f' }, "NF id to connect to monitor" },
-
 	{ { "umem-id", required_argument, NULL, 'u' }, "Umem id to connect to monitor" },
 
-	{ { "app-stats", no_argument, NULL, 'a' }, "Display application (syscall) statistics." },
+	{ { "nf-id", required_argument, NULL, 'f' }, "NF id to connect to monitor" },
 
-	{ { "extra-stats", no_argument, NULL, 'x' }, "Display extra statistics." },
+	{ { "app-stats", no_argument, NULL, 'a' }, "Display application (syscall) statistics. (default: disabled)" },
 
-	{ { "interval", required_argument, NULL, 'n' }, "Specify statistics update interval (default 1 sec)." },
+	{ { "extra-stats", no_argument, NULL, 'x' }, "Display extra (xdp) statistics. (default: disabled)" },
+
+	{ { "interval", required_argument, NULL, 'n' }, "Specify statistics update interval (default: 1 sec)." },
+
+	{ { "quiet", no_argument, NULL, 'Q' }, "Quiet mode (no output) (default: disabled)" },
+
+	{ { "smart-poll", no_argument, NULL, 'p' }, "Smart polling mode (default: disabled)" },
+
+	{ { "idle-timeout", required_argument, NULL, 'i' }, "Idle timeout for smart polling mode in ms. (default: 100)" },
+
+	{ { "idleness", required_argument, NULL, 'I' }, "Idleness for smart polling, busy-polling (0) to poll (1) (default: 0)" },
+
+	{ { "bp-timeout", required_argument, NULL, 'b' }, "Sleep duration on backpressure in us (default: 1000)" },
+
+	{ { "bp-sense", required_argument, NULL, 'B' },
+	  "Sensitivity for detecting backpressure, 0: 0 pkts - 1: 2048 pkts (default: 0.5)" },
+
+	{ { "frags", no_argument, NULL, 'F' }, "Enable frags (multi-buffer) support. -- not implemented yet" },
 
 	{ { "clock", required_argument, NULL, 'w' }, "Clock NAME (default MONOTONIC). -- not implemented yet" },
-
-	{ { "quiet", no_argument, NULL, 'Q' }, "Quiet mode (no output)" },
-
-	{ { "hybrid-poll", no_argument, NULL, 'p' }, "Hybrid polling mode" },
-
-	{ { "idle-timeout", no_argument, NULL, 'i' }, "Idle timeout for Hybrid polling mode" },
-
-	{ { "apply-bp", no_argument, NULL, 'b' }, "apply back pressure" },
-
-	{ { "fwd-all", no_argument, NULL, 's' }, "Forward all packets" },
-
-	{ { "numavail-thres", required_argument, NULL, 'y' }, "tx-rx num-available threshold" },
-
-	{ { "numoutstd-thres", required_argument, NULL, 'z' }, "tx-rx num-outstanding threshold" },
-
-	{ { "sleep-txrx", required_argument, NULL, 'e' }, "tx-rx sleep time" },
-
-	{ { "frags", no_argument, NULL, 'F' }, "Enable frags (multi-buffer) support" },
 
 	{ { "help", no_argument, NULL, 'h' }, "Show help", false },
 
@@ -142,31 +139,16 @@ static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper
 	}
 
 	/* Parse commands line args */
-	while ((opt = getopt_long(argc, argv, "abpsxhFQn:w:u:f:", long_options, &longindex)) != -1) {
+	while ((opt = getopt_long(argc, argv, "u:f:axn:Qpi:I:b:B:Fw:h", long_options, &longindex)) != -1) {
 		switch (opt) {
+		case 'u':
+			cfg->umem_id = atoi(optarg);
+			break;
+		case 'f':
+			cfg->nf_id = atoi(optarg);
+			break;
 		case 'a':
 			cfg->app_stats = true;
-			break;
-		case 'b':
-			cfg->backpressure = true;
-			break;
-		case 'p':
-			cfg->hybrid_poll = true;
-			break;
-		case 'i':
-			cfg->xsk->idle_timeout = atoi(optarg);
-			break;
-		case 's':
-			cfg->fwdall = true;
-			break;
-		case 'y':
-			cfg->numavail_thres = atoi(optarg);
-			break;
-		case 'z':
-			cfg->numoutstd_thres = atoi(optarg);
-			break;
-		case 'e':
-			cfg->sleep_txrx = atoi(optarg);
 			break;
 		case 'x':
 			cfg->extra_stats = true;
@@ -177,18 +159,27 @@ static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper
 		case 'Q':
 			cfg->verbose = false;
 			break;
-		case 'u':
-			cfg->umem_id = atoi(optarg);
+		case 'p':
+			cfg->smart_poll = true;
 			break;
-		case 'f':
-			cfg->nf_id = atoi(optarg);
+		case 'i':
+			cfg->xsk->idle_timeout = atoi(optarg);
+			break;
+		case 'I':
+			cfg->xsk->idle_thres = (__u32)(atof(optarg) * cfg->xsk->batch_size);
+			break;
+		case 'b':
+			cfg->xsk->bp_timeout = atoi(optarg);
+			break;
+		case 'B':
+			cfg->xsk->bp_thres = (__u32)(atof(optarg) * XSK_RING_PROD__DEFAULT_NUM_DESCS);
+			break;
+		case 'F':
+			cfg->frags_enabled = true;
 			break;
 		case 'w':
 			if (get_clockid(&cfg->clock, optarg))
 				log_error("ERROR: Invalid clock %s. Default to CLOCK_MONOTONIC.\n", optarg);
-			break;
-		case 'F':
-			cfg->frags_enabled = true;
 			break;
 		case 'h':
 			full_help = true;
@@ -224,17 +215,16 @@ int flash__parse_cmdline_args(int argc, char **argv, struct config *cfg)
 
 	cfg->xsk->batch_size = BATCH_SIZE;
 	cfg->umem->frame_size = FRAME_SIZE;
-	cfg->backpressure = false;
-	cfg->fwdall = false;
 	cfg->stats_interval = 1;
 	cfg->app_stats = false;
 	cfg->extra_stats = false;
 	cfg->verbose = true;
-	cfg->hybrid_poll = false;
-	cfg->xsk->idle_timeout = 1;
-	cfg->sleep_txrx = 1;
-	cfg->numavail_thres = 1;
-	cfg->numoutstd_thres = 1024;
+	cfg->smart_poll = false;
+	cfg->xsk->idle_timeout = 100;
+	cfg->xsk->poll_timeout = -1;
+	cfg->xsk->idle_thres = 0;
+	cfg->xsk->bp_timeout = 1000;
+	cfg->xsk->bp_thres = (__u32)(XSK_RING_PROD__DEFAULT_NUM_DESCS * 0.5);
 
 	int ret = parse_cmdline_args(argc, argv, long_options, cfg, __doc__);
 

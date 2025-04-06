@@ -7,6 +7,9 @@
 
 #include "flash_nf.h"
 
+char spinner[] = {'/', '-', '\\', '|'};
+static int spinner_index = 0;
+
 static int get_irqs(struct config *cfg)
 {
 	char count_path[PATH_MAX];
@@ -120,8 +123,8 @@ void flash__dump_stats(struct config *cfg, struct socket *xsk)
 {
 	unsigned long now = flash__get_nsecs(cfg);
 	long diff = now - xsk->timestamp;
-	const char *setup_str = "dynamic";
-	const char *backp_str = "us-backpressure-disabled";
+	const char *setup_str = "FLASH";
+	const char *backp_str = "smart-poll-disabled";
 
 	xsk->timestamp = now;
 
@@ -130,15 +133,10 @@ void flash__dump_stats(struct config *cfg, struct socket *xsk)
 	rx_pps = (xsk->ring_stats.rx_npkts - xsk->ring_stats.prev_rx_npkts) * 1000000000. / diff;
 	tx_pps = (xsk->ring_stats.tx_npkts - xsk->ring_stats.prev_tx_npkts) * 1000000000. / diff;
 
-	if (cfg->backpressure && !cfg->fwdall) {
-		backp_str = "us-backpressure-enabled";
-		setup_str = "drop-only";
-	} else if (cfg->backpressure && cfg->fwdall) {
-		backp_str = "us-backpressure-enabled";
-		setup_str = "fwd-only";
-	}
+	if (cfg->smart_poll)
+		backp_str = "smart-poll-enabled";
 
-	printf("%s:%d %s %s ", cfg->ifname, xsk->ifqueue, setup_str, backp_str);
+	printf("%c %s:%d %s %s ", spinner[spinner_index++ & 3], cfg->ifname, xsk->ifqueue, setup_str, backp_str);
 	if (cfg->xsk->xdp_flags & XDP_FLAGS_SKB_MODE)
 		printf("xdp-skb ");
 	else if (cfg->xsk->xdp_flags & XDP_FLAGS_DRV_MODE)
@@ -148,6 +146,8 @@ void flash__dump_stats(struct config *cfg, struct socket *xsk)
 
 	if (cfg->xsk->mode & FLASH__POLL)
 		printf("poll() ");
+	if (cfg->xsk->mode & FLASH__BUSY_POLL)
+		printf("busy-poll ");
 	printf("\n");
 
 	if (cfg->frags_enabled) {
