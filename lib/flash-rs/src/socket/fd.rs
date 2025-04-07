@@ -1,25 +1,38 @@
 use std::{io, ptr};
 
-use libc::{MSG_DONTWAIT, SOL_XDP, XDP_MMAP_OFFSETS, XDP_STATISTICS, recvfrom, sendto, ssize_t};
+use libc::{
+    MSG_DONTWAIT, SOL_XDP, XDP_MMAP_OFFSETS, XDP_STATISTICS, pollfd, recvfrom, sendto, ssize_t,
+};
 
 use crate::mem::Mmap;
 
 use super::xdp::{XDP_MMAP_OFFSETS_SIZEOF, XDP_STATISTICS_SIZEOF, XdpMmapOffsets, XdpStatistics};
 
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Debug)]
 pub(crate) struct Fd {
     id: i32,
+    poll_fd: pollfd,
+    poll_timeout: i32,
 }
 
 impl Fd {
-    pub(crate) fn new(id: i32) -> io::Result<Self> {
+    pub(crate) fn new(id: i32, poll_timeout: i32) -> io::Result<Self> {
         if id < 0 {
             Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid file descriptor",
             ))
         } else {
-            Ok(Fd { id })
+            Ok(Fd {
+                id,
+                poll_fd: pollfd {
+                    fd: id,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                poll_timeout,
+            })
         }
     }
 
@@ -44,6 +57,15 @@ impl Fd {
                 ptr::null_mut(),
                 ptr::null_mut(),
             );
+        }
+    }
+
+    #[inline]
+    pub(super) fn poll(&mut self) -> io::Result<bool> {
+        match unsafe { libc::poll(&mut self.poll_fd, 1, self.poll_timeout) } {
+            -1 => Err(io::Error::last_os_error()),
+            0 => Ok(false),
+            _ => Ok(true),
         }
     }
 

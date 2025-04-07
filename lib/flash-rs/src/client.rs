@@ -1,10 +1,10 @@
-use std::{arch::x86_64::_rdtsc, io, sync::Arc};
+use std::{io, sync::Arc, time::Duration};
 
 use libxdp_sys::XSK_RING_PROD__DEFAULT_NUM_DESCS;
 
 use crate::{
     Socket,
-    config::{BindFlags, Mode, XdpFlags, XskConfig},
+    config::{BindFlags, Mode, PollConfig, XdpFlags, XskConfig},
     mem::Umem,
     socket::{Fd, SocketShared},
     uds_conn::{
@@ -32,12 +32,13 @@ struct NfData {
 pub fn connect(
     nf_id: u32,
     umem_id: u32,
-    back_pressure: bool,
-    fwd_all: bool,
+    smart_poll: bool,
+    idle_timeout: Duration,
+    idleness: f32,
+    bp_timeout: Duration,
+    bp_sense: f32,
 ) -> io::Result<Vec<Socket>> {
     let mut uds_conn = UdsConn::new()?;
-
-    unsafe { _rdtsc() };
 
     #[cfg(feature = "tracing")]
     tracing::debug!("Sending FLASH_GET_UMEM: {FLASH_GET_UMEM:?}");
@@ -151,7 +152,7 @@ pub fn connect(
     #[cfg(feature = "tracing")]
     tracing::debug!("XSK Mode: {xsk_mode:?}");
 
-    let _xsk_poll_timeout = if xsk_mode.contains(Mode::FLASH_POLL) {
+    let xsk_poll_timeout = if xsk_mode.contains(Mode::FLASH_POLL) {
         #[cfg(feature = "tracing")]
         tracing::debug!("Sending FLASH_GET_POLL_TIMEOUT: {FLASH_GET_POLL_TIMEOUT:?}");
 
@@ -170,7 +171,7 @@ pub fn connect(
 
         uds_conn.write_all(&FLASH_CREATE_SOCKET)?;
 
-        let fd = Fd::new(uds_conn.recv_fd()?)?;
+        let fd = Fd::new(uds_conn.recv_fd()?, xsk_poll_timeout)?;
 
         let ifqueue = uds_conn.recv_i32()?;
         if ifqueue < 0 {
@@ -237,13 +238,19 @@ pub fn connect(
         mode: xsk_mode,
         batch_size: BATCH_SIZE,
     };
+    let poll_config = if smart_poll {
+        Some(PollConfig::new(
+            idle_timeout,
+            idleness,
+            bp_timeout,
+            bp_sense,
+            xsk_config.batch_size,
+        )?)
+    } else {
+        None
+    };
 
-    let data = Arc::new(SocketShared::new(
-        xsk_config,
-        uds_conn,
-        back_pressure,
-        fwd_all,
-    ));
+    let data = Arc::new(SocketShared::new(xsk_config, poll_config, uds_conn));
 
     let mut sockets = fd_ifqueue
         .into_iter()

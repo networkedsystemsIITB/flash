@@ -3,15 +3,16 @@ mod ring;
 mod stats;
 mod xdp;
 
-use std::{io, sync::Arc};
+use std::{io, sync::Arc, thread};
 
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS};
 use libxdp_sys::{
     XSK_UMEM__DEFAULT_FRAME_SIZE, xsk_umem__add_offset_to_addr, xsk_umem__extract_addr,
 };
+use quanta::{Clock, Instant};
 
 use crate::{
-    config::{BindFlags, Mode, XskConfig},
+    config::{BindFlags, Mode, PollConfig, XskConfig},
     mem::Umem,
     uds_conn::UdsConn,
     util,
@@ -32,8 +33,8 @@ pub struct Socket {
     fill: FillRing,
     comp: CompRing,
     outstanding_tx: u32,
-    idx_fq_bp: u32,
-    idx_tx_bp: u32,
+    clock: Clock,
+    idle_timestamp: Option<Instant>,
     umem: Umem,
     stats: Arc<Stats>,
     shared: Arc<SocketShared>,
@@ -42,23 +43,20 @@ pub struct Socket {
 #[derive(Debug)]
 pub(crate) struct SocketShared {
     xsk_config: XskConfig,
-    back_pressure: bool,
-    fwd_all: bool,
+    poll_config: Option<PollConfig>,
     _uds_conn: UdsConn,
 }
 
 impl SocketShared {
     pub(crate) fn new(
         xsk_config: XskConfig,
+        poll_config: Option<PollConfig>,
         uds_conn: UdsConn,
-        back_pressure: bool,
-        fwd_all: bool,
     ) -> Self {
         Self {
             xsk_config,
+            poll_config,
             _uds_conn: uds_conn,
-            back_pressure,
-            fwd_all,
         }
     }
 }
@@ -88,8 +86,8 @@ impl Socket {
             comp: CompRing::new(&fd, off.cr())?,
             fill: FillRing::new(&fd, off.fr())?,
             outstanding_tx: 0,
-            idx_fq_bp: 0,
-            idx_tx_bp: 0,
+            clock: Clock::new(),
+            idle_timestamp: None,
             umem,
             stats: Arc::new(Stats::new(fd, ifname, ifqueue)),
             shared: data,
@@ -108,7 +106,6 @@ impl Socket {
         }
 
         self.fill.submit(nr_frames);
-
         Ok(())
     }
 
@@ -117,56 +114,11 @@ impl Socket {
         if self.fd.kick() >= 0 {
             Ok(())
         } else {
-            let errno = util::get_errno();
-            if errno == ENOBUFS || errno == EAGAIN || errno == EBUSY || errno == ENETDOWN {
-                Ok(())
-            } else {
-                Err(())
+            match util::get_errno() {
+                ENOBUFS | EAGAIN | EBUSY | ENETDOWN => Ok(()),
+                _ => Err(()),
             }
         }
-    }
-
-    #[inline]
-    fn reserve_fq(&mut self, num: u32) {
-        let mut idx_fq = 0;
-        let mut ret = self.fill.reserve(num, &mut idx_fq);
-
-        while ret != num {
-            if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
-                || self.fill.needs_wakeup()
-            {
-                unsafe {
-                    (*self.stats.app.get()).fill_fail_polls += 1;
-                }
-                self.fd.wakeup();
-            }
-
-            ret = self.fill.reserve(num, &mut idx_fq);
-        }
-
-        self.idx_fq_bp = idx_fq;
-    }
-
-    #[inline]
-    fn reserve_tx(&mut self, num: u32) {
-        let mut idx_tx = 0;
-        let mut ret = self.tx.reserve(num, &mut idx_tx);
-
-        while ret != num {
-            self.complete_tx_rx();
-
-            if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL) || self.tx.needs_wakeup()
-            {
-                unsafe {
-                    (*self.stats.app.get()).tx_wakeup_sendtos += 1;
-                }
-                self.kick_tx().unwrap();
-            }
-
-            ret = self.tx.reserve(num, &mut idx_tx);
-        }
-
-        self.idx_tx_bp = idx_tx;
     }
 
     #[allow(clippy::similar_names)]
@@ -175,9 +127,6 @@ impl Socket {
         if self.outstanding_tx == 0 {
             return;
         }
-
-        let mut idx_cq = 0;
-        let mut idx_fq = 0;
 
         if self
             .shared
@@ -192,41 +141,100 @@ impl Socket {
         }
 
         let num_outstanding = self.outstanding_tx.min(self.shared.xsk_config.batch_size);
+        let mut idx_cq = 0;
+        let mut idx_fq = 0;
+
         let completed = self.comp.peek(num_outstanding, &mut idx_cq);
+        if completed == 0 {
+            return;
+        }
 
-        if completed > 0 {
-            let mut ret = self.fill.reserve(completed, &mut idx_fq);
-            while ret != completed {
-                if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
-                    || self.fill.needs_wakeup()
-                {
-                    unsafe {
-                        (*self.stats.app.get()).fill_fail_polls += 1;
-                    }
-                    self.fd.wakeup();
+        while self.fill.reserve(completed, &mut idx_fq) != completed {
+            if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
+                || self.fill.needs_wakeup()
+            {
+                unsafe {
+                    (*self.stats.app.get()).fill_fail_polls += 1;
                 }
+                self.fd.wakeup();
+            }
+        }
 
-                ret = self.fill.reserve(completed, &mut idx_fq);
+        for _ in 0..completed {
+            *self.fill.addr(idx_fq) = *self.comp.addr(idx_cq);
+            idx_fq += 1;
+            idx_cq += 1;
+        }
+
+        self.fill.submit(completed);
+        self.comp.release(completed);
+        self.outstanding_tx -= completed;
+    }
+
+    #[inline]
+    fn reserve_fq(&mut self, num: u32) -> u32 {
+        let mut idx_fq = 0;
+
+        while self.fill.reserve(num, &mut idx_fq) != num {
+            if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
+                || self.fill.needs_wakeup()
+            {
+                unsafe {
+                    (*self.stats.app.get()).fill_fail_polls += 1;
+                }
+                self.fd.wakeup();
+            }
+        }
+
+        idx_fq
+    }
+
+    #[inline]
+    fn reserve_tx(&mut self, num: u32) -> u32 {
+        let mut idx_tx = 0;
+
+        if self.tx.reserve(num, &mut idx_tx) == num {
+            return idx_tx;
+        }
+
+        loop {
+            self.complete_tx_rx();
+
+            if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL) || self.tx.needs_wakeup()
+            {
+                unsafe {
+                    (*self.stats.app.get()).tx_wakeup_sendtos += 1;
+                }
+                self.kick_tx().unwrap();
             }
 
-            for _ in 0..completed {
-                *self.fill.addr(idx_fq) = *self.comp.addr(idx_cq);
-                idx_fq += 1;
-                idx_cq += 1;
+            if self.tx.reserve(num, &mut idx_tx) == num {
+                return idx_tx;
             }
 
-            self.fill.submit(completed);
-            self.comp.release(completed);
-            self.outstanding_tx -= completed;
+            if let Some(poll_config) = &self.shared.poll_config {
+                if self.outstanding_tx > poll_config.bp_threshold {
+                    thread::sleep(poll_config.bp_timeout);
+                }
+            }
         }
     }
 
     #[allow(clippy::missing_errors_doc)]
     pub fn recv(&mut self) -> io::Result<Vec<Desc>> {
-        let mut idx_rx = 0;
-
         self.complete_tx_rx();
 
+        if let Some(poll_config) = &self.shared.poll_config {
+            if let Some(idle_timestamp) = self.idle_timestamp {
+                if self.clock.now() >= idle_timestamp && !self.fd.poll()? {
+                    self.idle_timestamp = self.clock.now().checked_add(poll_config.idle_timeout);
+
+                    return Ok(vec![]);
+                }
+            }
+        }
+
+        let mut idx_rx = 0;
         let rcvd = self.rx.peek(self.shared.xsk_config.batch_size, &mut idx_rx);
 
         if rcvd == 0 {
@@ -239,17 +247,19 @@ impl Socket {
                 self.fd.wakeup();
             }
 
+            if let Some(poll_config) = &self.shared.poll_config {
+                if self.idle_timestamp.is_none() {
+                    self.idle_timestamp = self.clock.now().checked_add(poll_config.idle_timeout);
+                }
+            }
+
             return Ok(vec![]);
         }
 
-        if self.shared.back_pressure {
-            if self.shared.fwd_all {
-                self.reserve_tx(rcvd);
-            } else {
-                self.reserve_fq(rcvd);
+        if let Some(poll_config) = &self.shared.poll_config {
+            if rcvd > poll_config.idle_threshold {
+                self.idle_timestamp = None;
             }
-        } else {
-            // unimplemented!("Not implemented");
         }
 
         if rcvd > self.shared.xsk_config.batch_size {
@@ -259,19 +269,18 @@ impl Socket {
             ));
         }
 
-        let mut descs = Vec::with_capacity(rcvd as usize);
-        for _ in 0..rcvd {
-            let desc = self.rx.desc(idx_rx);
-            idx_rx += 1;
+        let descs = (0..rcvd)
+            .map(|_| {
+                let desc = self.rx.desc(idx_rx);
+                idx_rx += 1;
 
-            let addr = unsafe { xsk_umem__add_offset_to_addr(desc.addr) };
-
-            descs.push(Desc {
-                addr,
-                len: desc.len,
-                options: desc.options,
-            });
-        }
+                Desc {
+                    addr: unsafe { xsk_umem__add_offset_to_addr(desc.addr) },
+                    len: desc.len,
+                    options: desc.options,
+                }
+            })
+            .collect();
 
         self.rx.release(rcvd);
 
@@ -289,11 +298,7 @@ impl Socket {
         }
 
         let n = descs.len() as u32;
-        if !self.shared.back_pressure {
-            self.reserve_tx(n);
-        }
-
-        let mut idx_tx = self.idx_tx_bp;
+        let mut idx_tx = self.reserve_tx(n);
 
         for desc in descs {
             let tx_desc = self.tx.desc(idx_tx);
@@ -319,11 +324,7 @@ impl Socket {
         }
 
         let n = descs.len() as u32;
-        if !self.shared.back_pressure {
-            self.reserve_fq(n);
-        }
-
-        let mut idx_fq = self.idx_fq_bp;
+        let mut idx_fq = self.reserve_fq(n);
 
         for desc in descs {
             *self.fill.addr(idx_fq) = unsafe { xsk_umem__extract_addr(desc.addr) };
