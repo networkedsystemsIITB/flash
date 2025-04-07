@@ -109,8 +109,8 @@ static void __kick_tx(struct socket *xsk)
 
 static inline void __complete_tx_rx_first(struct config *cfg, struct socket *xsk)
 {
-	__u32 idx_cq = 0, idx_fq = 0;
-	unsigned int completed, num_outstanding;
+	uint32_t idx_cq = 0, idx_fq = 0;
+	uint32_t completed, num_outstanding;
 
 	if (!xsk->outstanding_tx)
 		return;
@@ -133,7 +133,7 @@ static inline void __complete_tx_rx_first(struct config *cfg, struct socket *xsk
 	/* Re-add completed TX buffers */
 	completed = xsk_ring_cons__peek(&xsk->comp, num_outstanding, &idx_cq);
 	if (completed > 0) {
-		unsigned int i, ret;
+		uint32_t i, ret;
 
 		ret = xsk_ring_prod__reserve(&xsk->fill, completed, &idx_fq);
 		while (ret != completed) {
@@ -155,10 +155,10 @@ static inline void __complete_tx_rx_first(struct config *cfg, struct socket *xsk
 	}
 }
 
-static inline __u32 __reserve_fq(struct config *cfg, struct socket *xsk, unsigned int num)
+static inline uint32_t __reserve_fq(struct config *cfg, struct socket *xsk, uint32_t num)
 {
-	__u32 idx_fq = 0;
-	unsigned int ret;
+	uint32_t idx_fq = 0;
+	uint32_t ret;
 
 	ret = xsk_ring_prod__reserve(&xsk->fill, num, &idx_fq);
 	while (ret != num) {
@@ -173,10 +173,10 @@ static inline __u32 __reserve_fq(struct config *cfg, struct socket *xsk, unsigne
 	return idx_fq;
 }
 
-static inline __u32 __reserve_tx(struct config *cfg, struct socket *xsk, unsigned int num)
+static inline uint32_t __reserve_tx(struct config *cfg, struct socket *xsk, uint32_t num)
 {
-	__u32 idx_tx = 0;
-	unsigned int ret;
+	uint32_t idx_tx = 0;
+	uint32_t ret;
 
 	ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
 	while (ret != num) {
@@ -189,13 +189,17 @@ static inline __u32 __reserve_tx(struct config *cfg, struct socket *xsk, unsigne
 		}
 		ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
 
-		if (cfg->smart_poll && ret != num && xsk->outstanding_tx > cfg->xsk->bp_thres)
+		if (cfg->smart_poll && ret != num && xsk->outstanding_tx > cfg->xsk->bp_thres) {
 			usleep(cfg->xsk->bp_timeout);
+#ifdef STATS
+			xsk->app_stats.backpressure++;
+#endif
+		}
 	}
 	return idx_tx;
 }
 
-static void __hex_dump(void *pkt, size_t length, __u64 addr)
+static void __hex_dump(void *pkt, size_t length, uint64_t addr)
 {
 	const unsigned char *address = (unsigned char *)pkt;
 	const unsigned char *line = address;
@@ -207,7 +211,7 @@ static void __hex_dump(void *pkt, size_t length, __u64 addr)
 	if (!DEBUG_HEXDUMP)
 		return;
 
-	sprintf(buf, "addr=%llu", addr);
+	sprintf(buf, "addr=%lu", addr);
 	printf("length = %zu\n", length);
 	printf("%s | ", buf);
 	while (length-- > 0) {
@@ -233,8 +237,8 @@ static void __hex_dump(void *pkt, size_t length, __u64 addr)
 size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg)
 {
 	int ret;
-	__u32 idx_rx = 0;
-	unsigned int rcvd, i, eop_cnt = 0;
+	uint32_t idx_rx = 0;
+	uint32_t rcvd, i, eop_cnt = 0;
 
 	/* Only Tx currently is not supported 
 	  * in that scenario we need to call the following 
@@ -276,12 +280,12 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *
 	for (i = 0; i < rcvd; i++) {
 		const struct xdp_desc *desc = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++);
 		eop_cnt += IS_EOP_DESC(desc->options);
-		__u64 addr = desc->addr;
-		__u32 len = desc->len;
-		__u64 orig = addr;
+		uint64_t addr = desc->addr;
+		uint32_t len = desc->len;
+		uint64_t orig = addr;
 
 		addr = xsk_umem__add_offset_to_addr(addr);
-		__u64 *pkt = xsk_umem__get_data(cfg->umem->buffer, addr);
+		uint64_t *pkt = xsk_umem__get_data(cfg->umem->buffer, addr);
 
 		// Put it in the message vector
 		msg->msg_iov[i].data = pkt;
@@ -301,23 +305,23 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *
 	return rcvd;
 }
 
-size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, unsigned int nsend)
+size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t nsend)
 {
-	unsigned int i;
-	__u32 frags_done = 0, eop_cnt = 0;
-	__u32 nb_frags = 0;
+	uint32_t i;
+	uint32_t frags_done = 0, eop_cnt = 0;
+	uint32_t nb_frags = 0;
 
 	if (!nsend)
 		return 0;
 
-	__u32 idx_tx = __reserve_tx(cfg, xsk, nsend);
+	uint32_t idx_tx = __reserve_tx(cfg, xsk, nsend);
 
 	for (i = 0; i < nsend; i++) {
 		struct xskvec *xv = msgiov[i];
 		bool eop = IS_EOP_DESC(xv->options);
-		__u64 addr = xv->addr;
+		uint64_t addr = xv->addr;
 
-		__u32 len = xv->len;
+		uint32_t len = xv->len;
 		nb_frags++;
 
 		struct xdp_desc *tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, idx_tx++);
@@ -344,25 +348,28 @@ size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec **ms
 	return nsend;
 }
 
-size_t flash__dropmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, unsigned int ndrop)
+size_t flash__dropmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t ndrop)
 {
-	unsigned int i;
-	__u32 eop_cnt = 0;
+	uint32_t i;
+	uint32_t eop_cnt = 0;
 
 	if (!ndrop)
 		return 0;
 
-	__u32 idx_fq = __reserve_fq(cfg, xsk, ndrop);
+	uint32_t idx_fq = __reserve_fq(cfg, xsk, ndrop);
 
 	for (i = 0; i < ndrop; i++) {
 		struct xskvec *xv = msgiov[i];
-		__u64 addr = xv->addr;
+		uint64_t addr = xv->addr;
 
-		__u64 orig = xsk_umem__extract_addr(addr);
+		uint64_t orig = xsk_umem__extract_addr(addr);
 		eop_cnt += IS_EOP_DESC(xv->options);
 		*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) = orig;
 	}
 
 	xsk_ring_prod__submit(&xsk->fill, ndrop);
+#ifdef STATS
+	xsk->ring_stats.drop_npkts += ndrop;
+#endif
 	return ndrop;
 }

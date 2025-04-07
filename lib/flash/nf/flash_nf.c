@@ -110,15 +110,15 @@ static int *__configure(struct config *cfg, struct nf *nf)
 	}
 
 	send_cmd(uds_sockfd, FLASH__GET_BIND_FLAGS);
-	recv_data(uds_sockfd, &cfg->xsk->bind_flags, sizeof(__u32));
+	recv_data(uds_sockfd, &cfg->xsk->bind_flags, sizeof(uint32_t));
 	log_info("BIND_FLAGS: %d", cfg->xsk->bind_flags);
 
 	send_cmd(uds_sockfd, FLASH__GET_XDP_FLAGS);
-	recv_data(uds_sockfd, &cfg->xsk->xdp_flags, sizeof(__u32));
+	recv_data(uds_sockfd, &cfg->xsk->xdp_flags, sizeof(uint32_t));
 	log_info("XDP_FLAGS: %d", cfg->xsk->xdp_flags);
 
 	send_cmd(uds_sockfd, FLASH__GET_MODE);
-	recv_data(uds_sockfd, &cfg->xsk->mode, sizeof(__u32));
+	recv_data(uds_sockfd, &cfg->xsk->mode, sizeof(uint32_t));
 	log_info("MODE: %d", cfg->xsk->mode);
 
 	if (cfg->xsk->mode & FLASH__POLL) {
@@ -161,7 +161,7 @@ static int xsk_mmap_umem_rings(struct socket *socket, struct xsk_umem_config ume
 		return -errno;
 
 	if (fill) {
-		fill_map = mmap(NULL, off.fr.desc + umem_config.fill_size * sizeof(__u64), PROT_READ | PROT_WRITE,
+		fill_map = mmap(NULL, off.fr.desc + umem_config.fill_size * sizeof(uint64_t), PROT_READ | PROT_WRITE,
 				MAP_SHARED | MAP_POPULATE, fd, XDP_UMEM_PGOFF_FILL_RING);
 		if (fill_map == MAP_FAILED)
 			return -errno;
@@ -176,7 +176,7 @@ static int xsk_mmap_umem_rings(struct socket *socket, struct xsk_umem_config ume
 	}
 
 	if (comp) {
-		comp_map = mmap(NULL, off.cr.desc + umem_config.comp_size * sizeof(__u64), PROT_READ | PROT_WRITE,
+		comp_map = mmap(NULL, off.cr.desc + umem_config.comp_size * sizeof(uint64_t), PROT_READ | PROT_WRITE,
 				MAP_SHARED | MAP_POPULATE, fd, XDP_UMEM_PGOFF_COMPLETION_RING);
 		if (fill_map == MAP_FAILED) {
 			err = -errno;
@@ -225,8 +225,8 @@ static int xsk_mmap_umem_rings(struct socket *socket, struct xsk_umem_config ume
 		tx->ring = tx_map + off.tx.desc;
 		tx->cached_prod = *tx->producer;
 		/* cached_cons is r->size bigger than the real consumer pointer
-         * See xsk_prod_nb_free
-         */
+		  * See xsk_prod_nb_free
+		  */
 		tx->cached_cons = *tx->consumer + xsk_config.tx_size;
 	}
 
@@ -235,9 +235,9 @@ static int xsk_mmap_umem_rings(struct socket *socket, struct xsk_umem_config ume
 out_mmap_tx:
 	munmap(rx_map, off.rx.desc + xsk_config.rx_size * sizeof(struct xdp_desc));
 out_mmap_rx:
-	munmap(comp_map, off.rx.desc + umem_config.comp_size * sizeof(__u64));
+	munmap(comp_map, off.rx.desc + umem_config.comp_size * sizeof(uint64_t));
 out_mmap_comp:
-	munmap(fill_map, off.fr.desc + umem_config.fill_size * sizeof(__u64));
+	munmap(fill_map, off.fr.desc + umem_config.fill_size * sizeof(uint64_t));
 	return err;
 }
 
@@ -245,7 +245,7 @@ void flash__populate_fill_ring(struct thread **thread, int frame_size, int total
 {
 	int ret, i;
 	int nr_frames = (size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS * (size_t)2 * (size_t)umem_scale;
-	__u32 idx = 0;
+	uint32_t idx = 0;
 
 	for (int t = 0; t < total_sockets; t++) {
 		ret = xsk_ring_prod__reserve(&thread[t]->socket->fill, nr_frames, &idx);
@@ -279,9 +279,9 @@ void flash__xsk_close(struct config *cfg, struct nf *nf)
 			munmap(nf->thread[i]->socket->rx.ring - off.rx.desc, off.rx.desc + cfg->xsk_config->rx_size * desc_sz);
 			munmap(nf->thread[i]->socket->tx.ring - off.tx.desc, off.tx.desc + cfg->xsk_config->tx_size * desc_sz);
 			munmap(nf->thread[i]->socket->fill.ring - off.fr.desc,
-			       off.fr.desc + cfg->umem_config->fill_size * sizeof(__u64));
+			       off.fr.desc + cfg->umem_config->fill_size * sizeof(uint64_t));
 			munmap(nf->thread[i]->socket->comp.ring - off.cr.desc,
-			       off.cr.desc + cfg->umem_config->comp_size * sizeof(__u64));
+			       off.cr.desc + cfg->umem_config->comp_size * sizeof(uint64_t));
 		}
 		free(nf->thread[i]->socket);
 		free(nf->thread[i]);
@@ -302,7 +302,7 @@ void flash__xsk_close(struct config *cfg, struct nf *nf)
 
 static bool xsk_page_aligned(void *buffer)
 {
-	unsigned long addr = (unsigned long)buffer;
+	size_t addr = (size_t)buffer;
 
 	return !(addr & (getpagesize() - 1));
 }

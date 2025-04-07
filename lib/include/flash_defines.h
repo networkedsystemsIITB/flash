@@ -11,6 +11,7 @@
 #include <xdp/libxdp.h>
 #include <linux/if_link.h>
 #include <poll.h>
+#include <linux/version.h>
 
 #include <flash_list.h>
 #include <time.h>
@@ -30,12 +31,12 @@
 #define MS_PER_S 1000
 
 struct xsk_config {
-	__u32 bind_flags;
-	__u32 xdp_flags;
-	__u32 mode;
-	__u32 batch_size;
-	__u32 idle_thres;
-	__u32 bp_thres;
+	uint32_t bind_flags;
+	uint32_t xdp_flags;
+	uint32_t mode;
+	uint32_t batch_size;
+	uint32_t idle_thres;
+	uint32_t bp_thres;
 	int poll_timeout;
 	int idle_timeout;
 	int bp_timeout;
@@ -71,7 +72,7 @@ struct config {
 	int verbose;
 	int stats_interval;
 	int irqs_at_init;
-	__u32 irq_no;
+	uint32_t irq_no;
 	bool app_stats;
 	bool extra_stats;
 #endif
@@ -93,10 +94,10 @@ struct xsk_ctx {
 	struct xsk_ring_prod *fill;
 	struct xsk_ring_cons *comp;
 	struct xsk_umem *umem;
-	__u32 queue_id;
+	uint32_t queue_id;
 	int refcount;
 	int ifindex;
-	__u64 netns_cookie;
+	uint64_t netns_cookie;
 	int xsks_map_fd;
 	struct list_head list;
 	struct xdp_program *xdp_prog;
@@ -130,44 +131,32 @@ struct xsk_umem_info {
 
 #ifdef STATS
 struct xsk_ring_stats {
-	unsigned long rx_frags;
-	unsigned long rx_npkts;
-	unsigned long tx_frags;
-	unsigned long tx_npkts;
-	unsigned long rx_dropped_npkts;
-	unsigned long rx_invalid_npkts;
-	unsigned long tx_invalid_npkts;
-	unsigned long rx_full_npkts;
-	unsigned long rx_fill_empty_npkts;
-	unsigned long tx_empty_npkts;
-	unsigned long prev_rx_frags;
-	unsigned long prev_rx_npkts;
-	unsigned long prev_tx_frags;
-	unsigned long prev_tx_npkts;
-	unsigned long prev_rx_dropped_npkts;
-	unsigned long prev_rx_invalid_npkts;
-	unsigned long prev_tx_invalid_npkts;
-	unsigned long prev_rx_full_npkts;
-	unsigned long prev_rx_fill_empty_npkts;
-	unsigned long prev_tx_empty_npkts;
+	size_t rx_frags;
+	size_t rx_npkts;
+	size_t tx_frags;
+	size_t tx_npkts;
+	size_t drop_npkts;
+	size_t rx_dropped_npkts;
+	size_t rx_invalid_npkts;
+	size_t tx_invalid_npkts;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
+	size_t rx_full_npkts;
+	size_t rx_fill_empty_npkts;
+	size_t tx_empty_npkts;
+#endif
 };
 
 struct xsk_driver_stats {
-	unsigned long intrs;
-	unsigned long prev_intrs;
+	size_t intrs;
 };
 
 struct xsk_app_stats {
-	unsigned long rx_empty_polls;
-	unsigned long fill_fail_polls;
-	unsigned long copy_tx_sendtos;
-	unsigned long tx_wakeup_sendtos;
-	unsigned long opt_polls;
-	unsigned long prev_rx_empty_polls;
-	unsigned long prev_fill_fail_polls;
-	unsigned long prev_copy_tx_sendtos;
-	unsigned long prev_tx_wakeup_sendtos;
-	unsigned long prev_opt_polls;
+	size_t rx_empty_polls;
+	size_t fill_fail_polls;
+	size_t copy_tx_sendtos;
+	size_t tx_wakeup_sendtos;
+	size_t backpressure;
+	size_t opt_polls;
 };
 #endif
 
@@ -180,14 +169,17 @@ struct socket {
 	struct xsk_ring_cons comp;
 	struct pollfd idle_fd;
 	bool idle;
-	__u32 outstanding_tx;
-	__u64 idle_timestamp;
+	uint32_t outstanding_tx;
+	uint64_t idle_timestamp;
 
 #ifdef STATS
 	struct xsk_ring_stats ring_stats;
 	struct xsk_app_stats app_stats;
 	struct xsk_driver_stats drv_stats;
-	unsigned long timestamp;
+	struct xsk_ring_stats ring_stats_prev;
+	struct xsk_app_stats app_stats_prev;
+	struct xsk_driver_stats drv_stats_prev;
+	size_t timestamp;
 #endif
 };
 
