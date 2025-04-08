@@ -9,6 +9,8 @@ use libxdp_sys::XSK_RING_PROD__DEFAULT_NUM_DESCS;
 #[cfg(feature = "clap")]
 use clap::Parser;
 
+const BATCH_SIZE: u32 = 64;
+
 #[cfg(feature = "clap")]
 #[derive(Debug, Parser)]
 pub struct FlashConfig {
@@ -113,11 +115,11 @@ pub(crate) struct XskConfig {
 }
 
 impl XskConfig {
-    pub(crate) fn new(bind_flags: BindFlags, mode: Mode, batch_size: u32) -> Self {
+    pub(crate) fn new(bind_flags: BindFlags, mode: Mode) -> Self {
         Self {
             bind_flags,
             mode,
-            batch_size,
+            batch_size: BATCH_SIZE,
         }
     }
 }

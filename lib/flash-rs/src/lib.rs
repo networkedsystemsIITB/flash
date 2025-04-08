@@ -2,7 +2,7 @@ mod client;
 mod config;
 mod mem;
 mod socket;
-mod uds_conn;
+mod uds;
 mod util;
 
 pub use crate::{

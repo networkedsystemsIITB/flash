@@ -14,7 +14,7 @@ use quanta::{Clock, Instant};
 use crate::{
     config::{BindFlags, Mode, PollConfig, XskConfig},
     mem::Umem,
-    uds_conn::UdsConn,
+    uds::UdsClient,
     util,
 };
 
@@ -44,32 +44,24 @@ pub struct Socket {
 pub(crate) struct SocketShared {
     xsk_config: XskConfig,
     poll_config: Option<PollConfig>,
-    _uds_conn: UdsConn,
+    _uds_client: UdsClient,
 }
 
 impl SocketShared {
     pub(crate) fn new(
         xsk_config: XskConfig,
         poll_config: Option<PollConfig>,
-        uds_conn: UdsConn,
+        uds_client: UdsClient,
     ) -> Self {
         Self {
             xsk_config,
             poll_config,
-            _uds_conn: uds_conn,
+            _uds_client: uds_client,
         }
     }
 }
 
-#[derive(Debug)]
-pub struct Desc {
-    addr: u64,
-    len: u32,
-    options: u32,
-}
-
 impl Socket {
-    #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
     pub(crate) fn new(
         fd: Fd,
         umem: Umem,
@@ -346,5 +338,19 @@ impl Socket {
     #[allow(clippy::must_use_candidate)]
     pub fn stats(&self) -> Arc<Stats> {
         self.stats.clone()
+    }
+}
+
+#[derive(Debug)]
+pub struct Desc {
+    addr: u64,
+    len: u32,
+    options: u32,
+}
+
+impl Desc {
+    #[inline]
+    pub fn set_options(&mut self, options: u32) {
+        self.options = options;
     }
 }

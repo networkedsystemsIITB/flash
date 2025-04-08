@@ -57,7 +57,6 @@ impl Mmap {
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    #[inline]
     pub(crate) fn add_offset(
         &self,
         of: &xdp_ring_offset,
