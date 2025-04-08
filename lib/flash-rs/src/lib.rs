@@ -7,5 +7,6 @@ mod util;
 
 pub use crate::{
     client::connect,
+    config::FlashConfig,
     socket::{Socket, Stats},
 };

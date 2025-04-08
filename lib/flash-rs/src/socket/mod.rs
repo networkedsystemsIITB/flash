@@ -72,24 +72,23 @@ impl Socket {
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
     pub(crate) fn new(
         fd: Fd,
-        ifname: String,
-        ifqueue: u32,
         umem: Umem,
+        stats: Stats,
         data: Arc<SocketShared>,
     ) -> io::Result<Self> {
         let off = fd.xdp_mmap_offsets()?;
 
         Ok(Self {
-            fd: fd.clone(),
             rx: RxRing::new(&fd, off.rx())?,
             tx: TxRing::new(&fd, off.tx())?,
             comp: CompRing::new(&fd, off.cr())?,
             fill: FillRing::new(&fd, off.fr())?,
+            fd,
             outstanding_tx: 0,
             clock: Clock::new(),
             idle_timestamp: None,
             umem,
-            stats: Arc::new(Stats::new(fd, ifname, ifqueue)),
+            stats: Arc::new(stats),
             shared: data,
         })
     }

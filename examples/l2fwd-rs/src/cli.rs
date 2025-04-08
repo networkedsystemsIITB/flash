@@ -1,44 +1,24 @@
-use std::{num::ParseIntError, time::Duration};
-
 use clap::Parser;
+use flash::FlashConfig;
 
 #[derive(Debug, Parser)]
 pub struct Cli {
-    #[arg(short = 'f', long)]
-    pub nf_id: u32,
+    #[command(flatten)]
+    pub flash_config: FlashConfig,
 
-    #[arg(short, long)]
-    pub umem_id: u32,
-
-    #[arg(short = 'p', long, default_value_t = false)]
-    pub smart_poll: bool,
-
-    #[arg(short = 'i', long, default_value = "100", value_parser = parse_millis)]
-    pub idle_timeout: Duration,
-
-    #[arg(short = 'I', long, default_value_t = 0.)]
-    pub idleness: f32,
-
-    #[arg(short = 'b', long, default_value = "0", value_parser = parse_micros)]
-    pub bp_timeout: Duration,
-
-    #[arg(short = 'B', long, default_value_t = 0.5)]
-    pub bp_sense: f32,
-
-    #[arg(short = 'c', long, default_value_t = 0)]
+    #[arg(
+        short = 'c',
+        long,
+        default_value_t = 0,
+        help = "Starting CPU core index for socket threads"
+    )]
     pub cpu_start: usize,
 
-    #[arg(short = 'e', long, default_value_t = 0)]
+    #[arg(
+        short = 'e',
+        long,
+        default_value_t = 0,
+        help = "Ending CPU core index for socket threads (inclusive)"
+    )]
     pub cpu_end: usize,
-
-    #[arg(short = 's', long, default_value_t = 1)]
-    pub stats_cpu: usize,
-}
-
-fn parse_millis(arg: &str) -> Result<Duration, ParseIntError> {
-    Ok(Duration::from_millis(arg.parse()?))
-}
-
-fn parse_micros(arg: &str) -> Result<Duration, ParseIntError> {
-    Ok(Duration::from_micros(arg.parse()?))
 }

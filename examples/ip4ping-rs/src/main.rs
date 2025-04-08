@@ -75,17 +75,7 @@ fn main() {
 
     let cli = Cli::parse();
 
-    let sockets = flash::connect(
-        cli.nf_id,
-        cli.umem_id,
-        cli.smart_poll,
-        cli.idle_timeout,
-        cli.idleness,
-        cli.bp_timeout,
-        cli.bp_sense,
-    )
-    .unwrap();
-
+    let sockets = flash::connect(&cli.flash_config).unwrap();
     if sockets.is_empty() {
         eprintln!("No sockets received");
         return;

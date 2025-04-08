@@ -1,16 +1,16 @@
-use std::{io, sync::Arc, time::Duration};
+use std::{io, sync::Arc};
 
 use libxdp_sys::XSK_RING_PROD__DEFAULT_NUM_DESCS;
 
 use crate::{
-    Socket,
-    config::{BindFlags, Mode, PollConfig, XdpFlags, XskConfig},
+    Socket, Stats,
+    config::{BindFlags, FlashConfig, Mode, PollConfig, XdpFlags, XskConfig},
     mem::Umem,
     socket::{Fd, SocketShared},
     uds_conn::{
-        FLASH_CREATE_SOCKET, FLASH_GET_BIND_FLAGS, FLASH_GET_FRAGS_ENABLED, FLASH_GET_IFNAME,
-        FLASH_GET_MODE, FLASH_GET_POLL_TIMEOUT, FLASH_GET_ROUTE_INFO, FLASH_GET_UMEM,
-        FLASH_GET_UMEM_OFFSET, FLASH_GET_XDP_FLAGS, UdsConn,
+        FLASH_CREATE_SOCKET, FLASH_GET_BIND_FLAGS, FLASH_GET_IFNAME, FLASH_GET_MODE,
+        FLASH_GET_POLL_TIMEOUT, FLASH_GET_UMEM, FLASH_GET_UMEM_OFFSET, FLASH_GET_XDP_FLAGS,
+        UdsConn,
     },
     util,
 };
@@ -29,22 +29,17 @@ struct NfData {
     clippy::too_many_lines,
     clippy::missing_errors_doc
 )]
-pub fn connect(
-    nf_id: u32,
-    umem_id: u32,
-    smart_poll: bool,
-    idle_timeout: Duration,
-    idleness: f32,
-    bp_timeout: Duration,
-    bp_sense: f32,
-) -> io::Result<Vec<Socket>> {
+pub fn connect(config: &FlashConfig) -> io::Result<Vec<Socket>> {
     let mut uds_conn = UdsConn::new()?;
 
     #[cfg(feature = "tracing")]
     tracing::debug!("Sending FLASH_GET_UMEM: {FLASH_GET_UMEM:?}");
 
     uds_conn.write_all(&FLASH_GET_UMEM)?;
-    uds_conn.write_all(util::as_bytes(&NfData { nf_id, umem_id }))?;
+    uds_conn.write_all(util::as_bytes(&NfData {
+        nf_id: config.nf_id,
+        umem_id: config.umem_id,
+    }))?;
 
     let umem_fd = uds_conn.recv_fd()?;
     if umem_fd < 0 {
@@ -103,56 +98,56 @@ pub fn connect(
 
     uds_conn.write_all(&FLASH_GET_BIND_FLAGS)?;
 
-    let xsk_bind_flags = uds_conn.recv_i32()?;
-    if xsk_bind_flags < 0 {
+    let bind_flags = uds_conn.recv_i32()?;
+    if bind_flags < 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid xsk bind flags: {xsk_bind_flags}"),
+            format!("invalid xsk bind flags: {bind_flags}"),
         ));
     }
 
-    let xsk_bind_flags = BindFlags::from_bits_retain(xsk_bind_flags as u32);
+    let bind_flags = BindFlags::from_bits_retain(bind_flags as u32);
 
     #[cfg(feature = "tracing")]
-    tracing::debug!("XSK Bind Flags: {xsk_bind_flags:?}");
+    tracing::debug!("Bind Flags: {bind_flags:?}");
 
     #[cfg(feature = "tracing")]
     tracing::debug!("Sending FLASH_GET_XDP_FLAGS: {FLASH_GET_XDP_FLAGS:?}");
 
     uds_conn.write_all(&FLASH_GET_XDP_FLAGS)?;
 
-    let xsk_xdp_flags = uds_conn.recv_i32()?;
-    if xsk_xdp_flags < 0 {
+    let xdp_flags = uds_conn.recv_i32()?;
+    if xdp_flags < 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid xsk xdp flags: {xsk_xdp_flags}"),
+            format!("invalid xsk xdp flags: {xdp_flags}"),
         ));
     }
 
-    let xsk_xdp_flags = XdpFlags::from_bits_retain(xsk_xdp_flags as u32);
+    let xdp_flags = XdpFlags::from_bits_retain(xdp_flags as u32);
 
     #[cfg(feature = "tracing")]
-    tracing::debug!("XSK XDP Flags: {xsk_xdp_flags:?}");
+    tracing::debug!("XDP Flags: {xdp_flags:?}");
 
     #[cfg(feature = "tracing")]
     tracing::debug!("Sending FLASH_GET_MODE: {FLASH_GET_MODE:?}");
 
     uds_conn.write_all(&FLASH_GET_MODE)?;
 
-    let xsk_mode = uds_conn.recv_i32()?;
-    if xsk_mode < 0 {
+    let mode = uds_conn.recv_i32()?;
+    if mode < 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid xsk mode: {xsk_mode}"),
+            format!("invalid xsk mode: {mode}"),
         ));
     }
 
-    let xsk_mode = Mode::from_bits_retain(xsk_mode as u32);
+    let mode = Mode::from_bits_retain(mode as u32);
 
     #[cfg(feature = "tracing")]
-    tracing::debug!("XSK Mode: {xsk_mode:?}");
+    tracing::debug!("Mode: {mode:?}");
 
-    let xsk_poll_timeout = if xsk_mode.contains(Mode::FLASH_POLL) {
+    let poll_timeout = if mode.contains(Mode::FLASH_POLL) {
         #[cfg(feature = "tracing")]
         tracing::debug!("Sending FLASH_GET_POLL_TIMEOUT: {FLASH_GET_POLL_TIMEOUT:?}");
 
@@ -171,7 +166,7 @@ pub fn connect(
 
         uds_conn.write_all(&FLASH_CREATE_SOCKET)?;
 
-        let fd = Fd::new(uds_conn.recv_fd()?, xsk_poll_timeout)?;
+        let fd = Fd::new(uds_conn.recv_fd()?, poll_timeout)?;
 
         let ifqueue = uds_conn.recv_i32()?;
         if ifqueue < 0 {
@@ -192,33 +187,26 @@ pub fn connect(
         fd_ifqueue.push((fd, ifqueue));
     }
 
-    #[cfg(feature = "tracing")]
-    tracing::debug!("Sending FLASH_GET_ROUTE_INFO: {FLASH_GET_ROUTE_INFO:?}");
+    // #[cfg(feature = "tracing")]
+    // tracing::debug!("Sending FLASH_GET_ROUTE_INFO: {FLASH_GET_ROUTE_INFO:?}");
 
-    uds_conn.write_all(&FLASH_GET_ROUTE_INFO)?;
+    // uds_conn.write_all(&FLASH_GET_ROUTE_INFO)?;
 
-    let next_size = uds_conn.recv_i32()?;
-    if next_size < 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid next size: {next_size}"),
-        ));
-    }
-    let next_size = next_size as usize;
+    // let next_size = uds_conn.recv_i32()?;
+    // if next_size < 0 {
+    //     return Err(io::Error::new(
+    //         io::ErrorKind::InvalidData,
+    //         format!("invalid next size: {next_size}"),
+    //     ));
+    // }
+    // let next_size = next_size as usize;
 
-    let _next = (0..next_size)
-        .map(|_| uds_conn.recv_i32())
-        .collect::<Result<Vec<_>, _>>()?;
+    // let _next = (0..next_size)
+    //     .map(|_| uds_conn.recv_i32())
+    //     .collect::<Result<Vec<_>, _>>()?;
 
-    #[cfg(feature = "tracing")]
-    tracing::debug!("Next: {_next:?}");
-
-    #[cfg(feature = "tracing")]
-    tracing::debug!("Sending FLASH_GET_FRAGS_ENABLED: {FLASH_GET_FRAGS_ENABLED:?}");
-
-    uds_conn.write_all(&FLASH_GET_FRAGS_ENABLED)?;
-
-    let _frags_enabled = uds_conn.recv_bool()?;
+    // #[cfg(feature = "tracing")]
+    // tracing::debug!("Next: {_next:?}");
 
     #[cfg(feature = "tracing")]
     tracing::debug!("Sending FLASH_GET_IFNAME: {FLASH_GET_IFNAME:?}");
@@ -232,23 +220,17 @@ pub fn connect(
 
     uds_conn.set_nonblocking(true)?;
 
-    let xsk_config = XskConfig {
-        bind_flags: xsk_bind_flags,
-        _xdp_flags: xsk_xdp_flags,
-        mode: xsk_mode,
-        batch_size: BATCH_SIZE,
-    };
-    let poll_config = if smart_poll {
-        Some(PollConfig::new(
-            idle_timeout,
-            idleness,
-            bp_timeout,
-            bp_sense,
-            xsk_config.batch_size,
-        )?)
-    } else {
-        None
-    };
+    let batch_size = BATCH_SIZE;
+
+    let xsk_config = XskConfig::new(bind_flags, mode, batch_size);
+    let poll_config = PollConfig::new(
+        config.smart_poll,
+        config.idle_timeout,
+        config.idleness,
+        config.bp_timeout,
+        config.bp_sense,
+        batch_size,
+    )?;
 
     let data = Arc::new(SocketShared::new(xsk_config, poll_config, uds_conn));
 
@@ -256,10 +238,9 @@ pub fn connect(
         .into_iter()
         .map(|(fd, ifqueue)| {
             Socket::new(
-                fd,
-                ifname.clone(),
-                ifqueue,
+                fd.clone(),
                 Umem::new(umem_fd, umem_size)?,
+                Stats::new(fd, ifname.clone(), ifqueue, xdp_flags.clone()),
                 data.clone(),
             )
         })

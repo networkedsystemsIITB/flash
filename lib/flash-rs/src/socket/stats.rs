@@ -1,11 +1,14 @@
 use std::{cell::UnsafeCell, io, mem};
 
+use crate::config::XdpFlags;
+
 use super::{Fd, xdp::XdpStatistics};
 
 #[derive(Debug)]
 pub struct Stats {
     fd: Fd,
-    interface: Interface,
+    pub interface: Interface,
+    pub xdp_flags: XdpFlags,
     pub(super) ring: UnsafeCell<RingStats>,
     pub(super) app: UnsafeCell<AppStats>,
 }
@@ -14,20 +17,17 @@ unsafe impl Send for Stats {}
 unsafe impl Sync for Stats {}
 
 impl Stats {
-    pub(super) fn new(fd: Fd, ifname: String, ifqueue: u32) -> Self {
+    pub(crate) fn new(fd: Fd, ifname: String, ifqueue: u32, xdp_flags: XdpFlags) -> Self {
         Self {
             fd,
             interface: Interface {
                 name: ifname,
                 queue: ifqueue,
             },
+            xdp_flags,
             ring: UnsafeCell::new(RingStats::default()),
             app: UnsafeCell::new(AppStats::default()),
         }
-    }
-
-    pub fn get_interface(&self) -> Interface {
-        self.interface.clone()
     }
 
     pub fn get_ring_stats(&self) -> RingStats {
