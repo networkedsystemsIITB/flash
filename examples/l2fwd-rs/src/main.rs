@@ -13,23 +13,34 @@ use flash::Socket;
 
 use crate::cli::Cli;
 
+#[forbid(clippy::indexing_slicing)]
 #[inline]
-fn mac_swap(pkt: &mut [u8]) {
-    let mut tmp = [0u8; 6];
-    let (dst, src) = pkt.split_at_mut(6);
-    tmp.copy_from_slice(&dst[0..6]);
-    dst[0..6].copy_from_slice(&src[0..6]);
-    src[0..6].copy_from_slice(&tmp);
+fn mac_swap(pkt: &mut [u8; 14]) -> bool {
+    let mut tmp = [0; 6];
+
+    tmp.copy_from_slice(&pkt[0..6]);
+    pkt[6..12].swap_with_slice(&mut tmp);
+    pkt[0..6].copy_from_slice(&tmp);
+
+    true
 }
 
 fn socket_thread(mut socket: Socket, run: &Arc<AtomicBool>) {
     while run.load(Ordering::SeqCst) {
-        let descs = socket.recv().unwrap();
-        for desc in &descs {
-            let pkt = socket.read(desc).unwrap();
-            mac_swap(pkt);
+        if !socket.poll().is_ok_and(|val| val) {
+            continue;
         }
-        socket.send(descs);
+
+        let Ok(descs) = socket.recv() else {
+            continue;
+        };
+
+        let (descs_send, descs_drop) = descs
+            .into_iter()
+            .partition(|desc| socket.read(desc).is_ok_and(mac_swap));
+
+        socket.send(descs_send);
+        socket.drop(descs_drop);
     }
 }
 

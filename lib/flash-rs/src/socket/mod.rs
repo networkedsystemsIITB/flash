@@ -106,6 +106,16 @@ impl Socket {
         Ok(())
     }
 
+    #[allow(clippy::missing_errors_doc)]
+    #[inline]
+    pub fn poll(&mut self) -> io::Result<bool> {
+        if self.shared.xsk_config.mode.contains(Mode::FLASH_POLL) {
+            self.fd.poll()
+        } else {
+            Ok(true)
+        }
+    }
+
     #[inline]
     fn kick_tx(&self) -> Result<(), ()> {
         if self.fd.kick() >= 0 {
@@ -345,8 +355,18 @@ impl Socket {
 
     #[allow(clippy::missing_errors_doc)]
     #[inline]
-    pub fn read(&mut self, desc: &Desc) -> io::Result<&mut [u8]> {
-        self.umem.get_data(desc.addr, desc.len as usize)
+    pub fn read<const SIZE: usize>(&mut self, desc: &Desc) -> io::Result<&mut [u8; SIZE]> {
+        if SIZE > desc.len as usize {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("size: {SIZE} > desc length"),
+            ))
+        } else {
+            unsafe {
+                let data = self.umem.get_data(desc.addr, desc.len as usize)?;
+                Ok(&mut *data.as_mut_ptr().cast::<[u8; SIZE]>())
+            }
+        }
     }
 
     #[cfg(feature = "stats")]
@@ -364,6 +384,11 @@ pub struct Desc {
 }
 
 impl Desc {
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
     pub fn set_next(&mut self, idx: usize) {

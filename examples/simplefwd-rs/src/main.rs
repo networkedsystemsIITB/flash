@@ -15,7 +15,14 @@ use crate::cli::Cli;
 
 fn socket_thread(mut socket: Socket, run: &Arc<AtomicBool>) {
     while run.load(Ordering::SeqCst) {
-        let descs = socket.recv().unwrap();
+        if !socket.poll().is_ok_and(|val| val) {
+            continue;
+        }
+
+        let Ok(descs) = socket.recv() else {
+            break;
+        };
+
         socket.send(descs);
     }
 }
