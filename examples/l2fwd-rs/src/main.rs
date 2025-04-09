@@ -39,7 +39,7 @@ fn main() {
 
     let cli = Cli::parse();
 
-    let sockets = flash::connect(&cli.flash_config).unwrap();
+    let (sockets, _) = flash::connect(&cli.flash_config, false).unwrap();
     if sockets.is_empty() {
         eprintln!("No sockets received");
         return;

@@ -12,10 +12,12 @@ clap = { version = "4.5.35", features = ["derive"], optional = true }
 libc = "0.2.171"
 libxdp-sys = "0.2.1"
 quanta = "0.12.5"
+thiserror = "2.0.12"
 tracing = { version = "0.1.41", optional = true }
 uds = "0.4.2"
 
 [features]
 default = []
+stats = []
 clap = ["dep:clap"]
 tracing = ["dep:tracing"]

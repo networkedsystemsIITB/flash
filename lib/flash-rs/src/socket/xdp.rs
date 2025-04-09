@@ -1,9 +1,14 @@
 use std::mem;
 
-use libc::{xdp_mmap_offsets, xdp_ring_offset, xdp_statistics};
+use libc::{xdp_mmap_offsets, xdp_ring_offset};
+
+#[cfg(feature = "stats")]
+use libc::xdp_statistics;
 
 #[allow(clippy::cast_possible_truncation)]
 pub(super) const XDP_MMAP_OFFSETS_SIZEOF: u32 = mem::size_of::<xdp_mmap_offsets>() as _;
+
+#[cfg(feature = "stats")]
 #[allow(clippy::cast_possible_truncation)]
 pub(super) const XDP_STATISTICS_SIZEOF: u32 = mem::size_of::<xdp_statistics>() as _;
 
@@ -52,10 +57,12 @@ impl XdpMmapOffsets {
     }
 }
 
+#[cfg(feature = "stats")]
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct XdpStatistics(xdp_statistics);
 
+#[cfg(feature = "stats")]
 impl Default for XdpStatistics {
     fn default() -> Self {
         Self(xdp_statistics {

@@ -1,7 +1,9 @@
 mod fd;
 mod ring;
-mod stats;
 mod xdp;
+
+#[cfg(feature = "stats")]
+mod stats;
 
 use std::{io, sync::Arc, thread};
 
@@ -21,6 +23,8 @@ use crate::{
 use ring::{CompRing, FillRing, RxRing, TxRing};
 
 pub(crate) use fd::Fd;
+
+#[cfg(feature = "stats")]
 pub use stats::Stats;
 
 const FRAME_SIZE: u64 = XSK_UMEM__DEFAULT_FRAME_SIZE as u64;
@@ -36,6 +40,7 @@ pub struct Socket {
     clock: Clock,
     idle_timestamp: Option<Instant>,
     umem: Umem,
+    #[cfg(feature = "stats")]
     stats: Arc<Stats>,
     shared: Arc<SocketShared>,
 }
@@ -65,7 +70,7 @@ impl Socket {
     pub(crate) fn new(
         fd: Fd,
         umem: Umem,
-        stats: Stats,
+        #[cfg(feature = "stats")] stats: Stats,
         data: Arc<SocketShared>,
     ) -> io::Result<Self> {
         let off = fd.xdp_mmap_offsets()?;
@@ -80,6 +85,7 @@ impl Socket {
             clock: Clock::new(),
             idle_timestamp: None,
             umem,
+            #[cfg(feature = "stats")]
             stats: Arc::new(stats),
             shared: data,
         })
@@ -125,6 +131,7 @@ impl Socket {
             .bind_flags
             .contains(BindFlags::XDP_COPY)
         {
+            #[cfg(feature = "stats")]
             unsafe {
                 (*self.stats.app.get()).tx_copy_sendtos += 1;
             }
@@ -144,6 +151,7 @@ impl Socket {
             if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
                 || self.fill.needs_wakeup()
             {
+                #[cfg(feature = "stats")]
                 unsafe {
                     (*self.stats.app.get()).fill_fail_polls += 1;
                 }
@@ -170,6 +178,7 @@ impl Socket {
             if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
                 || self.fill.needs_wakeup()
             {
+                #[cfg(feature = "stats")]
                 unsafe {
                     (*self.stats.app.get()).fill_fail_polls += 1;
                 }
@@ -193,6 +202,7 @@ impl Socket {
 
             if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL) || self.tx.needs_wakeup()
             {
+                #[cfg(feature = "stats")]
                 unsafe {
                     (*self.stats.app.get()).tx_wakeup_sendtos += 1;
                 }
@@ -232,6 +242,7 @@ impl Socket {
             if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
                 || self.fill.needs_wakeup()
             {
+                #[cfg(feature = "stats")]
                 unsafe {
                     (*self.stats.app.get()).rx_empty_polls += 1;
                 }
@@ -275,6 +286,7 @@ impl Socket {
 
         self.rx.release(rcvd);
 
+        #[cfg(feature = "stats")]
         unsafe {
             (*self.stats.ring.get()).rx += u64::from(rcvd);
         }
@@ -303,6 +315,7 @@ impl Socket {
         self.tx.submit(n);
         self.outstanding_tx += n;
 
+        #[cfg(feature = "stats")]
         unsafe {
             (*self.stats.ring.get()).tx += u64::from(n);
         }
@@ -324,6 +337,7 @@ impl Socket {
 
         self.fill.submit(n);
 
+        #[cfg(feature = "stats")]
         unsafe {
             (*self.stats.ring.get()).dx += u64::from(n);
         }
@@ -335,6 +349,7 @@ impl Socket {
         self.umem.get_data(desc.addr, desc.len as usize)
     }
 
+    #[cfg(feature = "stats")]
     #[allow(clippy::must_use_candidate)]
     pub fn stats(&self) -> Arc<Stats> {
         self.stats.clone()
@@ -349,8 +364,9 @@ pub struct Desc {
 }
 
 impl Desc {
+    #[allow(clippy::cast_possible_truncation)]
     #[inline]
-    pub fn set_options(&mut self, options: u32) {
-        self.options = options;
+    pub fn set_next(&mut self, idx: usize) {
+        self.options = (self.options & 0xFFFF) | ((idx as u32) << 16);
     }
 }

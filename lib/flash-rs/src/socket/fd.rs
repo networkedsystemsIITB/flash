@@ -1,12 +1,16 @@
 use std::{io, ptr};
 
-use libc::{
-    MSG_DONTWAIT, SOL_XDP, XDP_MMAP_OFFSETS, XDP_STATISTICS, pollfd, recvfrom, sendto, ssize_t,
-};
+use libc::{MSG_DONTWAIT, SOL_XDP, XDP_MMAP_OFFSETS, pollfd, recvfrom, sendto, ssize_t};
+
+#[cfg(feature = "stats")]
+use libc::XDP_STATISTICS;
 
 use crate::mem::Mmap;
 
-use super::xdp::{XDP_MMAP_OFFSETS_SIZEOF, XDP_STATISTICS_SIZEOF, XdpMmapOffsets, XdpStatistics};
+use super::xdp::{XDP_MMAP_OFFSETS_SIZEOF, XdpMmapOffsets};
+
+#[cfg(feature = "stats")]
+use super::xdp::{XDP_STATISTICS_SIZEOF, XdpStatistics};
 
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Debug)]
@@ -94,6 +98,7 @@ impl Fd {
         }
     }
 
+    #[cfg(feature = "stats")]
     pub(super) fn xdp_statistics(&self) -> io::Result<XdpStatistics> {
         let mut stats = XdpStatistics::default();
         let mut optlen = XDP_STATISTICS_SIZEOF;

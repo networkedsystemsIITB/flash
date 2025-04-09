@@ -7,7 +7,7 @@ fn main() {
 
     let flash_config = FlashConfig::parse();
 
-    let sockets = flash::connect(&flash_config).unwrap();
+    let (sockets, _) = flash::connect(&flash_config, false).unwrap();
     if sockets.is_empty() {
         eprintln!("No sockets received");
     }
