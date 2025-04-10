@@ -55,7 +55,7 @@ pub struct Interface {
 pub struct RingStats {
     pub rx: u64,
     pub tx: u64,
-    pub dx: u64,
+    pub drop: u64,
 }
 
 #[derive(Debug, Default, Clone)]

@@ -5,8 +5,6 @@ use std::{
     sync::Arc,
 };
 
-use libxdp_sys::XSK_RING_PROD__DEFAULT_NUM_DESCS;
-
 use crate::{
     Socket,
     config::{BindFlags, FlashConfig, Mode, PollConfig, XskConfig},
@@ -23,6 +21,8 @@ use crate::{config::XdpFlags, socket::Stats};
 pub enum FlashError {
     IO(#[from] io::Error),
     AddrParse(#[from] AddrParseError),
+    #[error("flash error: error populating fq")]
+    FqPopulate,
 }
 
 #[allow(clippy::missing_errors_doc, clippy::too_many_lines)]
@@ -141,7 +141,7 @@ pub fn connect(
         .map(|(fd, ifqueue)| {
             Socket::new(
                 fd.clone(),
-                Umem::new(umem_fd, umem_size)?,
+                Umem::new(umem_fd, umem_size, umem_scale, umem_offset)?,
                 Stats::new(fd, ifname.clone(), ifqueue, xdp_flags.clone()),
                 socket_shared.clone(),
             )
@@ -154,16 +154,16 @@ pub fn connect(
         .map(|fd| {
             Socket::new(
                 fd.clone(),
-                Umem::new(umem_fd, umem_size)?,
+                Umem::new(umem_fd, umem_size, umem_scale, umem_offset)?,
                 socket_shared.clone(),
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let nr_frames = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2 * umem_scale;
-    for (i, socket) in sockets.iter_mut().enumerate() {
-        let _ = socket.populate_fq(nr_frames, i as u64 + umem_offset);
-    }
+    sockets
+        .iter_mut()
+        .enumerate()
+        .try_for_each(|(i, socket)| socket.populate_fq(i))?;
 
     Ok((sockets, next))
 }

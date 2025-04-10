@@ -113,8 +113,8 @@ impl Drop for Mmap {
         }
 
         #[cfg(not(feature = "tracing"))]
-        unsafe {
-            libc::munmap(self.addr.as_ptr(), self.len);
+        if unsafe { libc::munmap(self.addr.as_ptr(), self.len) } != 0 {
+            eprintln!("error unmapping memory: {}", io::Error::last_os_error());
         }
     }
 }

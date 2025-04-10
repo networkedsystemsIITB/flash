@@ -9,11 +9,13 @@ use std::{io, sync::Arc, thread};
 
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS};
 use libxdp_sys::{
-    XSK_UMEM__DEFAULT_FRAME_SIZE, xsk_umem__add_offset_to_addr, xsk_umem__extract_addr,
+    XSK_RING_PROD__DEFAULT_NUM_DESCS, XSK_UMEM__DEFAULT_FRAME_SIZE, xsk_umem__add_offset_to_addr,
+    xsk_umem__extract_addr,
 };
 use quanta::{Clock, Instant};
 
 use crate::{
+    client::FlashError,
     config::{BindFlags, Mode, PollConfig, XskConfig},
     mem::Umem,
     uds::UdsClient,
@@ -76,10 +78,10 @@ impl Socket {
         let off = fd.xdp_mmap_offsets()?;
 
         Ok(Self {
-            rx: RxRing::new(&fd, off.rx())?,
-            tx: TxRing::new(&fd, off.tx())?,
-            comp: CompRing::new(&fd, off.cr())?,
-            fill: FillRing::new(&fd, off.fr())?,
+            rx: RxRing::new(&fd, off.rx(), umem.scale)?,
+            tx: TxRing::new(&fd, off.tx(), umem.scale)?,
+            comp: CompRing::new(&fd, off.cr(), umem.scale)?,
+            fill: FillRing::new(&fd, off.fr(), umem.scale)?,
             fd,
             outstanding_tx: 0,
             clock: Clock::new(),
@@ -91,10 +93,13 @@ impl Socket {
         })
     }
 
-    pub(crate) fn populate_fq(&mut self, nr_frames: u32, offset: u64) -> Result<(), ()> {
+    pub(crate) fn populate_fq(&mut self, idx: usize) -> Result<(), FlashError> {
+        let nr_frames = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2 * self.umem.scale;
+        let offset = idx as u64 + self.umem.offset;
+
         let mut idx_fq = 0;
         if self.fill.reserve(nr_frames, &mut idx_fq) != nr_frames {
-            return Err(());
+            return Err(FlashError::FqPopulate);
         }
 
         for i in 0..u64::from(nr_frames) {
@@ -349,7 +354,7 @@ impl Socket {
 
         #[cfg(feature = "stats")]
         unsafe {
-            (*self.stats.ring.get()).dx += u64::from(n);
+            (*self.stats.ring.get()).drop += u64::from(n);
         }
     }
 

@@ -30,18 +30,18 @@ impl UdsClient {
     #[allow(clippy::similar_names)]
     pub(crate) fn get_umem(
         &mut self,
-        nf_id: u32,
         umem_id: u32,
+        nf_id: u32,
     ) -> io::Result<(i32, usize, usize, u32)> {
         #[repr(C)]
         struct NfData {
-            nf_id: u32,
             umem_id: u32,
+            nf_id: u32,
         }
 
         self.conn.write_all(&FLASH_GET_UMEM)?;
         self.conn
-            .write_all(util::as_bytes(&NfData { nf_id, umem_id }))?;
+            .write_all(util::as_bytes(&NfData { umem_id, nf_id }))?;
 
         let umem_fd = self.conn.recv_fd()?;
         if umem_fd < 0 {
@@ -183,12 +183,12 @@ impl UdsClient {
 
     pub(crate) fn get_ifname(&mut self) -> io::Result<String> {
         self.conn.write_all(&FLASH_GET_IFNAME)?;
-        self.conn.recv_string()
+        self.conn.recv_string::<17>()
     }
 
     pub(crate) fn get_ip_addr(&mut self) -> io::Result<String> {
         self.conn.write_all(&FLASH_GET_IP_ADDR)?;
-        self.conn.recv_string()
+        self.conn.recv_string::<16>()
     }
 
     pub(crate) fn get_dst_ip_addr(&mut self) -> io::Result<Vec<String>> {
@@ -202,7 +202,7 @@ impl UdsClient {
         }
 
         (0..n as usize)
-            .map(|_| self.conn.recv_string())
+            .map(|_| self.conn.recv_string::<16>())
             .collect::<Result<Vec<_>, _>>()
     }
 
@@ -220,6 +220,8 @@ impl Drop for UdsClient {
             tracing::debug!("Sent FLASH_CLOSE_CONN: {FLASH_CLOSE_CONN:?}");
         }
 
-        let _ = self.conn.write_all(&FLASH_CLOSE_CONN);
+        if let Err(err) = self.conn.write_all(&FLASH_CLOSE_CONN) {
+            eprintln!("error closing flash connection: {err}");
+        }
     }
 }

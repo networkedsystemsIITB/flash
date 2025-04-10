@@ -15,12 +15,6 @@ use crate::mem::Mmap;
 
 use super::fd::Fd;
 
-const RX_SIZE: u32 = XSK_RING_CONS__DEFAULT_NUM_DESCS;
-const TX_SIZE: u32 = XSK_RING_PROD__DEFAULT_NUM_DESCS;
-
-const FILL_SIZE: u32 = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2;
-const COMP_SIZE: u32 = XSK_RING_CONS__DEFAULT_NUM_DESCS;
-
 #[derive(Debug)]
 pub(super) struct FillRing {
     ring: xsk_ring_prod,
@@ -31,9 +25,11 @@ unsafe impl Send for FillRing {}
 
 impl FillRing {
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset) -> io::Result<Self> {
+    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset, umem_scale: u32) -> io::Result<Self> {
+        let fill_size = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2 * umem_scale;
+
         let mmap = fd.mmap(
-            off.desc as size_t + FILL_SIZE as size_t * mem::size_of::<u64>(),
+            off.desc as size_t + fill_size as size_t * mem::size_of::<u64>(),
             XDP_UMEM_PGOFF_FILL_RING as _,
         )?;
 
@@ -42,9 +38,9 @@ impl FillRing {
         Ok(Self {
             ring: xsk_ring_prod {
                 cached_prod: 0,
-                cached_cons: FILL_SIZE,
-                mask: FILL_SIZE - 1,
-                size: FILL_SIZE,
+                cached_cons: fill_size,
+                mask: fill_size - 1,
+                size: fill_size,
                 producer: prod,
                 consumer: cons,
                 ring,
@@ -89,9 +85,11 @@ unsafe impl Send for TxRing {}
 
 impl TxRing {
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset) -> io::Result<Self> {
+    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset, umem_scale: u32) -> io::Result<Self> {
+        let tx_size = XSK_RING_PROD__DEFAULT_NUM_DESCS * umem_scale;
+
         let mmap = fd.mmap(
-            off.desc as size_t + TX_SIZE as size_t * mem::size_of::<xdp_desc>(),
+            off.desc as size_t + tx_size as size_t * mem::size_of::<xdp_desc>(),
             XDP_PGOFF_TX_RING,
         )?;
 
@@ -100,9 +98,9 @@ impl TxRing {
         Ok(Self {
             ring: xsk_ring_prod {
                 cached_prod: unsafe { *prod },
-                cached_cons: unsafe { *cons } + TX_SIZE,
-                mask: TX_SIZE - 1,
-                size: TX_SIZE,
+                cached_cons: unsafe { *cons } + tx_size,
+                mask: tx_size - 1,
+                size: tx_size,
                 producer: prod,
                 consumer: cons,
                 ring,
@@ -147,9 +145,11 @@ unsafe impl Send for CompRing {}
 
 impl CompRing {
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset) -> io::Result<Self> {
+    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset, umem_scale: u32) -> io::Result<Self> {
+        let comp_size = XSK_RING_CONS__DEFAULT_NUM_DESCS * umem_scale;
+
         let mmap = fd.mmap(
-            off.desc as size_t + COMP_SIZE as size_t * mem::size_of::<u64>(),
+            off.desc as size_t + comp_size as size_t * mem::size_of::<u64>(),
             XDP_UMEM_PGOFF_COMPLETION_RING as _,
         )?;
 
@@ -159,8 +159,8 @@ impl CompRing {
             ring: xsk_ring_cons {
                 cached_prod: 0,
                 cached_cons: 0,
-                mask: COMP_SIZE - 1,
-                size: COMP_SIZE,
+                mask: comp_size - 1,
+                size: comp_size,
                 producer: prod,
                 consumer: cons,
                 ring,
@@ -196,9 +196,11 @@ unsafe impl Send for RxRing {}
 
 impl RxRing {
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset) -> io::Result<Self> {
+    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset, umem_scale: u32) -> io::Result<Self> {
+        let rx_size = XSK_RING_CONS__DEFAULT_NUM_DESCS * umem_scale;
+
         let mmap = fd.mmap(
-            off.desc as size_t + RX_SIZE as size_t * mem::size_of::<xdp_desc>(),
+            off.desc as size_t + rx_size as size_t * mem::size_of::<xdp_desc>(),
             XDP_PGOFF_RX_RING,
         )?;
 
@@ -208,8 +210,8 @@ impl RxRing {
             ring: xsk_ring_cons {
                 cached_prod: unsafe { *prod },
                 cached_cons: unsafe { *cons },
-                mask: RX_SIZE - 1,
-                size: RX_SIZE,
+                mask: rx_size - 1,
+                size: rx_size,
                 producer: prod,
                 consumer: cons,
                 ring,

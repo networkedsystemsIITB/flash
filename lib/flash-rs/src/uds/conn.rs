@@ -44,11 +44,13 @@ impl UdsConn {
     }
 
     #[inline]
-    pub(super) fn recv_string(&mut self) -> io::Result<String> {
-        let mut buf = [0; 16];
+    pub(super) fn recv_string<const SIZE: usize>(&mut self) -> io::Result<String> {
+        let mut buf = [0; SIZE];
         self.0.read_exact(&mut buf)?;
 
-        Ok(String::from_utf8_lossy(&buf).trim().to_string())
+        Ok(String::from_utf8_lossy(&buf)
+            .trim_end_matches('\0')
+            .to_string())
     }
 
     #[inline]

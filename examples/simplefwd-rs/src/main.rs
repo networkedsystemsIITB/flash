@@ -33,14 +33,24 @@ fn main() {
 
     let cli = Cli::parse();
 
-    let (sockets, _) = flash::connect(&cli.flash_config, false).unwrap();
+    let sockets = match flash::connect(&cli.flash_config) {
+        Ok((sockets, _)) => sockets,
+        Err(err) => {
+            eprintln!("{err}");
+            return;
+        }
+    };
+
     if sockets.is_empty() {
-        eprintln!("No sockets received");
+        eprintln!("no sockets received");
         return;
     }
 
+    #[cfg(feature = "tracing")]
+    tracing::info!("Sockets: {sockets:?}");
+
     let cores = core_affinity::get_core_ids()
-        .unwrap()
+        .unwrap_or_default()
         .into_iter()
         .filter(|core_id| core_id.id >= cli.cpu_start && core_id.id <= cli.cpu_end)
         .collect::<Vec<_>>();
@@ -56,10 +66,12 @@ fn main() {
     let run = Arc::new(AtomicBool::new(true));
 
     let r = run.clone();
-    ctrlc::set_handler(move || {
+    if let Err(err) = ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
-    })
-    .unwrap();
+    }) {
+        eprintln!("error setting Ctrl-C handler: {err}");
+        return;
+    }
 
     let handles = sockets
         .into_iter()
@@ -74,6 +86,8 @@ fn main() {
         .collect::<Vec<_>>();
 
     for handle in handles {
-        handle.join().unwrap();
+        if let Some(err) = handle.join().err() {
+            eprintln!("error in thread: {err:?}");
+        }
     }
 }

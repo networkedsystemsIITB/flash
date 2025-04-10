@@ -7,8 +7,20 @@ fn main() {
 
     let flash_config = FlashConfig::parse();
 
-    let (sockets, _) = flash::connect(&flash_config, false).unwrap();
+    let sockets = match flash::connect(&flash_config) {
+        Ok((sockets, _)) => sockets,
+        Err(err) => {
+            eprintln!("{err}");
+            return;
+        }
+    };
+
     if sockets.is_empty() {
-        eprintln!("No sockets received");
+        eprintln!("no sockets received");
+        #[cfg(feature = "tracing")]
+        return;
     }
+
+    #[cfg(feature = "tracing")]
+    tracing::info!("sockets: {sockets:?}");
 }
