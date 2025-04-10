@@ -189,7 +189,7 @@ static inline uint32_t __reserve_tx(struct config *cfg, struct socket *xsk, uint
 		}
 		ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
 
-		if (cfg->smart_poll && ret != num && xsk->outstanding_tx > cfg->xsk->bp_thres) {
+		if (cfg->smart_poll && ret != num && xsk->outstanding_tx >= cfg->xsk->bp_thres) {
 			usleep(cfg->xsk->bp_timeout);
 #ifdef STATS
 			xsk->app_stats.backpressure++;
@@ -269,7 +269,7 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *
 		return 0;
 	}
 
-	if (cfg->smart_poll && rcvd > cfg->xsk->idle_thres)
+	if (cfg->smart_poll && rcvd >= cfg->xsk->idle_thres)
 		xsk->idle_timestamp = 0;
 
 	if (rcvd > cfg->xsk->batch_size) {
