@@ -25,15 +25,17 @@ pub enum FlashError {
     FqPopulate,
 }
 
+pub struct Route {
+    pub ip_addr: Ipv4Addr,
+    pub next: Vec<Ipv4Addr>,
+}
+
 #[allow(clippy::missing_errors_doc, clippy::too_many_lines)]
-pub fn connect(
-    config: &FlashConfig,
-    get_next: bool,
-) -> Result<(Vec<Socket>, Option<Vec<Ipv4Addr>>), FlashError> {
+pub fn connect(config: &FlashConfig) -> Result<(Vec<Socket>, Route), FlashError> {
     let mut uds_client = UdsClient::new()?;
 
     let (umem_fd, total_sockets, umem_size, umem_scale) =
-        uds_client.get_umem(config.nf_id, config.umem_id)?;
+        uds_client.get_umem(config.umem_id, config.nf_id)?;
 
     #[cfg(feature = "tracing")]
     {
@@ -109,16 +111,13 @@ pub fn connect(
     #[cfg(all(feature = "stats", feature = "tracing"))]
     tracing::debug!("Ifname: {ifname}");
 
-    let next = if get_next {
-        Some(
-            uds_client
-                .get_dst_ip_addr()?
-                .iter()
-                .map(|y| Ipv4Addr::from_str(y))
-                .collect::<Result<Vec<_>, _>>()?,
-        )
-    } else {
-        None
+    let route = Route {
+        ip_addr: Ipv4Addr::from_str(&uds_client.get_ip_addr()?)?,
+        next: uds_client
+            .get_dst_ip_addr()?
+            .iter()
+            .map(|y| Ipv4Addr::from_str(y))
+            .collect::<Result<Vec<_>, _>>()?,
     };
 
     uds_client.set_nonblocking()?;
@@ -165,5 +164,5 @@ pub fn connect(
         .enumerate()
         .try_for_each(|(i, socket)| socket.populate_fq(i))?;
 
-    Ok((sockets, next))
+    Ok((sockets, route))
 }

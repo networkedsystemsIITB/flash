@@ -4,6 +4,7 @@ members = [
   "examples/helloworld-rs",
   "examples/ip4ping-rs",
   "examples/l2fwd-rs",
+  "examples/maglev-rs",
   "examples/simplefwd-rs",
 ]
 resolver = "3"
