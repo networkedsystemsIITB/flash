@@ -364,17 +364,18 @@ static void *socket_routine(void *arg)
 			if (!nb_frags++)
 				process_packets(pkt, &xv->len, &stats_arr[socket_id]);
 
+			if (app_conf.variable) {
+				__u64 random_cycles =
+					app_conf.variable_start + (rand() % (app_conf.variable_end - app_conf.variable_start));
+				burn_cycles(random_cycles);
+
+			} else {
+				burn_cycles(app_conf.burn_cycles);
+			}
+
 			send[tot_pkt_send++] = &msg.msg_iov[i];
 			if (eop)
 				nb_frags = 0;
-		}
-
-		if (app_conf.variable) {
-			__u64 random_cycles = app_conf.variable_start + (rand() % (app_conf.variable_end - app_conf.variable_start));
-			burn_cycles(random_cycles);
-
-		} else {
-			burn_cycles(app_conf.burn_cycles);
 		}
 
 		if (nrecv) {
