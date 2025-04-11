@@ -14,6 +14,7 @@ use std::{
 use clap::Parser;
 use flash::{Route, Socket};
 use fnv::FnvBuildHasher;
+use macaddr::MacAddr6;
 
 use crate::{cli::Cli, maglev::Maglev};
 
@@ -23,6 +24,7 @@ fn socket_thread<H: BuildHasher + Default>(
     mut socket: Socket,
     maglev: &Arc<Maglev<H>>,
     route: &Arc<Route>,
+    next_macs: &Arc<Vec<MacAddr6>>,
     run: &Arc<AtomicBool>,
 ) {
     while run.load(Ordering::SeqCst) {
@@ -39,7 +41,7 @@ fn socket_thread<H: BuildHasher + Default>(
 
         for mut desc in descs {
             if let Ok(pkt) = socket.read(&desc) {
-                if let Some(idx) = nf::load_balance(pkt, maglev, route) {
+                if let Some(idx) = nf::load_balance(pkt, maglev, route, next_macs) {
                     desc.set_next(idx);
                     descs_send.push(desc);
                 } else {
@@ -79,11 +81,21 @@ fn main() {
         return;
     }
 
+    if cli.next_macs.len() != route.next.len() {
+        eprintln!(
+            "number of next NF MACs ({}) does not match number of next NFs ({})",
+            cli.next_macs.len(),
+            route.next.len()
+        );
+        return;
+    }
+
     let maglev = Arc::new(Maglev::<FnvBuildHasher>::new(
         &route.next,
         MAGLEV_TABLE_SIZE,
     ));
     let route = Arc::new(route);
+    let next_macs = Arc::new(cli.next_macs);
 
     let cores = core_affinity::get_core_ids()
         .unwrap_or_default()
@@ -116,10 +128,11 @@ fn main() {
             let r = run.clone();
             let maglev = maglev.clone();
             let route = route.clone();
+            let next_macs = next_macs.clone();
 
             thread::spawn(move || {
                 core_affinity::set_for_current(core_id);
-                socket_thread(socket, &maglev, &route, &r);
+                socket_thread(socket, &maglev, &route, &next_macs, &r);
             })
         })
         .collect::<Vec<_>>();

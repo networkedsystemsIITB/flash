@@ -1,5 +1,6 @@
 use clap::Parser;
 use flash::FlashConfig;
+use macaddr::MacAddr6;
 
 #[derive(Debug, Parser)]
 pub struct Cli {
@@ -21,4 +22,7 @@ pub struct Cli {
         help = "Ending CPU core index for socket threads (inclusive)"
     )]
     pub cpu_end: usize,
+
+    #[arg(short = 'm', long, help = "MAC addrs of next NFs")]
+    pub next_macs: Vec<MacAddr6>,
 }

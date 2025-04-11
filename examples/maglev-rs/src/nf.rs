@@ -3,6 +3,7 @@
 use std::{hash::BuildHasher, net::Ipv4Addr};
 
 use flash::Route;
+use macaddr::MacAddr6;
 
 use crate::maglev::Maglev;
 
@@ -42,6 +43,7 @@ pub fn load_balance<H: BuildHasher + Default>(
     pkt: &mut [u8; 54],
     maglev: &Maglev<H>,
     route: &Route,
+    next_macs: &[MacAddr6],
 ) -> Option<usize> {
     if u16::from_be_bytes([pkt[12], pkt[13]]) != ETHER_TYPE_IPV4 {
         return None;
@@ -54,21 +56,24 @@ pub fn load_balance<H: BuildHasher + Default>(
 
     let idx = maglev.lookup(&tuple5);
     let next_ip = route.next.get(idx)?.octets();
-
     let mut csum = u32::from(!u16::from_be_bytes([pkt[24], pkt[25]]));
-
-    csum = csum.wrapping_sub(u32::from(u16::from_be_bytes([pkt[30], pkt[31]])));
-    csum = csum.wrapping_sub(u32::from(u16::from_be_bytes([pkt[32], pkt[33]])));
 
     csum = csum.wrapping_add(u32::from(u16::from_be_bytes([next_ip[0], next_ip[1]])));
     csum = csum.wrapping_add(u32::from(u16::from_be_bytes([next_ip[2], next_ip[3]])));
+
+    csum = csum.wrapping_sub(u32::from(u16::from_be_bytes([pkt[30], pkt[31]])));
+    csum = csum.wrapping_sub(u32::from(u16::from_be_bytes([pkt[32], pkt[33]])));
 
     if (csum >> 16) != 0 {
         csum = (csum & 0xFFFF) + (csum >> 16);
     }
 
-    pkt[30..34].copy_from_slice(&next_ip);
     pkt[24..26].copy_from_slice(&(!(csum as u16)).to_be_bytes());
+    pkt[30..34].copy_from_slice(&next_ip);
+
+    if let Some(next_mac) = next_macs.get(idx) {
+        pkt[6..12].copy_from_slice(next_mac.as_bytes());
+    }
 
     Some(idx)
 }

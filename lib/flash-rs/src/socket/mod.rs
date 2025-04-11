@@ -229,7 +229,7 @@ impl Socket {
             }
 
             if let Some(poll_config) = &self.shared.poll_config {
-                if self.outstanding_tx > poll_config.bp_threshold {
+                if self.outstanding_tx >= poll_config.bp_threshold {
                     thread::sleep(poll_config.bp_timeout);
                 }
             }
@@ -274,7 +274,7 @@ impl Socket {
         }
 
         if let Some(poll_config) = &self.shared.poll_config {
-            if rcvd > poll_config.idle_threshold {
+            if rcvd >= poll_config.idle_threshold {
                 self.idle_timestamp = None;
             }
         }

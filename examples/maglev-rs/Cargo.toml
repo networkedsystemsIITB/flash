@@ -9,10 +9,10 @@ core_affinity = "0.8.3"
 ctrlc = "3.4.5"
 flash = { path = "../../lib/flash-rs", features = ["clap"] }
 fnv = "1.0.7"
+macaddr = "1.0.1"
 tracing = { version = "0.1.41", optional = true }
 tracing-subscriber = { version = "0.3.19", optional = true }
 twox-hash = "2.1.0"
-zero-packet = "0.1.0"
 
 [features]
 default = []

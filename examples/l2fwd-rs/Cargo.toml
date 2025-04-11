@@ -8,6 +8,7 @@ clap = { version = "4.5.35", features = ["derive"] }
 core_affinity = "0.8.3"
 ctrlc = "3.4.5"
 flash = { path = "../../lib/flash-rs", features = ["clap"] }
+macaddr = "1.0.1"
 tracing = { version = "0.1.41", optional = true }
 tracing-subscriber = { version = "0.3.19", optional = true }
 
