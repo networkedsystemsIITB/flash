@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use flash::FlashConfig;
+use macaddr::MacAddr6;
 
 #[derive(Debug, Parser)]
 pub struct Cli {
@@ -26,4 +27,7 @@ pub struct Cli {
 
     #[arg(short = 'F', long, help = "Path to firewall file")]
     pub fwall_file: PathBuf,
+
+    #[arg(short = 'm', long, help = "Dest MAC address")]
+    pub mac_addr: Option<MacAddr6>,
 }

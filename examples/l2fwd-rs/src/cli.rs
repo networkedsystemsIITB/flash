@@ -23,6 +23,6 @@ pub struct Cli {
     )]
     pub cpu_end: usize,
 
-    #[arg(short = 'm', long, help = "List of MAC for next NFs ")]
+    #[arg(short = 'm', long, help = "Dest MAC address")]
     pub mac_addr: Option<MacAddr6>,
 }

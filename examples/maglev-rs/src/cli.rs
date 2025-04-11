@@ -23,6 +23,6 @@ pub struct Cli {
     )]
     pub cpu_end: usize,
 
-    #[arg(short = 'm', long, help = "MAC addrs of next NFs")]
-    pub next_macs: Vec<MacAddr6>,
+    #[arg(short = 'm', long, help = "Dest MAC address for next NFs")]
+    pub next_mac: Vec<MacAddr6>,
 }

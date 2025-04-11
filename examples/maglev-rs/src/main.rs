@@ -24,7 +24,7 @@ fn socket_thread<H: BuildHasher + Default>(
     mut socket: Socket,
     maglev: &Arc<Maglev<H>>,
     route: &Arc<Route>,
-    next_macs: &Arc<Vec<MacAddr6>>,
+    next_mac: &Arc<Vec<MacAddr6>>,
     run: &Arc<AtomicBool>,
 ) {
     while run.load(Ordering::SeqCst) {
@@ -41,7 +41,7 @@ fn socket_thread<H: BuildHasher + Default>(
 
         for mut desc in descs {
             if let Ok(pkt) = socket.read(&desc) {
-                if let Some(idx) = nf::load_balance(pkt, maglev, route, next_macs) {
+                if let Some(idx) = nf::load_balance(pkt, maglev, route, next_mac) {
                     desc.set_next(idx);
                     descs_send.push(desc);
                 } else {
@@ -81,10 +81,10 @@ fn main() {
         return;
     }
 
-    if cli.next_macs.len() != route.next.len() {
+    if cli.next_mac.len() > 1 && cli.next_mac.len() != route.next.len() {
         eprintln!(
             "number of next NF MACs ({}) does not match number of next NFs ({})",
-            cli.next_macs.len(),
+            cli.next_mac.len(),
             route.next.len()
         );
         return;
@@ -95,7 +95,7 @@ fn main() {
         MAGLEV_TABLE_SIZE,
     ));
     let route = Arc::new(route);
-    let next_macs = Arc::new(cli.next_macs);
+    let next_mac = Arc::new(cli.next_mac);
 
     let cores = core_affinity::get_core_ids()
         .unwrap_or_default()
@@ -128,7 +128,7 @@ fn main() {
             let r = run.clone();
             let maglev = maglev.clone();
             let route = route.clone();
-            let next_macs = next_macs.clone();
+            let next_macs = next_mac.clone();
 
             thread::spawn(move || {
                 core_affinity::set_for_current(core_id);

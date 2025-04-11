@@ -11,10 +11,16 @@ use std::{
 
 use clap::Parser;
 use flash::Socket;
+use macaddr::MacAddr6;
 
 use crate::{cli::Cli, nf::Firewall};
 
-fn socket_thread(mut socket: Socket, firewall: &Arc<Firewall>, run: &Arc<AtomicBool>) {
+fn socket_thread(
+    mut socket: Socket,
+    firewall: &Arc<Firewall>,
+    mac_addr: Option<MacAddr6>,
+    run: &Arc<AtomicBool>,
+) {
     while run.load(Ordering::SeqCst) {
         if !socket.poll().is_ok_and(|val| val) {
             continue;
@@ -24,9 +30,11 @@ fn socket_thread(mut socket: Socket, firewall: &Arc<Firewall>, run: &Arc<AtomicB
             continue;
         };
 
-        let (descs_send, descs_drop) = descs
-            .into_iter()
-            .partition(|desc| socket.read(desc).is_ok_and(|pkt| firewall.filter(pkt)));
+        let (descs_send, descs_drop) = descs.into_iter().partition(|desc| {
+            socket
+                .read(desc)
+                .is_ok_and(|pkt| nf::firewall_filter(pkt, firewall, mac_addr))
+        });
 
         socket.send(descs_send);
         socket.drop(descs_drop);
@@ -93,7 +101,7 @@ fn main() {
 
             thread::spawn(move || {
                 core_affinity::set_for_current(core_id);
-                socket_thread(socket, &firewall, &r);
+                socket_thread(socket, &firewall, cli.mac_addr, &r);
             })
         })
         .collect::<Vec<_>>();

@@ -17,11 +17,13 @@ use crate::cli::Cli;
 #[forbid(clippy::indexing_slicing)]
 #[inline]
 fn mac_swap(pkt: &mut [u8; 14], mac_addr: Option<MacAddr6>) {
+    let mut tmp = [0; 6];
+    tmp.copy_from_slice(&pkt[0..6]);
+
     if let Some(mac_addr) = mac_addr {
+        pkt[6..12].copy_from_slice(&tmp);
         pkt[0..6].copy_from_slice(mac_addr.as_bytes());
     } else {
-        let mut tmp = [0; 6];
-        tmp.copy_from_slice(&pkt[0..6]);
         pkt[6..12].swap_with_slice(&mut tmp);
         pkt[0..6].copy_from_slice(&tmp);
     }

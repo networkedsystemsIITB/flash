@@ -13,7 +13,7 @@ const IP_PROTO_TCP: u8 = 6;
 const IP_PROTO_UDP: u8 = 17;
 
 #[derive(Hash, Eq, PartialEq)]
-pub struct Tuple5 {
+struct Tuple5 {
     ip_proto: u8,
     src_addr: Ipv4Addr,
     dst_addr: Ipv4Addr,
@@ -43,7 +43,7 @@ pub fn load_balance<H: BuildHasher + Default>(
     pkt: &mut [u8; 54],
     maglev: &Maglev<H>,
     route: &Route,
-    next_macs: &[MacAddr6],
+    next_mac: &[MacAddr6],
 ) -> Option<usize> {
     if u16::from_be_bytes([pkt[12], pkt[13]]) != ETHER_TYPE_IPV4 {
         return None;
@@ -71,8 +71,12 @@ pub fn load_balance<H: BuildHasher + Default>(
     pkt[24..26].copy_from_slice(&(!(csum as u16)).to_be_bytes());
     pkt[30..34].copy_from_slice(&next_ip);
 
-    if let Some(next_mac) = next_macs.get(idx) {
-        pkt[6..12].copy_from_slice(next_mac.as_bytes());
+    if let Some(next_mac) = next_mac.get(idx).or_else(|| next_mac.first()) {
+        let mut tmp = [0; 6];
+        tmp.copy_from_slice(&pkt[0..6]);
+
+        pkt[6..12].copy_from_slice(&tmp);
+        pkt[0..6].copy_from_slice(next_mac.as_bytes());
     }
 
     Some(idx)
