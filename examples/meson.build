@@ -8,6 +8,7 @@ dirs = [
     'l2fwd',
     'ip4ping',
     'maglev',
+    'simple-firewall',
     'firewall',
     'arpresolver',
     'mica',

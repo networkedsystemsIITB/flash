@@ -7,23 +7,28 @@
 #include <net/ethernet.h>
 #include <locale.h>
 #include <stdlib.h>
+#include <netinet/in.h>
 #include <log.h>
+#include <arpa/inet.h>
 
 #include <linux/ip.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
-#include "murmurhash.h"
+#include "hashmap.h"
 
 #include <string.h>
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <cjson/cJSON.h>
+
+#define CONFIG_FILE "./examples/firewall/config.json"
 
 #define IP_STRLEN 16
 #define PROTO_STRLEN 4
 #define IFNAME_STRLEN 256
-#define NUM_INVALID_SESSIONS 1000
+#define MAX_VALID_SESSIONS 100
 
 bool done = false;
 struct config *cfg = NULL;
@@ -55,18 +60,101 @@ struct session_id {
 	uint8_t proto;
 } __attribute__((packed));
 
-uint32_t invalid_sessions[NUM_INVALID_SESSIONS];
+struct hashmap valid_sessions_map;
+struct session_id valid_sessions[MAX_VALID_SESSIONS];
+int num_sessions = 0;
+
+char load_balancer_addr[IP_STRLEN];
+unsigned int load_balancer_port = 80;
+
+static void read_json_config(void)
+{
+	struct in_addr addr;
+	inet_aton(load_balancer_addr, &addr);
+	FILE *file = fopen(CONFIG_FILE, "r");
+	if (!file) {
+		perror("Failed to open file");
+		return;
+	}
+
+	// Get file size
+	fseek(file, 0, SEEK_END);
+	size_t file_size = ftell(file);
+	rewind(file);
+
+	char *json_data = (char *)malloc(file_size + 1);
+	if (!json_data) {
+		perror("Memory allocation failed");
+		fclose(file);
+		return;
+	}
+
+	size_t read_size = fread(json_data, 1, file_size, file);
+	if (read_size != file_size) {
+		perror("Failed to read entire file");
+		free(json_data);
+		fclose(file);
+		exit(1);
+	}
+	json_data[file_size] = '\0';
+
+	fclose(file);
+
+	cJSON *json = cJSON_Parse(json_data);
+	free(json_data);
+	if (!json) {
+		printf("Error parsing JSON\n");
+		return;
+	}
+
+	cJSON *valid_src = cJSON_GetObjectItem(json, "valid_src");
+
+	if (cJSON_IsArray(valid_src)) {
+		int size = cJSON_GetArraySize(valid_src);
+		num_sessions = size;
+		if (num_sessions > MAX_VALID_SESSIONS) {
+			printf("num_sessions > MAX_VALID_SESSIONS\n");
+			exit(1);
+		}
+		for (int i = 0; i < num_sessions; i++) {
+			cJSON *entry = cJSON_GetArrayItem(valid_src, i);
+			cJSON *src_addr = cJSON_GetObjectItem(entry, "src_addr");
+			cJSON *src_port = cJSON_GetObjectItem(entry, "src_port");
+
+			if (cJSON_IsString(src_addr) && cJSON_IsNumber(src_port)) {
+				valid_sessions[i].saddr = inet_addr(src_addr->valuestring);
+				valid_sessions[i].sport = htons(src_port->valueint);
+				valid_sessions[i].proto = IPPROTO_UDP;
+				valid_sessions[i].daddr = addr.s_addr;
+				valid_sessions[i].dport = htons(load_balancer_port);
+			}
+		}
+	} else {
+		printf("Error: valid_src is not a valid array\n");
+	}
+
+	cJSON_Delete(json); // Clean up
+}
 
 static void *configure(void)
 {
-	// Initialise invalid_sessions with random numbers
-	srand(time(NULL)); // Seed only once before generating any random numbers
-
-	for (int i = 0; i < NUM_INVALID_SESSIONS; i++) {
-		int r = rand(); // Different value each iteration
-		invalid_sessions[i] = r;
+	int nbackends;
+	send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
+	recv_data(cfg->uds_sockfd, &nbackends, sizeof(int));
+	if (nbackends != 1) {
+		printf("Firewall is linked to %d load balancers", nbackends);
+		exit(1);
 	}
+	recv_data(cfg->uds_sockfd, load_balancer_addr, INET_ADDRSTRLEN);
 
+	read_json_config();
+
+	hashmap_init(&valid_sessions_map, sizeof(struct session_id), sizeof(int), MAX_VALID_SESSIONS);
+	for (int session_num = 0; session_num < num_sessions; session_num++) {
+		struct session_id *key = &valid_sessions[session_num];
+		int val = 1;
+		hashmap_insert_elem(&valid_sessions_map, (void *)key, (void *)&val);
+	}
 	return NULL;
 }
 
@@ -221,18 +309,11 @@ static void *socket_routine(void *arg)
 			sid.sport = *sport;
 			sid.dport = *dport;
 
-			// Find murmurhash of sid
-			uint32_t sid_hash = murmurhash((void*)&sid, sizeof(struct session_id), 0);
-			bool invalid = false;
-			for (int i = 0; i < NUM_INVALID_SESSIONS; i++) {
-				if (invalid_sessions[i] == sid_hash) {
-					drop[tot_pkt_drop++] = &msg.msg_iov[i];
-					invalid = true;
-					break;
-				}
+			if (hashmap_lookup_elem(&valid_sessions_map, (void *)&sid) == NULL) {
+				drop[tot_pkt_drop++] = &msg.msg_iov[i];
+				continue;
 			}
-			if (! invalid)
-				send[tot_pkt_send++] = &msg.msg_iov[i];
+			send[tot_pkt_send++] = &msg.msg_iov[i];
 		}
 
 		if (nrecv) {
