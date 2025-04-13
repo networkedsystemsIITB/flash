@@ -15,8 +15,9 @@
 
 #include "ring-benchmark.h"
 
-// #define BP
 // #define MPSC
+// #define SPSC_OPT
+// #define BP
 
 /* Rx/Tx descriptor */
 struct xdp_desc {
@@ -173,22 +174,26 @@ static inline __u32 guest_prod_nb_free(struct guest_queue *q, __u32 max)
 	return free_entries >= max ? max : free_entries;
 }
 
-// static inline __u32 guest_bulk_enqueue_rxtx(struct guest_queue *q, struct xdp_desc *descs, __u32 n_descs)
-// {
-// 	__u32 n = guest_prod_nb_free(q, n_descs);
+#ifdef SPSC_OPT
 
-// 	if (n == 0)
-// 		return 0;
+static inline __u32 guest_bulk_enqueue_rxtx(struct guest_queue *q, struct xdp_desc *descs, __u32 n_descs)
+{
+	__u32 n = guest_prod_nb_free(q, n_descs);
 
-// 	struct xdp_desc *new_descs = (struct xdp_desc *)q->ring;
+	if (n == 0)
+		return 0;
 
-// 	for (__u32 i = 0; i < n; i++)
-// 		new_descs[q->cached_prod++ & q->mask] = descs[i];
+	struct xdp_desc *new_descs = (struct xdp_desc *)q->ring;
 
-// 	__atomic_store_n(q->producer, q->cached_prod, __ATOMIC_RELEASE);
+	for (__u32 i = 0; i < n; i++)
+		new_descs[q->cached_prod++ & q->mask] = descs[i];
 
-// 	return n;
-// }
+	__atomic_store_n(q->producer, q->cached_prod, __ATOMIC_RELEASE);
+
+	return n;
+}
+
+#else
 
 static inline bool guest_prod_is_full(struct guest_queue *q)
 {
@@ -229,6 +234,8 @@ static inline __u32 guest_bulk_enqueue_rxtx(struct guest_queue *q, struct xdp_de
 
 	return idx;
 }
+
+#endif
 
 #endif
 
@@ -451,6 +458,12 @@ int main(int argc, char **argv)
 	(void)argc;
 	(void)argv;
 
+#ifdef MPSC
+	printf("MPSC - 2 Threads\n");
+#else
+	printf("SPSC - 2 Threads\n");
+#endif
+
 	get_timer_hz();
 
 	struct owner_queue *owner_queue = NULL;
@@ -477,6 +490,12 @@ int main(int argc, char **argv)
 {
 	(void)argc;
 	(void)argv;
+
+#ifdef MPSC
+	printf("MPSC - 1 Thread\n");
+#else
+	printf("SPSC - 1 Thread\n");
+#endif
 
 	set_affinity(1);
 

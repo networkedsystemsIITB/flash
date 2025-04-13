@@ -2,77 +2,62 @@ import re
 import subprocess
 from sys import argv
 
-BENCH_PATH = "examples/unit-tests/ring-benchmark"
+BENCH_FILE = "examples/unit-tests/ring-benchmark"
+
+with open(f"./{BENCH_FILE}.c", "r") as fh:
+    for i, line in enumerate(fh.readlines()):
+        if "#define MPSC" in line:
+            mpsc_idx = i
+        if "#define BP" in line:
+            bp_idx = i
+
+
+def make():
+    result = subprocess.run(["make"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        print("error running make")
+        exit(1)
+
+
+def configure(mpsc: bool, bp: bool):
+    with open(f"./{BENCH_FILE}.c", "r") as fh:
+        lines = fh.readlines()
+
+    lines[mpsc_idx] = "#define MPSC\n" if mpsc else "// #define MPSC\n"
+    lines[bp_idx] = "#define BP\n" if bp else "// #define BP\n"
+
+    with open(f"./{BENCH_FILE}.c", "w") as fh:
+        fh.writelines(lines)
+
+    make()
 
 
 def run_benchmark() -> (float, float):
     result = subprocess.run(
-        [f"./build/{BENCH_PATH}"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        [f"./build/{BENCH_FILE}"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
     output = result.stdout.decode("utf-8")
 
-    owner_time = re.search(r"owner dequeue: ([\d.]+) ns", output).group(1)
-    guest_time = re.search(r"guest enqueue: ([\d.]+) ns", output).group(1)
+    enqueue_time = re.search(r"enqueue: ([\d.]+) ns", output).group(1)
+    dequeue_time = re.search(r"dequeue: ([\d.]+) ns", output).group(1)
 
-    return float(owner_time), float(guest_time)
+    return float(enqueue_time), float(dequeue_time)
 
 
-def run_benchmarks(times_heat: int, times_run: int) -> (list[float], list[float]):
+def print_benchmarks(times_heat: int, times_run: int):
     for _ in range(times_heat):
         run_benchmark()
 
-    owner_lt = []
-    guest_lt = []
+    enqueue_lt = []
+    dequeue_lt = []
 
     for _ in range(times_run):
-        owner_time, guest_time = run_benchmark()
-        owner_lt.append(owner_time)
-        guest_lt.append(guest_time)
+        enqueue_time, dequeue_time = run_benchmark()
+        enqueue_lt.append(enqueue_time)
+        dequeue_lt.append(dequeue_time)
 
-    return owner_lt, guest_lt
-
-
-def run_sed(old: str, new: str):
-    if (
-        subprocess.run(
-            [
-                "sed",
-                "-i",
-                f"s|{old}|{new}|g",
-                BENCH_PATH + ".c",
-            ]
-        ).returncode
-        != 0
-    ):
-        print("error running sed")
-        exit(1)
-
-
-def enable_bp():
-    return run_sed("// #define BP", "#define BP")
-
-
-def disable_bp():
-    return run_sed("#define BP", "// #define BP")
-
-
-def enable_mpsc():
-    return run_sed("// #define MPSC", "#define MPSC")
-
-
-def disable_mpsc():
-    return run_sed("#define MPSC", "// #define MPSC")
-
-
-def make():
-    if (
-        subprocess.run(
-            ["make"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        ).returncode
-        != 0
-    ):
-        print("error running make")
-        exit(1)
+    print(f"enqueue: {sum(enqueue_lt) / len(enqueue_lt)} ns")
+    print(f"dequeue: {sum(dequeue_lt) / len(dequeue_lt)} ns")
 
 
 if __name__ == "__main__":
@@ -83,36 +68,20 @@ if __name__ == "__main__":
     times_heat = int(argv[1])
     times_run = int(argv[2])
 
-    disable_bp()
-    disable_mpsc()
-    make()
-
+    configure(False, False)
     print("SPSC - 2 Threads")
-    owner_lt, guest_lt = run_benchmarks(times_heat, times_run)
-    print(f"owner dequeue: {sum(owner_lt) / len(owner_lt)} ns")
-    print(f"guest enqueue: {sum(guest_lt) / len(guest_lt)} ns")
+    print_benchmarks(times_heat, times_run)
 
-    enable_bp()
-    make()
+    configure(False, True)
+    print("\nSPSC - 1 Threads")
+    print_benchmarks(times_heat, times_run)
 
-    print("\nSPSC - 1 Thread")
-    owner_lt, guest_lt = run_benchmarks(times_heat, times_run)
-    print(f"owner dequeue: {sum(owner_lt) / len(owner_lt)} ns")
-    print(f"guest enqueue: {sum(guest_lt) / len(guest_lt)} ns")
-
-    disable_bp()
-    enable_mpsc()
-    make()
-
+    configure(True, False)
     print("\nMPSC - 2 Threads")
-    owner_lt, guest_lt = run_benchmarks(times_heat, times_run)
-    print(f"owner dequeue: {sum(owner_lt) / len(owner_lt)} ns")
-    print(f"guest enqueue: {sum(guest_lt) / len(guest_lt)} ns")
+    print_benchmarks(times_heat, times_run)
 
-    enable_bp()
-    make()
-
+    configure(True, True)
     print("\nMPSC - 1 Thread")
-    owner_lt, guest_lt = run_benchmarks(times_heat, times_run)
-    print(f"owner dequeue: {sum(owner_lt) / len(owner_lt)} ns")
-    print(f"guest enqueue: {sum(guest_lt) / len(guest_lt)} ns")
+    print_benchmarks(times_heat, times_run)
+
+    configure(False, False)
