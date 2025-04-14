@@ -16,7 +16,7 @@
 #include "ring-benchmark.h"
 
 // #define MPSC
-// #define SPSC_OPT
+// #define BATCHING
 // #define BP
 
 /* Rx/Tx descriptor */
@@ -133,6 +133,8 @@ static void guest_move_prod_tail(struct guest_queue *ring, __u32 old_val, __u32 
 	__atomic_store_n(ring->producer, new_val, __ATOMIC_RELEASE);
 }
 
+#ifdef BATCHING
+
 static inline __u32 guest_bulk_enqueue_rxtx(struct guest_queue *q, struct xdp_desc *descs, __u32 n_descs)
 {
 	__u32 prod_head;
@@ -161,6 +163,29 @@ static inline __u32 guest_bulk_enqueue_rxtx(struct guest_queue *q, struct xdp_de
 
 #else
 
+static inline __u32 guest_bulk_enqueue_rxtx(struct guest_queue *q, struct xdp_desc *descs, __u32 n_descs)
+{
+	__u32 prod_head;
+	__u32 prod_next;
+	__u32 idx;
+
+	struct xdp_desc *new_descs = (struct xdp_desc *)q->ring;
+
+	for (idx = 0; idx < n_descs; idx++) {
+		if (guest_move_prod_head(q, 1, &prod_head, &prod_next) == 0)
+			return idx;
+
+		new_descs[prod_head & q->mask] = descs[idx];
+		guest_move_prod_tail(q, prod_head, prod_next);
+	}
+
+	return n_descs;
+}
+
+#endif
+
+#else
+
 static inline __u32 guest_prod_nb_free(struct guest_queue *q, __u32 max)
 {
 	__u32 free_entries = q->size - (q->cached_prod - q->cached_cons);
@@ -174,7 +199,7 @@ static inline __u32 guest_prod_nb_free(struct guest_queue *q, __u32 max)
 	return free_entries >= max ? max : free_entries;
 }
 
-#ifdef SPSC_OPT
+#ifdef BATCHING
 
 static inline __u32 guest_bulk_enqueue_rxtx(struct guest_queue *q, struct xdp_desc *descs, __u32 n_descs)
 {
@@ -424,7 +449,7 @@ static void *guest_thread(void *arg)
 
 	end = rdtsc_precise();
 
-	printf("guest enqueue: %lf ns\n", (1E9 * (end - start)) / get_timer_hz());
+	printf("enqueue: %lf ns\n", (1E9 * (end - start)) / get_timer_hz());
 
 	return NULL;
 }
@@ -448,7 +473,7 @@ static void *owner_thread(void *arg)
 
 	end = rdtsc_precise();
 
-	printf("owner dequeue: %lf ns\n", (1E9 * (end - start)) / get_timer_hz());
+	printf("dequeue: %lf ns\n", (1E9 * (end - start)) / get_timer_hz());
 
 	return NULL;
 }
@@ -526,8 +551,8 @@ int main(int argc, char **argv)
 
 	owner_end = rdtsc_precise();
 
-	printf("guest enqueue: %lf ns\n", (1E9 * (guest_end - guest_start)) / get_timer_hz());
-	printf("owner dequeue: %lf ns\n", (1E9 * (owner_end - owner_start)) / get_timer_hz());
+	printf("enqueue: %lf ns\n", (1E9 * (guest_end - guest_start)) / get_timer_hz());
+	printf("dequeue: %lf ns\n", (1E9 * (owner_end - owner_start)) / get_timer_hz());
 
 	return EXIT_SUCCESS;
 }

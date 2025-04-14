@@ -1,15 +1,27 @@
+import itertools
 import re
 import subprocess
 from sys import argv
 
 BENCH_FILE = "examples/unit-tests/ring-benchmark"
+DEFS = {key: 0 for key in ["MPSC", "BATCHING", "BP"]}
 
 with open(f"./{BENCH_FILE}.c", "r") as fh:
-    for i, line in enumerate(fh.readlines()):
-        if "#define MPSC" in line:
-            mpsc_idx = i
-        if "#define BP" in line:
-            bp_idx = i
+    lines = fh.readlines()
+
+
+def find_indices():
+    for key in DEFS:
+        def_str = f"#define {key}"
+        idx = next((i for i, line in enumerate(lines) if def_str in line), None)
+        if idx is None:
+            print(f"error: {def_str} not found in {BENCH_FILE}.c")
+            exit(1)
+
+        DEFS[key] = idx
+
+
+find_indices()
 
 
 def make():
@@ -19,12 +31,11 @@ def make():
         exit(1)
 
 
-def configure(mpsc: bool, bp: bool):
-    with open(f"./{BENCH_FILE}.c", "r") as fh:
-        lines = fh.readlines()
-
-    lines[mpsc_idx] = "#define MPSC\n" if mpsc else "// #define MPSC\n"
-    lines[bp_idx] = "#define BP\n" if bp else "// #define BP\n"
+def configure(config: dict[str, bool]):
+    for key in DEFS:
+        lines[DEFS[key]] = (
+            f"#define {key}\n" if config.get(key, False) else f"// #define {key}\n"
+        )
 
     with open(f"./{BENCH_FILE}.c", "w") as fh:
         fh.writelines(lines)
@@ -68,20 +79,11 @@ if __name__ == "__main__":
     times_heat = int(argv[1])
     times_run = int(argv[2])
 
-    configure(False, False)
-    print("SPSC - 2 Threads")
-    print_benchmarks(times_heat, times_run)
+    print("\n" + "-" * 40)
+    for comb in itertools.product([False, True], repeat=len(DEFS)):
+        configure(dict(zip(DEFS.keys(), comb)))
+        print("MPSC: {}, BATCHING: {}, BP: {}".format(*comb))
+        print_benchmarks(times_heat, times_run)
+        print("-" * 40)
 
-    configure(False, True)
-    print("\nSPSC - 1 Threads")
-    print_benchmarks(times_heat, times_run)
-
-    configure(True, False)
-    print("\nMPSC - 2 Threads")
-    print_benchmarks(times_heat, times_run)
-
-    configure(True, True)
-    print("\nMPSC - 1 Thread")
-    print_benchmarks(times_heat, times_run)
-
-    configure(False, False)
+    configure({})
