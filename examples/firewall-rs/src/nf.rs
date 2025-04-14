@@ -17,11 +17,14 @@ pub struct Firewall {
 
 impl Firewall {
     pub fn new(path: impl AsRef<Path>) -> csv::Result<Self> {
-        Ok(Self {
-            rules: Reader::from_path(path)?
+        let mut rules = Reader::from_path(path)?
                 .deserialize()
-                .collect::<Result<Vec<_>, _>>()?,
-        })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        rules.sort();
+        rules.dedup();
+
+        Ok(Self { rules })
     }
 
     #[inline]
@@ -30,7 +33,7 @@ impl Firewall {
     }
 }
 
-#[derive(Deserialize, Eq, PartialEq)]
+#[derive(Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 struct Tuple5 {
     #[serde(deserialize_with = "deserialize_proto")]
     ip_proto: u8,
