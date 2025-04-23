@@ -60,7 +60,7 @@ fn main() {
         return;
     }
 
-    let firewall = match Firewall::new(cli.fwall_file) {
+    let firewall = match Firewall::new(cli.denylist) {
         Ok(firewall) => Arc::new(firewall),
         Err(err) => {
             eprintln!("error loading firewall rules: {err}");

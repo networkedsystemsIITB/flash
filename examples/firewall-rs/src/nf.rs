@@ -18,7 +18,7 @@ pub struct Firewall {
 impl Firewall {
     pub fn new(path: impl AsRef<Path>) -> csv::Result<Self> {
         let mut rules = Reader::from_path(path)?
-                .deserialize()
+            .deserialize()
             .collect::<Result<Vec<_>, _>>()?;
 
         rules.sort();

@@ -418,7 +418,7 @@ static int guest_init_queue(struct owner_queue *oq, struct guest_queue **gq)
 
 #define RING_SIZE 4096
 #define BATCH_SIZE 64
-#define TOTAL_PKTS 100
+#define TOTAL_PKTS 4096
 
 static void set_affinity(int cpu)
 {

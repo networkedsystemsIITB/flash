@@ -25,8 +25,8 @@ pub struct Cli {
     )]
     pub cpu_end: usize,
 
-    #[arg(short = 'F', long, help = "Path to firewall file")]
-    pub fwall_file: PathBuf,
+    #[arg(short, long, help = "Path to denylist csv file")]
+    pub denylist: PathBuf,
 
     #[arg(short = 'm', long, help = "Dest MAC address")]
     pub mac_addr: Option<MacAddr6>,
