@@ -132,7 +132,7 @@ static int *__configure(struct config *cfg, struct nf *nf)
 	log_info("FRAGS_ENABLED: %d", cfg->frags_enabled);
 
 	send_cmd(uds_sockfd, FLASH__GET_IFNAME);
-	recv_data(uds_sockfd, cfg->ifname, IF_NAMESIZE + 1);
+	recv_data(uds_sockfd, cfg->ifname, IF_NAMESIZE);
 	log_info("IFNAME: %s", cfg->ifname);
 
 	return received_fd;

@@ -139,7 +139,6 @@ static void *socket_routine(void *arg)
 	fds[0].fd = nf->thread[socket_id]->socket->fd;
 	fds[0].events = POLLIN;
 
-	cfg->xsk->poll_timeout = -1;
 	nf->thread[socket_id]->socket->idle_fd.fd = nf->thread[socket_id]->socket->fd;
 	nf->thread[socket_id]->socket->idle_fd.events = POLLIN;
 

@@ -55,7 +55,7 @@ struct config {
 	int umem_scale;
 	int total_sockets;
 	int current_socket_count;
-	char ifname[IF_NAMESIZE + 1];
+	char ifname[IF_NAMESIZE];
 	int *ifqueue;
 	struct umem_config *umem;
 	struct xsk_config *xsk;

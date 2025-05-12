@@ -45,6 +45,7 @@ static void configure_nic(char *ifname, int total_queues, int mode)
 		log_info("NIC configuration completed");
 	}
 }
+
 static __u32 get_flags(char *flag)
 {
 	if (strlen(flag) != 1) {
@@ -102,7 +103,7 @@ struct NFGroup *parse_json(const char *filename)
 	free(json_data);
 
 	int mode = 0, num_queues = 0;
-	char ifname[IF_NAMESIZE + 1];
+	char ifname[IF_NAMESIZE];
 	// Extract "umem" array
 	cJSON *umem_array = cJSON_GetObjectItem(root, "umem");
 	if (!cJSON_IsArray(umem_array)) {
@@ -134,7 +135,7 @@ struct NFGroup *parse_json(const char *filename)
 		char *_ifname = strdup(ifname_obj->valuestring);
 
 		nf_group->umem[i]->cfg = calloc(1, sizeof(struct config));
-		strncpy(nf_group->umem[i]->cfg->ifname, _ifname, IF_NAMESIZE);
+		strncpy(nf_group->umem[i]->cfg->ifname, _ifname, IF_NAMESIZE - 1);
 		log_info("ifname: %s", nf_group->umem[i]->cfg->ifname);
 		nf_group->umem[i]->cfg->umem_id = nf_group->umem[i]->id;
 		nf_group->umem[i]->cfg->nf_id = -1;
@@ -188,6 +189,15 @@ struct NFGroup *parse_json(const char *filename)
 			nf_group->umem[i]->cfg->xsk->bind_flags |= XDP_USE_NEED_WAKEUP;
 		} else {
 			nf_group->umem[i]->cfg->xsk->mode = get_flags(_mode);
+			if (nf_group->umem[i]->cfg->xsk->mode == FLASH__POLL) {
+				cJSON *poll_timeout_obj = cJSON_GetObjectItem(umem_obj, "poll_timeout");
+				if (!cJSON_IsNumber(poll_timeout_obj)) {
+					log_error("Invalid or missing 'poll_timeout'");
+					cJSON_Delete(root);
+					return NULL;
+				}
+				nf_group->umem[i]->cfg->xsk->poll_timeout = (uint32_t)poll_timeout_obj->valueint;
+			}
 		}
 		log_info("mode: %s", _mode);
 
@@ -315,7 +325,7 @@ struct NFGroup *parse_json(const char *filename)
 		nf_group->umem[i]->cfg->total_sockets = total_threads;
 
 		if (i == nf_group->umem_count - 1) {
-			strncpy(ifname, _ifname, IF_NAMESIZE);
+			strncpy(ifname, _ifname, IF_NAMESIZE - 1);
 			mode = nf_group->umem[i]->cfg->xsk->mode;
 		}
 

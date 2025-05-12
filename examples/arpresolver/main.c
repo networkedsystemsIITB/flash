@@ -33,8 +33,101 @@ struct config *cfg = NULL;
 struct nf *nf;
 
 int num_valid_ips;
-char ip4ping_ip[IP_STRLEN];
 uint8_t src_mac[ETH_ALEN];
+
+struct appconf {
+	int cpu_start;
+	int cpu_end;
+	int stats_cpu;
+	bool sriov;
+	uint8_t *dest_ether_addr_octet;
+} app_conf;
+
+static int hex2int(char ch)
+{
+	if (ch >= '0' && ch <= '9')
+		return ch - '0';
+	if (ch >= 'A' && ch <= 'F')
+		return ch - 'A' + 10;
+	if (ch >= 'a' && ch <= 'f')
+		return ch - 'a' + 10;
+	return -1;
+}
+
+static uint8_t *get_mac_addr(char *mac_addr)
+{
+	uint8_t *dest_ether_addr_octet = (uint8_t *)malloc(6 * sizeof(uint8_t));
+	for (int i = 0; i < 6; i++) {
+		dest_ether_addr_octet[i] = hex2int(mac_addr[0]) * 16;
+		mac_addr++;
+		dest_ether_addr_octet[i] += hex2int(mac_addr[0]);
+		mac_addr += 2;
+	}
+	return dest_ether_addr_octet;
+}
+
+static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
+{
+	int c;
+	opterr = 0;
+
+	// Default values
+	app_conf->cpu_start = 0;
+	app_conf->cpu_end = 0;
+	app_conf->stats_cpu = 1;
+	app_conf->sriov = false;
+
+	argc -= shift;
+	argv += shift;
+
+	while ((c = getopt(argc, argv, "c:e:s:S:")) != -1)
+		switch (c) {
+		case 'c':
+			app_conf->cpu_start = atoi(optarg);
+			break;
+		case 'e':
+			app_conf->cpu_end = atoi(optarg);
+			break;
+		case 's':
+			app_conf->stats_cpu = atoi(optarg);
+			break;
+		case 'S':
+			app_conf->dest_ether_addr_octet = get_mac_addr(optarg);
+			app_conf->sriov = true;
+			break;
+		default:
+			abort();
+		}
+}
+
+static void update_dest_mac(void *data)
+{
+	struct ether_header *eth = (struct ether_header *)data;
+	struct ether_addr *dst_addr = (struct ether_addr *)&eth->ether_dhost;
+	struct ether_addr tmp = {
+		.ether_addr_octet = {
+			app_conf.dest_ether_addr_octet[0],
+			app_conf.dest_ether_addr_octet[1],
+			app_conf.dest_ether_addr_octet[2],
+			app_conf.dest_ether_addr_octet[3],
+			app_conf.dest_ether_addr_octet[4],
+			app_conf.dest_ether_addr_octet[5],
+		},
+	};
+	*dst_addr = tmp;
+}
+
+static void swap_mac_addresses(void *data)
+{
+	struct ether_header *eth = (struct ether_header *)data;
+	struct ether_addr *src_addr = (struct ether_addr *)&eth->ether_shost;
+	struct ether_addr *dst_addr = (struct ether_addr *)&eth->ether_dhost;
+	struct ether_addr tmp;
+
+	tmp = *src_addr;
+	*src_addr = *dst_addr;
+	*dst_addr = tmp;
+}
 
 static int get_mac_address(void)
 {
@@ -49,7 +142,7 @@ static int get_mac_address(void)
 	}
 
 	// Copy interface name into ifreq structure
-	strncpy(ifr.ifr_name, cfg->ifname, IF_NAMESIZE - 1);
+	strncpy(ifr.ifr_name, cfg->ifname, IF_NAMESIZE);
 	ifr.ifr_name[IFNAMSIZ - 1] = '\0';
 
 	// Perform IOCTL to get MAC address
@@ -70,18 +163,18 @@ static int get_mac_address(void)
 static void configure(void)
 {
 	// Need to change so that we get IPS of all NFS, not just of our local dest
-	send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
-	recv_data(cfg->uds_sockfd, &num_valid_ips, sizeof(int));
-	if (num_valid_ips != 1){
-		printf("Arp-resolver should be ran along with ip4ping only");
-		exit(1);
-	}
+	// send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
+	// recv_data(cfg->uds_sockfd, &num_valid_ips, sizeof(int));
+	// if (num_valid_ips != 1){
+	// 	printf("Arp-resolver should be ran along with ip4ping only");
+	// 	exit(1);
+	// }
 	// log_info("Number of Backends: %d", num_valid_ips);
-	recv_data(cfg->uds_sockfd, ip4ping_ip, INET_ADDRSTRLEN);
-	log_info("ip4ping_ip: %s", ip4ping_ip);
+	// recv_data(cfg->uds_sockfd, ip4ping_ip, INET_ADDRSTRLEN);
+	// log_info("ip4ping_ip: %s", ip4ping_ip);
 
 	// configuring src_mac
-	if (get_mac_address() < 0){
+	if (get_mac_address() < 0) {
 		printf("Error in ioctl: fetch mac address\n");
 		exit(1);
 	}
@@ -93,17 +186,12 @@ static void int_exit(int sig)
 	done = true;
 }
 
-struct appconf {
-	int cpu_start;
-	int cpu_end;
-	int stats_cpu;
-} app_conf;
-
 struct Args {
 	int socket_id;
 	int *next;
 	int next_size;
 };
+
 // handling IP4
 struct __attribute__((packed)) arp_header {
 	unsigned short arp_hd;
@@ -116,35 +204,6 @@ struct __attribute__((packed)) arp_header {
 	unsigned char arp_dha[6];
 	unsigned char arp_dpa[4];
 };
-
-static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
-{
-	int c;
-	opterr = 0;
-
-	// Default values
-	app_conf->cpu_start = 0;
-	app_conf->cpu_end = 0;
-	app_conf->stats_cpu = 1;
-
-	argc -= shift;
-	argv += shift;
-
-	while ((c = getopt(argc, argv, "c:e:s:")) != -1)
-		switch (c) {
-		case 'c':
-			app_conf->cpu_start = atoi(optarg);
-			break;
-		case 'e':
-			app_conf->cpu_end = atoi(optarg);
-			break;
-		case 's':
-			app_conf->stats_cpu = atoi(optarg);
-			break;
-		default:
-			abort();
-		}
-}
 
 static void *worker__stats(void *arg)
 {
@@ -221,14 +280,18 @@ static void *socket_routine(void *arg)
 			}
 
 			struct arp_header *arp = (struct arp_header *)(eth + 1);
-			if ((void *)(arp + 1) > pkt_end){
+			if ((void *)(arp + 1) > pkt_end) {
 				drop[tot_pkt_drop++] = &msg.msg_iov[i];
 				continue;
 			}
 
-			if (ntohs(eth->h_proto) != ETH_P_ARP || (ntohs(arp->arp_op) != ARPOP_REQUEST))
-			{
-				drop[tot_pkt_drop++] = &msg.msg_iov[i];
+			if (ntohs(eth->h_proto) != ETH_P_ARP || (ntohs(arp->arp_op) != ARPOP_REQUEST)) {
+				send[tot_pkt_send++] = &msg.msg_iov[i];
+				if (app_conf.sriov) {
+					swap_mac_addresses(pkt);
+					update_dest_mac(pkt);
+				}
+
 				continue;
 			}
 
@@ -236,13 +299,13 @@ static void *socket_routine(void *arg)
 			char query_ip[IP_STRLEN];
 			inet_ntop(AF_INET, (struct in_addr *)buff_ip, query_ip, sizeof(query_ip));
 
-			if (strcmp(ip4ping_ip, query_ip) == 0){
-				goto send_arp_resp;
-			}
+			// if (strcmp(ip4ping_ip, query_ip) == 0){
+			// 	goto send_arp_resp;
+			// }
 
 			drop[tot_pkt_drop++] = &msg.msg_iov[i];
 			continue;
-send_arp_resp:
+			// send_arp_resp:
 			memcpy(tmp_mac, eth->h_dest, ETH_ALEN);
 			memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
 			memcpy(eth->h_source, src_mac, ETH_ALEN);

@@ -88,7 +88,7 @@ static void *handle_nf(void *arg)
 			break;
 
 		case FLASH__GET_IFNAME:
-			send_data(msgsock, &umem->cfg->ifname, IF_NAMESIZE + 1);
+			send_data(msgsock, &umem->cfg->ifname, IF_NAMESIZE);
 			break;
 
 		case FLASH__GET_IP_ADDR:

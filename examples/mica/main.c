@@ -38,7 +38,6 @@ char default_value[VALUE_SIZE];
 
 struct mehcached_table table_o;
 struct mehcached_table *table;
-bool flag = false;
 
 ///// MICA END ///////
 bool done = false;
@@ -55,6 +54,9 @@ struct appconf {
 	int cpu_start;
 	int cpu_end;
 	int stats_cpu;
+	int flag;
+	bool sriov;
+	uint8_t *dest_ether_addr_octet;
 } app_conf;
 
 struct Args {
@@ -62,6 +64,58 @@ struct Args {
 	int *next;
 	int next_size;
 };
+
+static int hex2int(char ch)
+{
+	if (ch >= '0' && ch <= '9')
+		return ch - '0';
+	if (ch >= 'A' && ch <= 'F')
+		return ch - 'A' + 10;
+	if (ch >= 'a' && ch <= 'f')
+		return ch - 'a' + 10;
+	return -1;
+}
+
+static uint8_t *get_mac_addr(char *mac_addr)
+{
+	uint8_t *dest_ether_addr_octet = (uint8_t *)malloc(6 * sizeof(uint8_t));
+	for (int i = 0; i < 6; i++) {
+		dest_ether_addr_octet[i] = hex2int(mac_addr[0]) * 16;
+		mac_addr++;
+		dest_ether_addr_octet[i] += hex2int(mac_addr[0]);
+		mac_addr += 2;
+	}
+	return dest_ether_addr_octet;
+}
+
+static void update_dest_mac(void *data)
+{
+	struct ether_header *eth = (struct ether_header *)data;
+	struct ether_addr *dst_addr = (struct ether_addr *)&eth->ether_dhost;
+	struct ether_addr tmp = {
+		.ether_addr_octet = {
+			app_conf.dest_ether_addr_octet[0],
+			app_conf.dest_ether_addr_octet[1],
+			app_conf.dest_ether_addr_octet[2],
+			app_conf.dest_ether_addr_octet[3],
+			app_conf.dest_ether_addr_octet[4],
+			app_conf.dest_ether_addr_octet[5],
+		},
+	};
+	*dst_addr = tmp;
+}
+
+static void swap_mac_addresses(void *data)
+{
+	struct ether_header *eth = (struct ether_header *)data;
+	struct ether_addr *src_addr = (struct ether_addr *)&eth->ether_shost;
+	struct ether_addr *dst_addr = (struct ether_addr *)&eth->ether_dhost;
+	struct ether_addr tmp;
+
+	tmp = *src_addr;
+	*src_addr = *dst_addr;
+	*dst_addr = tmp;
+}
 
 static void *configure(void)
 {
@@ -110,7 +164,7 @@ static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int 
 	argc -= shift;
 	argv += shift;
 
-	while ((c = getopt(argc, argv, "c:e:s:")) != -1)
+	while ((c = getopt(argc, argv, "c:e:s:o:S:")) != -1)
 		switch (c) {
 		case 'c':
 			app_conf->cpu_start = atoi(optarg);
@@ -120,6 +174,13 @@ static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int 
 			break;
 		case 's':
 			app_conf->stats_cpu = atoi(optarg);
+			break;
+		case 'o':
+			app_conf->flag = atoi(optarg);
+			break;
+		case 'S':
+			app_conf->dest_ether_addr_octet = get_mac_addr(optarg);
+			app_conf->sriov = true;
 			break;
 		default:
 			abort();
@@ -250,7 +311,6 @@ static void *socket_routine(void *arg)
 			struct xskvec *xv = &msg.msg_iov[i];
 			void *pkt = xv->data;
 			void *pkt_end = pkt + xv->len;
-			uint8_t tmp_mac[ETH_ALEN];
 			struct in_addr tmp_ip;
 			struct ethhdr *eth = pkt;
 			if ((void *)(eth + 1) > pkt_end) {
@@ -282,11 +342,10 @@ static void *socket_routine(void *arg)
 			// get key
 			memcpy(&key, payload, sizeof(size_t));
 			// Hardcoding so that half the packets are get, other half are store
-			flag = !flag;
 			key = default_keys[keys_index];
 			keys_index = (keys_index + 1) % NUM_KEYS;
 			// GET
-			if (flag) {
+			if (app_conf.flag == 0) {
 				uint64_t key_hash = hash((const uint8_t *)&key, sizeof(key));
 				size_t value_length = sizeof(value);
 
@@ -296,10 +355,15 @@ static void *socket_routine(void *arg)
 
 				// send value
 				// memcpy(payload + sizeof(size_t), &value, 256);
-				// re-configuring the pkt to send
-				memcpy(tmp_mac, eth->h_dest, ETH_ALEN);
-				memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
-				memcpy(eth->h_source, tmp_mac, ETH_ALEN);
+				// // re-configuring the pkt to send
+				// memcpy(tmp_mac, eth->h_dest, ETH_ALEN);
+				// memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
+				// memcpy(eth->h_source, tmp_mac, ETH_ALEN);
+
+				if (app_conf.sriov) {
+					swap_mac_addresses(pkt);
+					update_dest_mac(pkt);
+				}
 
 				memcpy(&tmp_ip, &iph->saddr, sizeof(tmp_ip));
 				memcpy(&iph->saddr, &iph->daddr, sizeof(tmp_ip));
@@ -379,12 +443,6 @@ int main(int argc, char **argv)
 		args->socket_id = i;
 		args->next = nf->next;
 		args->next_size = nf->next_size;
-
-		log_info("2_NEXT_SIZE: %d", args->next_size);
-
-		for (int i = 0; i < args->next_size; i++) {
-			log_info("2_NEXT_ITEM_%d %d", i, nf->next[i]);
-		}
 
 		pthread_t socket_thread;
 		if (pthread_create(&socket_thread, NULL, socket_routine, args)) {
