@@ -29,7 +29,7 @@ impl Firewall {
 
     #[inline]
     fn blocked(&self, tuple5: &Tuple5) -> bool {
-        self.rules.iter().any(|rule| *rule == *tuple5)
+        self.rules.contains(tuple5)
     }
 }
 

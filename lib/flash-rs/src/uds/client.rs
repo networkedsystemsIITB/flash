@@ -183,7 +183,7 @@ impl UdsClient {
 
     pub(crate) fn get_ifname(&mut self) -> io::Result<String> {
         self.conn.write_all(&FLASH_GET_IFNAME)?;
-        self.conn.recv_string::<17>()
+        self.conn.recv_string::<16>()
     }
 
     pub(crate) fn get_ip_addr(&mut self) -> io::Result<String> {

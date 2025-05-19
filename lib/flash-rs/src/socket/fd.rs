@@ -91,8 +91,7 @@ impl Fd {
         } else if optlen == XDP_MMAP_OFFSETS_SIZEOF {
             Ok(off)
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
+            Err(io::Error::other(
                 "`optlen` returned from `getsockopt` does not match `xdp_mmap_offsets` struct size",
             ))
         }
@@ -117,8 +116,7 @@ impl Fd {
         } else if optlen == XDP_STATISTICS_SIZEOF {
             Ok(stats)
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
+            Err(io::Error::other(
                 "`optlen` returned from `getsockopt` does not match `xdp_statistics` struct size",
             ))
         }

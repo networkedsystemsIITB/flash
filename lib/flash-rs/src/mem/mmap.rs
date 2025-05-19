@@ -36,15 +36,10 @@ impl Mmap {
 
         if addr == MAP_FAILED {
             Err(io::Error::last_os_error())
-        } else {
-            let addr = NonNull::new(addr).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    "unexpected null pointer from `mmap()`",
-                )
-            })?;
-
+        } else if let Some(addr) = NonNull::new(addr) {
             Ok(Mmap { addr, len })
+        } else {
+            Err(io::Error::other("unexpected null pointer from `mmap()`"))
         }
     }
 

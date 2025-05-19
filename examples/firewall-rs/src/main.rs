@@ -32,7 +32,7 @@ fn socket_thread(
 
         let (descs_send, descs_drop) = descs.into_iter().partition(|desc| {
             socket
-                .read(desc)
+                .read_exact(desc)
                 .is_ok_and(|pkt| nf::firewall_filter(pkt, firewall, mac_addr))
         });
 
@@ -107,7 +107,7 @@ fn main() {
         .collect::<Vec<_>>();
 
     for handle in handles {
-        if let Some(err) = handle.join().err() {
+        if let Err(err) = handle.join() {
             eprintln!("error in thread: {err:?}");
         }
     }

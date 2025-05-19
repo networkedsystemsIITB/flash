@@ -40,7 +40,7 @@ fn socket_thread<H: BuildHasher + Default>(
         let mut descs_drop = Vec::new();
 
         for mut desc in descs {
-            if let Ok(pkt) = socket.read(&desc) {
+            if let Ok(pkt) = socket.read_exact(&desc) {
                 if let Some(idx) = nf::load_balance(pkt, maglev, route, next_mac) {
                     desc.set_next(idx);
                     descs_send.push(desc);
@@ -138,7 +138,7 @@ fn main() {
         .collect::<Vec<_>>();
 
     for handle in handles {
-        if let Some(err) = handle.join().err() {
+        if let Err(err) = handle.join() {
             eprintln!("error in thread: {err:?}");
         }
     }

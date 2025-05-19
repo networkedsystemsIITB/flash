@@ -360,7 +360,13 @@ impl Socket {
 
     #[allow(clippy::missing_errors_doc)]
     #[inline]
-    pub fn read<const SIZE: usize>(&mut self, desc: &Desc) -> io::Result<&mut [u8; SIZE]> {
+    pub fn read(&mut self, desc: &Desc) -> io::Result<&mut [u8]> {
+        self.umem.get_data(desc.addr, desc.len as usize)
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    #[inline]
+    pub fn read_exact<const SIZE: usize>(&mut self, desc: &Desc) -> io::Result<&mut [u8; SIZE]> {
         if SIZE > desc.len as usize {
             Err(io::Error::new(
                 io::ErrorKind::InvalidData,

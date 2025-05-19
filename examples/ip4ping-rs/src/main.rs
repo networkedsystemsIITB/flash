@@ -26,7 +26,7 @@ fn socket_thread(mut socket: Socket, run: &Arc<AtomicBool>) {
 
         let (descs_send, descs_drop) = descs
             .into_iter()
-            .partition(|desc| socket.read(desc).is_ok_and(nf::echo_reply));
+            .partition(|desc| socket.read_exact(desc).is_ok_and(nf::echo_reply));
 
         socket.send(descs_send);
         socket.drop(descs_drop);
@@ -92,7 +92,7 @@ fn main() {
         .collect::<Vec<_>>();
 
     for handle in handles {
-        if let Some(err) = handle.join().err() {
+        if let Err(err) = handle.join() {
             eprintln!("error in thread: {err:?}");
         }
     }
