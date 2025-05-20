@@ -1,10 +1,3 @@
-mod fd;
-mod ring;
-mod xdp;
-
-#[cfg(feature = "stats")]
-mod stats;
-
 use std::{io, sync::Arc, thread};
 
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS};
@@ -15,19 +8,22 @@ use libxdp_sys::{
 use quanta::{Clock, Instant};
 
 use crate::{
-    client::FlashError,
-    config::{BindFlags, Mode, PollConfig, XskConfig},
+    config::{BindFlags, Mode},
     mem::Umem,
-    uds::UdsClient,
     util,
 };
 
-use ring::{CompRing, FillRing, RxRing, TxRing};
-
-pub(crate) use fd::Fd;
+use super::{
+    desc::Desc,
+    error::SocketError,
+    error::SocketResult,
+    fd::Fd,
+    ring::{CompRing, Cons as _, FillRing, Prod as _, RxRing, TxRing},
+    shared::SocketShared,
+};
 
 #[cfg(feature = "stats")]
-pub use stats::Stats;
+use super::stats::Stats;
 
 const FRAME_SIZE: u64 = XSK_UMEM__DEFAULT_FRAME_SIZE as u64;
 
@@ -47,34 +43,13 @@ pub struct Socket {
     shared: Arc<SocketShared>,
 }
 
-#[derive(Debug)]
-pub(crate) struct SocketShared {
-    xsk_config: XskConfig,
-    poll_config: Option<PollConfig>,
-    _uds_client: UdsClient,
-}
-
-impl SocketShared {
-    pub(crate) fn new(
-        xsk_config: XskConfig,
-        poll_config: Option<PollConfig>,
-        uds_client: UdsClient,
-    ) -> Self {
-        Self {
-            xsk_config,
-            poll_config,
-            _uds_client: uds_client,
-        }
-    }
-}
-
 impl Socket {
     pub(crate) fn new(
         fd: Fd,
         umem: Umem,
         #[cfg(feature = "stats")] stats: Stats,
         data: Arc<SocketShared>,
-    ) -> io::Result<Self> {
+    ) -> SocketResult<Self> {
         let off = fd.xdp_mmap_offsets()?;
 
         Ok(Self {
@@ -93,17 +68,20 @@ impl Socket {
         })
     }
 
-    pub(crate) fn populate_fq(&mut self, idx: usize) -> Result<(), FlashError> {
+    pub(crate) fn populate_fq(&mut self, idx: usize) -> SocketResult<()> {
         let nr_frames = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2 * self.umem.scale;
         let offset = idx as u64 + self.umem.offset;
 
         let mut idx_fq = 0;
         if self.fill.reserve(nr_frames, &mut idx_fq) != nr_frames {
-            return Err(FlashError::FqPopulate);
+            return Err(SocketError::FqPopulate);
         }
 
         for i in 0..u64::from(nr_frames) {
-            *self.fill.addr(idx_fq) = (offset + i) * FRAME_SIZE;
+            if let Some(fill_addr) = self.fill.addr(idx_fq) {
+                *fill_addr = (offset + i) * FRAME_SIZE;
+            }
+
             idx_fq += 1;
         }
 
@@ -150,7 +128,7 @@ impl Socket {
             unsafe {
                 (*self.stats.app.get()).tx_copy_sendtos += 1;
             }
-            self.kick_tx().unwrap();
+            let _ = self.kick_tx();
         }
 
         let num_outstanding = self.outstanding_tx.min(self.shared.xsk_config.batch_size);
@@ -175,7 +153,12 @@ impl Socket {
         }
 
         for _ in 0..completed {
-            *self.fill.addr(idx_fq) = *self.comp.addr(idx_cq);
+            if let Some(fill_addr) = self.fill.addr(idx_fq) {
+                if let Some(comp_addr) = self.comp.addr(idx_cq) {
+                    *fill_addr = *comp_addr;
+                }
+            }
+
             idx_fq += 1;
             idx_cq += 1;
         }
@@ -221,7 +204,7 @@ impl Socket {
                 unsafe {
                     (*self.stats.app.get()).tx_wakeup_sendtos += 1;
                 }
-                self.kick_tx().unwrap();
+                let _ = self.kick_tx();
             }
 
             if self.tx.reserve(num, &mut idx_tx) == num {
@@ -237,7 +220,7 @@ impl Socket {
     }
 
     #[allow(clippy::missing_errors_doc)]
-    pub fn recv(&mut self) -> io::Result<Vec<Desc>> {
+    pub fn recv(&mut self) -> SocketResult<Vec<Desc>> {
         self.complete_tx_rx();
 
         if let Some(poll_config) = &self.shared.poll_config {
@@ -280,22 +263,19 @@ impl Socket {
         }
 
         if rcvd > self.shared.xsk_config.batch_size {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("rcvd: {rcvd} > batch size",),
-            ));
+            return Err(SocketError::BatchOverflow);
         }
 
         let descs = (0..rcvd)
-            .map(|_| {
+            .filter_map(|_| {
                 let desc = self.rx.desc(idx_rx);
                 idx_rx += 1;
 
-                Desc {
+                desc.map(|desc| Desc {
                     addr: unsafe { xsk_umem__add_offset_to_addr(desc.addr) },
                     len: desc.len,
                     options: desc.options,
-                }
+                })
             })
             .collect();
 
@@ -322,9 +302,11 @@ impl Socket {
             let tx_desc = self.tx.desc(idx_tx);
             idx_tx += 1;
 
-            tx_desc.addr = desc.addr;
-            tx_desc.len = desc.len;
-            tx_desc.options = desc.options & 0xFFFF_0000;
+            if let Some(tx_desc) = tx_desc {
+                tx_desc.addr = desc.addr;
+                tx_desc.len = desc.len;
+                tx_desc.options = desc.options & 0xFFFF_0000;
+            }
         }
 
         self.tx.submit(n);
@@ -346,7 +328,10 @@ impl Socket {
         let mut idx_fq = self.reserve_fq(n);
 
         for desc in descs {
-            *self.fill.addr(idx_fq) = unsafe { xsk_umem__extract_addr(desc.addr) };
+            if let Some(fill_addr) = self.fill.addr(idx_fq) {
+                *fill_addr = unsafe { xsk_umem__extract_addr(desc.addr) };
+            }
+
             idx_fq += 1;
         }
 
@@ -360,18 +345,15 @@ impl Socket {
 
     #[allow(clippy::missing_errors_doc)]
     #[inline]
-    pub fn read(&mut self, desc: &Desc) -> io::Result<&mut [u8]> {
-        self.umem.get_data(desc.addr, desc.len as usize)
+    pub fn read(&mut self, desc: &Desc) -> SocketResult<&mut [u8]> {
+        Ok(self.umem.get_data(desc.addr, desc.len as usize)?)
     }
 
     #[allow(clippy::missing_errors_doc)]
     #[inline]
-    pub fn read_exact<const SIZE: usize>(&mut self, desc: &Desc) -> io::Result<&mut [u8; SIZE]> {
+    pub fn read_exact<const SIZE: usize>(&mut self, desc: &Desc) -> SocketResult<&mut [u8; SIZE]> {
         if SIZE > desc.len as usize {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("size: {SIZE} > desc length"),
-            ))
+            Err(SocketError::SizeOverflow)
         } else {
             unsafe {
                 let data = self.umem.get_data(desc.addr, desc.len as usize)?;
@@ -384,25 +366,5 @@ impl Socket {
     #[allow(clippy::must_use_candidate)]
     pub fn stats(&self) -> Arc<Stats> {
         self.stats.clone()
-    }
-}
-
-#[derive(Debug)]
-pub struct Desc {
-    addr: u64,
-    len: u32,
-    options: u32,
-}
-
-impl Desc {
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.len as usize
-    }
-
-    #[allow(clippy::cast_possible_truncation)]
-    #[inline]
-    pub fn set_next(&mut self, idx: usize) {
-        self.options = (self.options & 0xFFFF) | ((idx as u32) << 16);
     }
 }

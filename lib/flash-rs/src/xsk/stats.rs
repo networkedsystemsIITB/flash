@@ -1,8 +1,8 @@
-use std::{cell::UnsafeCell, io, mem};
+use std::{cell::UnsafeCell, mem};
 
 use crate::config::XdpFlags;
 
-use super::{Fd, xdp::XdpStatistics};
+use super::{Fd, error::SocketResult, xdp::XdpStatistics};
 
 #[derive(Debug)]
 pub struct Stats {
@@ -39,7 +39,7 @@ impl Stats {
     }
 
     #[allow(clippy::missing_errors_doc)]
-    pub fn get_xdp_stats(&self) -> io::Result<XdpStats> {
+    pub fn get_xdp_stats(&self) -> SocketResult<XdpStats> {
         let xdp_stats = self.fd.xdp_statistics()?;
         Ok(unsafe { mem::transmute::<XdpStatistics, XdpStats>(xdp_stats) })
     }

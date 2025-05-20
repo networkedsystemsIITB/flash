@@ -1,4 +1,4 @@
-use std::{io, mem};
+use std::mem;
 
 use libc::{
     XDP_PGOFF_RX_RING, XDP_PGOFF_TX_RING, XDP_UMEM_PGOFF_COMPLETION_RING, XDP_UMEM_PGOFF_FILL_RING,
@@ -13,7 +13,18 @@ use libxdp_sys::{
 
 use crate::mem::Mmap;
 
-use super::fd::Fd;
+use super::{error::SocketResult, fd::Fd};
+
+pub(super) trait Prod {
+    fn needs_wakeup(&self) -> bool;
+    fn reserve(&mut self, nb: u32, idx: &mut u32) -> u32;
+    fn submit(&mut self, nb: u32);
+}
+
+pub(super) trait Cons {
+    fn peek(&mut self, nb: u32, idx: &mut u32) -> u32;
+    fn release(&mut self, nb: u32);
+}
 
 #[derive(Debug)]
 pub(super) struct FillRing {
@@ -25,7 +36,7 @@ unsafe impl Send for FillRing {}
 
 impl FillRing {
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset, umem_scale: u32) -> io::Result<Self> {
+    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset, umem_scale: u32) -> SocketResult<Self> {
         let fill_size = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2 * umem_scale;
 
         let mmap = fd.mmap(
@@ -51,27 +62,25 @@ impl FillRing {
     }
 
     #[inline]
-    pub(super) fn needs_wakeup(&self) -> bool {
+    pub(super) fn addr(&mut self, idx: u32) -> Option<&mut u64> {
+        unsafe { xsk_ring_prod__fill_addr(&mut self.ring, idx).as_mut() }
+    }
+}
+
+impl Prod for FillRing {
+    #[inline]
+    fn needs_wakeup(&self) -> bool {
         unsafe { xsk_ring_prod__needs_wakeup(&self.ring) != 0 }
     }
 
     #[inline]
-    pub(super) fn reserve(&mut self, nb: u32, idx: &mut u32) -> u32 {
+    fn reserve(&mut self, nb: u32, idx: &mut u32) -> u32 {
         unsafe { xsk_ring_prod__reserve(&mut self.ring, nb, idx) }
     }
 
     #[inline]
-    pub(super) fn submit(&mut self, nb: u32) {
+    fn submit(&mut self, nb: u32) {
         unsafe { xsk_ring_prod__submit(&mut self.ring, nb) }
-    }
-
-    #[inline]
-    pub(super) fn addr(&mut self, idx: u32) -> &mut u64 {
-        unsafe {
-            xsk_ring_prod__fill_addr(&mut self.ring, idx)
-                .as_mut()
-                .unwrap()
-        }
     }
 }
 
@@ -85,7 +94,7 @@ unsafe impl Send for TxRing {}
 
 impl TxRing {
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset, umem_scale: u32) -> io::Result<Self> {
+    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset, umem_scale: u32) -> SocketResult<Self> {
         let tx_size = XSK_RING_PROD__DEFAULT_NUM_DESCS * umem_scale;
 
         let mmap = fd.mmap(
@@ -111,27 +120,25 @@ impl TxRing {
     }
 
     #[inline]
-    pub(super) fn needs_wakeup(&self) -> bool {
+    pub(super) fn desc(&mut self, idx: u32) -> Option<&mut xdp_desc> {
+        unsafe { xsk_ring_prod__tx_desc(&mut self.ring, idx).as_mut() }
+    }
+}
+
+impl Prod for TxRing {
+    #[inline]
+    fn needs_wakeup(&self) -> bool {
         unsafe { xsk_ring_prod__needs_wakeup(&self.ring) != 0 }
     }
 
     #[inline]
-    pub(super) fn reserve(&mut self, nb: u32, idx: &mut u32) -> u32 {
+    fn reserve(&mut self, nb: u32, idx: &mut u32) -> u32 {
         unsafe { xsk_ring_prod__reserve(&mut self.ring, nb, idx) }
     }
 
     #[inline]
-    pub(super) fn submit(&mut self, nb: u32) {
+    fn submit(&mut self, nb: u32) {
         unsafe { xsk_ring_prod__submit(&mut self.ring, nb) }
-    }
-
-    #[inline]
-    pub(super) fn desc(&mut self, idx: u32) -> &mut xdp_desc {
-        unsafe {
-            xsk_ring_prod__tx_desc(&mut self.ring, idx)
-                .as_mut()
-                .unwrap()
-        }
     }
 }
 
@@ -145,7 +152,7 @@ unsafe impl Send for CompRing {}
 
 impl CompRing {
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset, umem_scale: u32) -> io::Result<Self> {
+    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset, umem_scale: u32) -> SocketResult<Self> {
         let comp_size = XSK_RING_CONS__DEFAULT_NUM_DESCS * umem_scale;
 
         let mmap = fd.mmap(
@@ -171,18 +178,20 @@ impl CompRing {
     }
 
     #[inline]
-    pub(super) fn peek(&mut self, nb: u32, idx: &mut u32) -> u32 {
+    pub(super) fn addr(&self, idx: u32) -> Option<&u64> {
+        unsafe { xsk_ring_cons__comp_addr(&self.ring, idx).as_ref() }
+    }
+}
+
+impl Cons for CompRing {
+    #[inline]
+    fn peek(&mut self, nb: u32, idx: &mut u32) -> u32 {
         unsafe { xsk_ring_cons__peek(&mut self.ring, nb, idx) }
     }
 
     #[inline]
-    pub(super) fn release(&mut self, nb: u32) {
+    fn release(&mut self, nb: u32) {
         unsafe { xsk_ring_cons__release(&mut self.ring, nb) }
-    }
-
-    #[inline]
-    pub(super) fn addr(&self, idx: u32) -> &u64 {
-        unsafe { xsk_ring_cons__comp_addr(&self.ring, idx).as_ref().unwrap() }
     }
 }
 
@@ -196,7 +205,7 @@ unsafe impl Send for RxRing {}
 
 impl RxRing {
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset, umem_scale: u32) -> io::Result<Self> {
+    pub(super) fn new(fd: &Fd, off: &xdp_ring_offset, umem_scale: u32) -> SocketResult<Self> {
         let rx_size = XSK_RING_CONS__DEFAULT_NUM_DESCS * umem_scale;
 
         let mmap = fd.mmap(
@@ -222,17 +231,19 @@ impl RxRing {
     }
 
     #[inline]
-    pub(super) fn peek(&mut self, nb: u32, idx: &mut u32) -> u32 {
+    pub(super) fn desc(&self, idx: u32) -> Option<&xdp_desc> {
+        unsafe { xsk_ring_cons__rx_desc(&self.ring, idx).as_ref() }
+    }
+}
+
+impl Cons for RxRing {
+    #[inline]
+    fn peek(&mut self, nb: u32, idx: &mut u32) -> u32 {
         unsafe { xsk_ring_cons__peek(&mut self.ring, nb, idx) }
     }
 
     #[inline]
-    pub(super) fn release(&mut self, nb: u32) {
+    fn release(&mut self, nb: u32) {
         unsafe { xsk_ring_cons__release(&mut self.ring, nb) }
-    }
-
-    #[inline]
-    pub(super) fn desc(&self, idx: u32) -> &xdp_desc {
-        unsafe { xsk_ring_cons__rx_desc(&self.ring, idx).as_ref().unwrap() }
     }
 }

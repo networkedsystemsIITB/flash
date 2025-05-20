@@ -1,29 +1,15 @@
-use std::{
-    io,
-    net::{AddrParseError, Ipv4Addr},
-    str::FromStr,
-    sync::Arc,
-};
+use std::{net::Ipv4Addr, str::FromStr, sync::Arc};
 
 use crate::{
-    Socket,
+    FlashError, Socket,
     config::{BindFlags, FlashConfig, Mode, PollConfig, XskConfig},
     mem::Umem,
-    socket::{Fd, SocketShared},
     uds::UdsClient,
+    xsk::{Fd, SocketShared},
 };
 
 #[cfg(feature = "stats")]
-use crate::{config::XdpFlags, socket::Stats};
-
-#[derive(Debug, thiserror::Error)]
-#[error("flash error: {0}")]
-pub enum FlashError {
-    IO(#[from] io::Error),
-    AddrParse(#[from] AddrParseError),
-    #[error("flash error: error populating fq")]
-    FqPopulate,
-}
+use crate::{config::XdpFlags, xsk::Stats};
 
 pub struct Route {
     pub ip_addr: Ipv4Addr,

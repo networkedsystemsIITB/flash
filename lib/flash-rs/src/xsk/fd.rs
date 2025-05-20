@@ -1,13 +1,16 @@
 use std::{io, ptr};
 
-use libc::{MSG_DONTWAIT, SOL_XDP, XDP_MMAP_OFFSETS, pollfd, recvfrom, sendto, ssize_t};
+use libc::{MSG_DONTWAIT, SOL_XDP, XDP_MMAP_OFFSETS, pollfd, ssize_t};
 
 #[cfg(feature = "stats")]
 use libc::XDP_STATISTICS;
 
-use crate::mem::Mmap;
+use crate::mem::{MemError, Mmap};
 
-use super::xdp::{XDP_MMAP_OFFSETS_SIZEOF, XdpMmapOffsets};
+use super::{
+    error::{SocketError, SocketResult},
+    xdp::{XDP_MMAP_OFFSETS_SIZEOF, XdpMmapOffsets},
+};
 
 #[cfg(feature = "stats")]
 use super::xdp::{XDP_STATISTICS_SIZEOF, XdpStatistics};
@@ -21,12 +24,9 @@ pub(crate) struct Fd {
 }
 
 impl Fd {
-    pub(crate) fn new(id: i32, poll_timeout: i32) -> io::Result<Self> {
+    pub(crate) fn new(id: i32, poll_timeout: i32) -> SocketResult<Self> {
         if id < 0 {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid file descriptor",
-            ))
+            Err(SocketError::InvalidFd)
         } else {
             Ok(Fd {
                 id,
@@ -41,19 +41,19 @@ impl Fd {
     }
 
     #[inline]
-    pub(super) fn mmap(&self, len: usize, offset: i64) -> io::Result<Mmap> {
+    pub(super) fn mmap(&self, len: usize, offset: i64) -> Result<Mmap, MemError> {
         Mmap::new(len, self.id, offset, true)
     }
 
     #[inline]
     pub(super) fn kick(&self) -> ssize_t {
-        unsafe { sendto(self.id, ptr::null(), 0, MSG_DONTWAIT, ptr::null(), 0) }
+        unsafe { libc::sendto(self.id, ptr::null(), 0, MSG_DONTWAIT, ptr::null(), 0) }
     }
 
     #[inline]
     pub(super) fn wakeup(&self) {
         unsafe {
-            recvfrom(
+            libc::recvfrom(
                 self.id,
                 ptr::null_mut(),
                 0,
@@ -73,7 +73,7 @@ impl Fd {
         }
     }
 
-    pub(super) fn xdp_mmap_offsets(&self) -> io::Result<XdpMmapOffsets> {
+    pub(super) fn xdp_mmap_offsets(&self) -> SocketResult<XdpMmapOffsets> {
         let mut off = XdpMmapOffsets::default();
         let mut optlen = XDP_MMAP_OFFSETS_SIZEOF;
 
@@ -87,18 +87,16 @@ impl Fd {
             )
         } != 0
         {
-            Err(io::Error::last_os_error())
+            Err(SocketError::last_os_error())
         } else if optlen == XDP_MMAP_OFFSETS_SIZEOF {
             Ok(off)
         } else {
-            Err(io::Error::other(
-                "`optlen` returned from `getsockopt` does not match `xdp_mmap_offsets` struct size",
-            ))
+            Err(SocketError::SockOptSize)
         }
     }
 
     #[cfg(feature = "stats")]
-    pub(super) fn xdp_statistics(&self) -> io::Result<XdpStatistics> {
+    pub(super) fn xdp_statistics(&self) -> SocketResult<XdpStatistics> {
         let mut stats = XdpStatistics::default();
         let mut optlen = XDP_STATISTICS_SIZEOF;
 
@@ -112,13 +110,11 @@ impl Fd {
             )
         } != 0
         {
-            Err(io::Error::last_os_error())
+            Err(SocketError::last_os_error())
         } else if optlen == XDP_STATISTICS_SIZEOF {
             Ok(stats)
         } else {
-            Err(io::Error::other(
-                "`optlen` returned from `getsockopt` does not match `xdp_statistics` struct size",
-            ))
+            Err(SocketError::SockOptSize)
         }
     }
 }

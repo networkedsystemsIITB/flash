@@ -18,6 +18,6 @@ uds = "0.4.2"
 
 [features]
 default = []
-stats = []
 clap = ["dep:clap"]
+stats = []
 tracing = ["dep:tracing"]

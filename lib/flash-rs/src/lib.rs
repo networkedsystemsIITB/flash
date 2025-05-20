@@ -1,15 +1,17 @@
 mod client;
 mod config;
+mod error;
 mod mem;
-mod socket;
 mod uds;
 mod util;
+mod xsk;
 
 pub use crate::{
     client::{Route, connect},
     config::FlashConfig,
-    socket::Socket,
+    error::FlashError,
+    xsk::Socket,
 };
 
 #[cfg(feature = "stats")]
-pub use crate::socket::Stats;
+pub use crate::xsk::Stats;
