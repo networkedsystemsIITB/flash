@@ -4,12 +4,9 @@
  * l2fwd: A simple NF that forwards packets between two interfaces
  * after swapping or modifying MAC addresses.
  */
-
 #include <signal.h>
 #include <pthread.h>
 #include <net/ethernet.h>
-#include <locale.h>
-#include <stdlib.h>
 
 #include <flash_nf.h>
 #include <flash_params.h>
@@ -136,8 +133,8 @@ static void swap_mac_addresses(void *data)
 
 struct sock_args {
 	int socket_id;
-	int *next;
-	int next_size;
+	// int *next;
+	// int next_size;
 };
 
 static void *socket_routine(void *arg)

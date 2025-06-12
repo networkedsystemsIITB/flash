@@ -4,7 +4,7 @@
 project(
     'flash',
     'C',
-    version: '25.5.1',
+    version: '25.5-beta',
     license: 'BSD',
     default_options: [
         'buildtype=release',

@@ -4,17 +4,17 @@
  * helloworld: A simple helloworld NF that shows how to parse args for application 
  * and control plane setup using Flash monitor
  */
-
-#include <signal.h>
-#include <pthread.h>
-#include <stdlib.h>
-
 #include <flash_nf.h>
 #include <flash_params.h>
 #include <log.h>
 
 struct config *cfg = NULL;
 struct nf *nf = NULL;
+
+struct appconf {
+	int count;
+	bool universe;
+} app_conf;
 
 // clang-format off
 static const char *hw_options[] = {
@@ -23,11 +23,6 @@ static const char *hw_options[] = {
     NULL
 };
 // clang-format on
-
-struct appconf {
-	int count;
-	bool universe;
-} app_conf;
 
 static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
 {
