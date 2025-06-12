@@ -152,7 +152,7 @@ static void *socket_routine(void *arg)
 
 	xskvecs = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
 	if (!xskvecs) {
-		log_error("Failed to allocate send array");
+		log_error("Failed to allocate xskvecs array");
 		return NULL;
 	}
 
