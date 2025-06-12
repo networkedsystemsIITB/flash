@@ -1,26 +1,19 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2025 Debojeet Das
  *
- * fwddrop: unit-test to check forward and drop capabilities of Flash framework
- * We store pointers to msg.iov we want to drop in one array, and those we wish to send in another array
+ * fwddrop: unit-test to check forward and drop capabilities of Flash library
  */
-
-#include <flash_nf.h>
-#include <flash_params.h>
-
 #include <signal.h>
 #include <pthread.h>
 #include <net/ethernet.h>
-#include <locale.h>
-#include <stdlib.h>
-#include <linux/ip.h>
-#include <linux/icmp.h>
-#include <netinet/in.h>
+
+#include <flash_nf.h>
+#include <flash_params.h>
 #include <log.h>
 
 bool done = false;
 struct config *cfg = NULL;
-struct nf *nf;
+struct nf *nf = NULL;
 
 static void int_exit(int sig)
 {
@@ -32,23 +25,64 @@ struct appconf {
 	int cpu_start;
 	int cpu_end;
 	int stats_cpu;
+	int fwd_ratio;
+	bool sriov;
+	uint8_t *dest_ether_addr_octet;
 } app_conf;
 
-static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
+static int hex2int(char ch)
+{
+	if (ch >= '0' && ch <= '9')
+		return ch - '0';
+	if (ch >= 'A' && ch <= 'F')
+		return ch - 'A' + 10;
+	if (ch >= 'a' && ch <= 'f')
+		return ch - 'a' + 10;
+	return -1;
+}
+
+static uint8_t *get_mac_addr(char *mac_addr)
+{
+	uint8_t *dest_ether_addr_octet = (uint8_t *)malloc(6 * sizeof(uint8_t));
+	for (int i = 0; i < 6; i++) {
+		dest_ether_addr_octet[i] = hex2int(mac_addr[0]) * 16;
+		mac_addr++;
+		dest_ether_addr_octet[i] += hex2int(mac_addr[0]);
+		mac_addr += 2;
+	}
+	return dest_ether_addr_octet;
+}
+
+// clang-format off
+static const char *fwddrop_options[] = {
+    "-c <num>\tStart CPU (default: 0)",
+    "-e <num>\tEnd CPU (default: 0)",
+    "-s <num>\tStats CPU (default: 1)",
+	"-r <num>\tForward ratio percentage (default: 50)",
+    "-S <mac>\tEnable SR-IOV mode and set dest MAC address",
+    NULL
+};
+// clang-format on
+
+static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
 {
 	int c;
 	opterr = 0;
 
-	// Default values
 	app_conf->cpu_start = 0;
 	app_conf->cpu_end = 0;
 	app_conf->stats_cpu = 1;
+	app_conf->sriov = false;
+	app_conf->fwd_ratio = 50;
 
 	argc -= shift;
 	argv += shift;
 
-	while ((c = getopt(argc, argv, "c:e:s:")) != -1)
+	while ((c = getopt(argc, argv, "hc:e:s:r:S:")) != -1)
 		switch (c) {
+		case 'h':
+			printf("Usage: %s -h\n", argv[-shift]);
+			return -1;
 		case 'c':
 			app_conf->cpu_start = atoi(optarg);
 			break;
@@ -58,179 +92,226 @@ static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int 
 		case 's':
 			app_conf->stats_cpu = atoi(optarg);
 			break;
+		case 'r':
+			app_conf->fwd_ratio = atoi(optarg);
+			if (app_conf->fwd_ratio < 0)
+				app_conf->fwd_ratio = 0;
+			if (app_conf->fwd_ratio > 100)
+				app_conf->fwd_ratio = 100;
+			break;
+		case 'S':
+			app_conf->dest_ether_addr_octet = get_mac_addr(optarg);
+			app_conf->sriov = true;
+			break;
 		default:
-			abort();
+			printf("Usage: %s -h\n", argv[-shift]);
+			return -1;
 		}
+
+	return 0;
 }
 
-struct Args {
-	int socket_id;
-	int *next;
-	int next_size;
-};
+static void update_dest_mac(void *data)
+{
+	struct ether_header *eth = (struct ether_header *)data;
+	struct ether_addr *dst_addr = (struct ether_addr *)&eth->ether_dhost;
+	struct ether_addr tmp = {
+		.ether_addr_octet = {
+			app_conf.dest_ether_addr_octet[0],
+			app_conf.dest_ether_addr_octet[1],
+			app_conf.dest_ether_addr_octet[2],
+			app_conf.dest_ether_addr_octet[3],
+			app_conf.dest_ether_addr_octet[4],
+			app_conf.dest_ether_addr_octet[5],
+		},
+	};
+	*dst_addr = tmp;
+}
 
-unsigned int count = 1;
+static void swap_mac_addresses(void *data)
+{
+	struct ether_header *eth = (struct ether_header *)data;
+	struct ether_addr *src_addr = (struct ether_addr *)&eth->ether_shost;
+	struct ether_addr *dst_addr = (struct ether_addr *)&eth->ether_dhost;
+	struct ether_addr tmp;
+
+	tmp = *src_addr;
+	*src_addr = *dst_addr;
+	*dst_addr = tmp;
+}
+
+struct sock_args {
+	int socket_id;
+};
 
 static void *socket_routine(void *arg)
 {
-	struct Args *a = (struct Args *)arg;
-	int socket_id = a->socket_id;
-	int *next = a->next;
-	int next_size = a->next_size;
-	log_info("SOCKET_ID: %d", socket_id);
-	int i, ret, nfds = 1, nrecv;
+	int ret;
+	nfds_t nfds = 1;
+	struct socket *xsk;
 	struct pollfd fds[1] = {};
-	struct xskmsghdr msg = {};
+	struct xskvec *xskvecs, *sendvecs, *dropvecs;
+	uint32_t i, nrecv, wsend, nsend, wdrop, ndrop, pcount, nb_frags = 0;
+	struct sock_args *a = (struct sock_args *)arg;
 
-	log_info("2_NEXT_SIZE: %d", next_size);
+	log_debug("Socket ID: %d", a->socket_id);
+	xsk = nf->thread[a->socket_id]->socket;
 
-	for (int i = 0; i < next_size; i++) {
-		log_info("2_NEXT_ITEM_%d %d", i, next[i]);
+	xskvecs = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
+	if (!xskvecs) {
+		log_error("Failed to allocate xskvecs array");
+		return NULL;
 	}
 
-	msg.msg_iov = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
+	sendvecs = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
+	if (!sendvecs) {
+		log_error("Failed to allocate sendvecs array");
+		return NULL;
+	}
 
-	fds[0].fd = nf->thread[socket_id]->socket->fd;
+	dropvecs = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
+	if (!dropvecs) {
+		log_error("Failed to allocate dropvecs array");
+		return NULL;
+	}
+
+	fds[0].fd = xsk->fd;
 	fds[0].events = POLLIN;
+
 	for (;;) {
-		if (cfg->xsk->mode & FLASH__POLL) {
-			ret = flash__oldpoll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
-			if (ret <= 0 || ret > 1)
-				continue;
-		}
+		ret = flash__poll(cfg, xsk, fds, nfds);
+		if (!(ret == 1 || ret == -2))
+			continue;
 
-		nrecv = flash__oldrecvmsg(cfg, nf->thread[socket_id]->socket, &msg);
-
-		struct xskvec *drop[nrecv];
-		struct xskvec *send[nrecv];
-		unsigned int tot_pkt_drop = 0;
-		unsigned int tot_pkt_send = 0;
-
+		nrecv = flash__recvmsg(cfg, xsk, xskvecs, cfg->xsk->batch_size);
+		wsend = 0;
+		wdrop = 0;
+		pcount = 0;
 		for (i = 0; i < nrecv; i++) {
-			struct xskvec *xv = &msg.msg_iov[i];
-			void *data = xv->data;
+			char *pkt = xskvecs[i].data;
 
-			uint8_t tmp_mac[ETH_ALEN];
-			struct ethhdr *eth = (struct ethhdr *)data;
+			if (!nb_frags++)
+				app_conf.sriov ? update_dest_mac(pkt) : swap_mac_addresses(pkt);
 
-			memcpy(tmp_mac, eth->h_dest, ETH_ALEN);
-			memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
-			memcpy(eth->h_source, tmp_mac, ETH_ALEN);
+			if (IS_EOP_DESC(xskvecs[i].options))
+				nb_frags = 0;
 
-			/* fwd 50% packets and drop 50% packets */
-			if (count == 1) {
-				send[tot_pkt_send++] = &msg.msg_iov[i];
-				count = 0;
+			if ((int)(pcount * 100 / nrecv) < app_conf.fwd_ratio) {
+				sendvecs[wsend++] = xskvecs[i];
 			} else {
-				drop[tot_pkt_drop++] = &msg.msg_iov[i];
-				count = 1;
+				dropvecs[wdrop++] = xskvecs[i];
 			}
+			pcount++;
 		}
 
 		if (nrecv) {
-			size_t ret_send = flash__oldsendmsg(cfg, nf->thread[socket_id]->socket, send, tot_pkt_send);
-			size_t ret_drop = flash__olddropmsg(cfg, nf->thread[socket_id]->socket, drop, tot_pkt_drop);
-			if (ret_send != tot_pkt_send || ret_drop != tot_pkt_drop) {
-				log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
-				exit(EXIT_FAILURE);
+			nsend = flash__sendmsg(cfg, xsk, sendvecs, wsend);
+			ndrop = flash__dropmsg(cfg, xsk, dropvecs, wdrop);
+			if (nsend != wsend || ndrop != wdrop) {
+				log_error("errno: %d/\"%s\"", errno, strerror(errno));
+				break;
 			}
 		}
 
 		if (done)
 			break;
 	}
-	free(msg.msg_iov);
-	return NULL;
-}
 
-static void *worker__stats(void *arg)
-{
-	(void)arg;
-
-	if (cfg->verbose) {
-		unsigned int interval = cfg->stats_interval;
-		setlocale(LC_ALL, "");
-
-		for (int i = 0; i < cfg->total_sockets; i++)
-			nf->thread[i]->socket->timestamp = flash__get_nsecs(cfg);
-
-		while (!done) {
-			sleep(interval);
-			if (system("clear") != 0)
-				log_error("Terminal clear error");
-			for (int i = 0; i < cfg->total_sockets; i++) {
-				flash__dump_stats(cfg, nf->thread[i]->socket);
-			}
-		}
-	}
+	free(xskvecs);
+	free(sendvecs);
+	free(dropvecs);
 	return NULL;
 }
 
 int main(int argc, char **argv)
 {
+	int shift;
+	struct sock_args *args;
+	struct stats_conf stats_cfg = { NULL };
 	cpu_set_t cpuset;
+	pthread_t socket_thread, stats_thread;
+
 	cfg = calloc(1, sizeof(struct config));
 	if (!cfg) {
-		log_error("ERROR: Memory allocation failed\n");
+		log_error("ERROR: Memory allocation failed");
 		exit(EXIT_FAILURE);
 	}
 
-	int n = flash__parse_cmdline_args(argc, argv, cfg);
-	parse_app_args(argc, argv, &app_conf, n);
-	flash__configure_nf(&nf, cfg);
-	flash__populate_fill_ring(nf->thread, cfg->umem->frame_size, cfg->total_sockets, cfg->umem_offset, cfg->umem_scale);
+	cfg->app_name = "Unit Test: Forward and Drop Application";
+	cfg->app_options = fwddrop_options;
 
-	log_info("Control Plane Setup Done");
+	shift = flash__parse_cmdline_args(argc, argv, cfg);
+	if (shift < 0)
+		goto out_cfg;
+
+	if (parse_app_args(argc, argv, &app_conf, shift) < 0)
+		goto out_cfg;
+
+	if (flash__configure_nf(&nf, cfg) < 0)
+		goto out_cfg;
+
+	log_info("Control Plane setup done...");
 
 	signal(SIGINT, int_exit);
 	signal(SIGTERM, int_exit);
 	signal(SIGABRT, int_exit);
 
-	log_info("STARTING Data Path");
+	log_info("Starting Data Path...");
+
+	args = calloc(cfg->total_sockets, sizeof(struct sock_args));
+	if (!args) {
+		log_error("ERROR: Memory allocation failed for sock_args");
+		goto out_cfg;
+	}
 
 	for (int i = 0; i < cfg->total_sockets; i++) {
-		struct Args *args = calloc(1, sizeof(struct Args));
-		args->socket_id = i;
-		args->next = nf->next;
-		args->next_size = nf->next_size;
+		args[i].socket_id = i;
 
-		log_info("2_NEXT_SIZE: %d", args->next_size);
-
-		for (int i = 0; i < args->next_size; i++) {
-			log_info("2_NEXT_ITEM_%d %d", i, nf->next[i]);
-		}
-
-		pthread_t socket_thread;
-		if (pthread_create(&socket_thread, NULL, socket_routine, args)) {
+		if (pthread_create(&socket_thread, NULL, socket_routine, &args[i])) {
 			log_error("Error creating socket thread");
-			exit(EXIT_FAILURE);
+			goto out_args;
 		}
+
 		CPU_ZERO(&cpuset);
 		CPU_SET((i % (app_conf.cpu_end - app_conf.cpu_start + 1)) + app_conf.cpu_start, &cpuset);
 		if (pthread_setaffinity_np(socket_thread, sizeof(cpu_set_t), &cpuset) != 0) {
-			log_error("ERROR: Unable to set thread affinity: %s\n", strerror(errno));
-			exit(EXIT_FAILURE);
+			log_error("ERROR: Unable to set thread affinity: %s", strerror(errno));
+			goto out_args;
 		}
 
-		pthread_detach(socket_thread);
+		if (pthread_detach(socket_thread) != 0) {
+			log_error("ERROR: Unable to detach thread: %s", strerror(errno));
+			goto out_args;
+		}
 	}
 
-	pthread_t stats_thread;
-	if (pthread_create(&stats_thread, NULL, worker__stats, NULL)) {
+	stats_cfg.nf = nf;
+	stats_cfg.cfg = cfg;
+
+	if (pthread_create(&stats_thread, NULL, flash__stats_thread, &stats_cfg)) {
 		log_error("Error creating statistics thread");
-		exit(EXIT_FAILURE);
+		goto out_args;
 	}
 	CPU_ZERO(&cpuset);
 	CPU_SET(app_conf.stats_cpu, &cpuset);
 	if (pthread_setaffinity_np(stats_thread, sizeof(cpu_set_t), &cpuset) != 0) {
-		log_error("ERROR: Unable to set thread affinity: %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
+		log_error("ERROR: Unable to set thread affinity: %s", strerror(errno));
+		goto out_args;
 	}
-	pthread_detach(stats_thread);
+
+	if (pthread_detach(stats_thread) != 0) {
+		log_error("ERROR: Unable to detach thread: %s", strerror(errno));
+		goto out_args;
+	}
 
 	flash__wait(cfg);
-
 	flash__xsk_close(cfg, nf);
 
-	return EXIT_SUCCESS;
+	exit(EXIT_SUCCESS);
+
+out_args:
+	free(args);
+out_cfg:
+	free(cfg);
+	exit(EXIT_FAILURE);
 }

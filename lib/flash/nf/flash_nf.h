@@ -105,6 +105,18 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskvec *xsk
  */
 size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t nsend);
 
+/**
+ * Drop messages from the socket.
+ * 
+ * @param cfg: Pointer to the configuration structure.
+ * @param xsk: Pointer to the socket structure.
+ * @param xskvecs: Pointer to the array of xskvec structures containing data to drop.
+ * @param ndrop: Number of messages to drop.
+ * 
+ * @return Number of messages dropped, or 0 if no messages were dropped.
+ */
+size_t flash__dropmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t ndrop);
+
 int flash__oldpoll(struct socket *xsk, struct pollfd *fds, nfds_t nfds, int timeout);
 size_t flash__oldrecvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg);
 size_t flash__oldsendmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t nsend);

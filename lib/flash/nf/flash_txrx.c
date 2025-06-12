@@ -618,3 +618,33 @@ size_t flash__olddropmsg(struct config *cfg, struct socket *xsk, struct xskvec *
 #endif
 	return ndrop;
 }
+
+size_t flash__dropmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t ndrop)
+{
+	uint32_t i, idx_fq;
+	uint64_t addr;
+
+	if (!ndrop)
+		return 0;
+
+	if (cfg->rx_first) {
+		idx_fq = __reserve_fq(cfg, xsk, ndrop);
+
+		for (i = 0; i < ndrop; i++) {
+			addr = xsk_umem__extract_addr(xskvecs[i].addr);
+			*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) = addr;
+		}
+
+		xsk_ring_prod__submit(&xsk->fill, ndrop);
+	} else {
+		for (i = 0; i < ndrop; i++) {
+			addr = xsk_umem__extract_addr(xskvecs[i].addr);
+			flash_pool__put(xsk->flash_pool, addr);
+		}
+	}
+
+#ifdef STATS
+	xsk->ring_stats.drop_npkts += ndrop;
+#endif
+	return ndrop;
+}
