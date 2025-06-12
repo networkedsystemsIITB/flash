@@ -6,6 +6,8 @@
 #include <log.h>
 #include <unistd.h>
 
+#include <flash_pool.h>
+
 #include "flash_nf.h"
 
 static uint64_t __hz;
@@ -88,12 +90,23 @@ static uint64_t get_timer_hz(struct config *cfg)
 	return __hz;
 }
 
-int flash__poll(struct socket *xsk, struct pollfd *fds, nfds_t nfds, int timeout)
+int flash__oldpoll(struct socket *xsk, struct pollfd *fds, nfds_t nfds, int timeout)
 {
 #ifdef STATS
 	xsk->app_stats.opt_polls++;
 #endif
 	return poll(fds, nfds, timeout);
+}
+
+int flash__poll(struct config *cfg, struct socket *xsk, struct pollfd *fds, nfds_t nfds)
+{
+	if (!(cfg->xsk->mode & FLASH__POLL))
+		return -2;
+
+#ifdef STATS
+	xsk->app_stats.opt_polls++;
+#endif
+	return poll(fds, nfds, cfg->xsk->poll_timeout);
 }
 
 static void __kick_tx(struct socket *xsk)
@@ -155,6 +168,62 @@ static inline void __complete_tx_rx_first(struct config *cfg, struct socket *xsk
 	}
 }
 
+static inline void __complete_tx_completions(struct config *cfg, struct socket *xsk)
+{
+	uint32_t idx_cq = 0, idx_fq = 0;
+	uint32_t completed, num_outstanding, i, ret;
+	uint64_t addr;
+
+	if (!xsk->outstanding_tx)
+		return;
+
+	/**
+	  * In copy mode, Tx is driven by a syscall so we need to use e.g. sendto() to
+	  * really send the packets. In zero-copy mode we do not have to do this, since Tx
+	  * is driven by the NAPI loop. So as an optimization, we do not have to call
+	  * sendto() all the time in zero-copy mode.
+	  */
+	if (cfg->xsk->bind_flags & XDP_COPY) {
+#ifdef STATS
+		xsk->app_stats.copy_tx_sendtos++;
+#endif
+		__kick_tx(xsk);
+	}
+
+	num_outstanding = xsk->outstanding_tx > cfg->xsk->batch_size ? cfg->xsk->batch_size : xsk->outstanding_tx;
+
+	/* Re-add completed TX buffers */
+	completed = xsk_ring_cons__peek(&xsk->comp, num_outstanding, &idx_cq);
+	if (!completed)
+		return;
+
+	if (cfg->rx_first) {
+		ret = xsk_ring_prod__reserve(&xsk->fill, completed, &idx_fq);
+		while (ret != completed) {
+			if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
+#ifdef STATS
+				xsk->app_stats.fill_fail_polls++;
+#endif
+				recvfrom(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL, NULL);
+			}
+			ret = xsk_ring_prod__reserve(&xsk->fill, completed, &idx_fq);
+		}
+
+		for (i = 0; i < completed; i++)
+			*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) = *xsk_ring_cons__comp_addr(&xsk->comp, idx_cq++);
+
+		xsk_ring_prod__submit(&xsk->fill, completed);
+	} else {
+		for (i = 0; i < completed; i++) {
+			addr = *xsk_ring_cons__comp_addr(&xsk->comp, idx_cq++);
+			flash_pool__put(xsk->flash_pool, addr);
+		}
+	}
+
+	xsk_ring_cons__release(&xsk->comp, completed);
+	xsk->outstanding_tx -= completed;
+}
+
 static inline uint32_t __reserve_fq(struct config *cfg, struct socket *xsk, uint32_t num)
 {
 	uint32_t idx_fq = 0;
@@ -173,7 +242,7 @@ static inline uint32_t __reserve_fq(struct config *cfg, struct socket *xsk, uint
 	return idx_fq;
 }
 
-static inline uint32_t __reserve_tx(struct config *cfg, struct socket *xsk, uint32_t num)
+static inline uint32_t __old_reserve_tx(struct config *cfg, struct socket *xsk, uint32_t num)
 {
 	uint32_t idx_tx = 0;
 	uint32_t ret;
@@ -181,6 +250,32 @@ static inline uint32_t __reserve_tx(struct config *cfg, struct socket *xsk, uint
 	ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
 	while (ret != num) {
 		__complete_tx_rx_first(cfg, xsk);
+		if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->tx)) {
+#ifdef STATS
+			xsk->app_stats.tx_wakeup_sendtos++;
+#endif
+			__kick_tx(xsk);
+		}
+		ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
+
+		if (cfg->smart_poll && ret != num && xsk->outstanding_tx >= cfg->xsk->bp_thres) {
+			usleep(cfg->xsk->bp_timeout);
+#ifdef STATS
+			xsk->app_stats.backpressure++;
+#endif
+		}
+	}
+	return idx_tx;
+}
+
+static inline uint32_t __reserve_tx(struct config *cfg, struct socket *xsk, uint32_t num)
+{
+	uint32_t idx_tx = 0;
+	uint32_t ret;
+
+	ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
+	while (ret != num) {
+		__complete_tx_completions(cfg, xsk);
 		if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->tx)) {
 #ifdef STATS
 			xsk->app_stats.tx_wakeup_sendtos++;
@@ -234,7 +329,7 @@ static void __hex_dump(void *pkt, size_t length, uint64_t addr)
 	printf("\n");
 }
 
-size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg)
+size_t flash__oldrecvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg)
 {
 	int ret;
 	uint32_t idx_rx = 0;
@@ -247,7 +342,7 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *
 	__complete_tx_rx_first(cfg, xsk);
 
 	if (cfg->smart_poll && cfg->xsk->idle_timeout && xsk->idle_timestamp && rdtsc() > xsk->idle_timestamp) {
-		ret = flash__poll(xsk, &xsk->idle_fd, 1, cfg->xsk->poll_timeout);
+		ret = flash__oldpoll(xsk, &xsk->idle_fd, 1, cfg->xsk->poll_timeout);
 		if (ret <= 0) {
 			xsk->idle_timestamp = rdtsc() + ((get_timer_hz(cfg) / MS_PER_S) * cfg->xsk->idle_timeout);
 			return 0;
@@ -305,7 +400,110 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *
 	return rcvd;
 }
 
-size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t nsend)
+static inline void __replenish_fill_ring(struct config *cfg, struct socket *xsk, uint32_t num)
+{
+	uint32_t ret, idx_fq = 0;
+	uint64_t addr = 0;
+
+	ret = xsk_ring_prod__reserve(&xsk->fill, num, &idx_fq);
+	while (ret != num) {
+		if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
+#ifdef STATS
+			xsk->app_stats.fill_fail_polls++;
+#endif
+			recvfrom(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL, NULL);
+		}
+		ret = xsk_ring_prod__reserve(&xsk->fill, num, &idx_fq);
+	}
+
+	for (uint32_t i = 0; i < num; i++) {
+		while (!flash_pool__get(xsk->flash_pool, &addr)) {
+			__complete_tx_completions(cfg, xsk);
+			if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->tx)) {
+#ifdef STATS
+				xsk->app_stats.tx_wakeup_sendtos++;
+#endif
+				__kick_tx(xsk);
+			}
+		}
+		*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) = addr;
+	}
+
+	xsk_ring_prod__submit(&xsk->fill, num);
+}
+
+size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t nrecv)
+{
+	int ret;
+	uint64_t *pkt;
+	uint64_t addr, orig;
+	const struct xdp_desc *desc;
+	uint32_t rcvd, nb, i, len, eop_cnt = 0, idx_rx = 0;
+
+	/* Ensures that rx can happen during tx pressure */
+	__complete_tx_completions(cfg, xsk);
+
+	if (cfg->smart_poll && cfg->xsk->idle_timeout && xsk->idle_timestamp && rdtsc() > xsk->idle_timestamp) {
+		ret = flash__oldpoll(xsk, &xsk->idle_fd, 1, cfg->xsk->poll_timeout);
+		if (ret <= 0) {
+			xsk->idle_timestamp = rdtsc() + ((get_timer_hz(cfg) / MS_PER_S) * cfg->xsk->idle_timeout);
+			return 0;
+		}
+	}
+
+	nb = nrecv > cfg->xsk->batch_size ? cfg->xsk->batch_size : nrecv;
+
+	rcvd = xsk_ring_cons__peek(&xsk->rx, nb, &idx_rx);
+	if (!rcvd) {
+		if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
+#ifdef STATS
+			xsk->app_stats.rx_empty_polls++;
+#endif
+			recvfrom(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL, NULL);
+		}
+
+		if (cfg->smart_poll && cfg->xsk->idle_timeout && !xsk->idle_timestamp)
+			xsk->idle_timestamp = rdtsc() + ((get_timer_hz(cfg) / MS_PER_S) * cfg->xsk->idle_timeout);
+
+		return 0;
+	}
+
+	if (cfg->smart_poll && rcvd >= cfg->xsk->idle_thres)
+		xsk->idle_timestamp = 0;
+
+	if (rcvd > cfg->xsk->batch_size)
+		log_warn("errno: %d/\"%s\"", errno, strerror(errno));
+
+	for (i = 0; i < rcvd; i++) {
+		desc = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++);
+		eop_cnt += IS_EOP_DESC(desc->options);
+		addr = desc->addr;
+		len = desc->len;
+		orig = addr;
+
+		addr = xsk_umem__add_offset_to_addr(addr);
+		pkt = xsk_umem__get_data(cfg->umem->buffer, addr);
+
+		xskvecs[i].data = pkt;
+		xskvecs[i].len = len;
+		xskvecs[i].addr = orig;
+		xskvecs[i].options = desc->options;
+
+		__hex_dump(pkt, len, addr);
+	}
+
+	if (!cfg->rx_first)
+		__replenish_fill_ring(cfg, xsk, rcvd);
+
+	xsk_ring_cons__release(&xsk->rx, rcvd);
+#ifdef STATS
+	xsk->ring_stats.rx_npkts += eop_cnt;
+	xsk->ring_stats.rx_frags += rcvd;
+#endif
+	return rcvd;
+}
+
+size_t flash__oldsendmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t nsend)
 {
 	uint32_t i;
 	uint32_t frags_done = 0, eop_cnt = 0;
@@ -348,7 +546,54 @@ size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec **ms
 	return nsend;
 }
 
-size_t flash__dropmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t ndrop)
+size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t nsend)
+{
+	bool eop;
+	uint64_t addr;
+	struct xskvec *xv;
+	struct xdp_desc *tx_desc;
+	uint32_t i, idx_tx, len, frags_done = 0, eop_cnt = 0, nb_frags = 0;
+
+	if (!nsend)
+		return 0;
+
+	idx_tx = __reserve_tx(cfg, xsk, nsend);
+
+	for (i = 0; i < nsend; i++) {
+		xv = &xskvecs[i];
+		eop = IS_EOP_DESC(xv->options);
+		addr = xv->addr;
+		len = xv->len;
+		nb_frags++;
+
+		tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, idx_tx++);
+
+		tx_desc->options = eop ? 0 : XDP_PKT_CONTD;
+		tx_desc->options |= (xv->options & 0xFFFF0000);
+		tx_desc->addr = addr;
+		tx_desc->len = len;
+
+		__hex_dump(xv->data, len, addr);
+
+		if (eop) {
+			frags_done += nb_frags;
+			nb_frags = 0;
+			eop_cnt++;
+		}
+	}
+	xsk_ring_prod__submit(&xsk->tx, frags_done);
+	xsk->outstanding_tx += frags_done;
+
+	if (!cfg->rx_first)
+		__complete_tx_completions(cfg, xsk);
+#ifdef STATS
+	xsk->ring_stats.tx_npkts += eop_cnt;
+	xsk->ring_stats.tx_frags += nsend;
+#endif
+	return nsend;
+}
+
+size_t flash__olddropmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t ndrop)
 {
 	uint32_t i;
 	uint32_t eop_cnt = 0;

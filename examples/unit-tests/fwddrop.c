@@ -94,12 +94,12 @@ static void *socket_routine(void *arg)
 	fds[0].events = POLLIN;
 	for (;;) {
 		if (cfg->xsk->mode & FLASH__POLL) {
-			ret = flash__poll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
+			ret = flash__oldpoll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
 			if (ret <= 0 || ret > 1)
 				continue;
 		}
 
-		nrecv = flash__recvmsg(cfg, nf->thread[socket_id]->socket, &msg);
+		nrecv = flash__oldrecvmsg(cfg, nf->thread[socket_id]->socket, &msg);
 
 		struct xskvec *drop[nrecv];
 		struct xskvec *send[nrecv];
@@ -128,8 +128,8 @@ static void *socket_routine(void *arg)
 		}
 
 		if (nrecv) {
-			size_t ret_send = flash__sendmsg(cfg, nf->thread[socket_id]->socket, send, tot_pkt_send);
-			size_t ret_drop = flash__dropmsg(cfg, nf->thread[socket_id]->socket, drop, tot_pkt_drop);
+			size_t ret_send = flash__oldsendmsg(cfg, nf->thread[socket_id]->socket, send, tot_pkt_send);
+			size_t ret_drop = flash__olddropmsg(cfg, nf->thread[socket_id]->socket, drop, tot_pkt_drop);
 			if (ret_send != tot_pkt_send || ret_drop != tot_pkt_drop) {
 				log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
 				exit(EXIT_FAILURE);
@@ -228,7 +228,7 @@ int main(int argc, char **argv)
 	}
 	pthread_detach(stats_thread);
 
-	wait_for_cmd(cfg);
+	flash__wait(cfg);
 
 	flash__xsk_close(cfg, nf);
 

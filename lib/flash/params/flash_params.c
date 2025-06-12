@@ -11,38 +11,41 @@
 
 #define BUFSIZE 30
 
-const char *__doc__ = "FLASH AF_XDP NF Library\n";
-
 const struct option_wrapper long_options[] = {
 
-	{ { "umem-id", required_argument, NULL, 'u' }, "Umem id to connect to monitor" },
+	{ { "help", no_argument, NULL, 'h' }, "Show help", false },
 
-	{ { "nf-id", required_argument, NULL, 'f' }, "NF id to connect to monitor" },
+	{ { "umem-id", required_argument, NULL, 'u' }, "umem id to connect to monitor", "<umem-id>", true },
 
-	{ { "app-stats", no_argument, NULL, 'a' }, "Display application (syscall) statistics. (default: disabled)" },
+	{ { "nf-id", required_argument, NULL, 'f' }, "nf id to connect to monitor", "<nf-id>", true },
 
-	{ { "extra-stats", no_argument, NULL, 'x' }, "Display extra (xdp) statistics. (default: disabled)" },
+	{ { "tx-first", no_argument, NULL, 't' }, "TX without receiving any packets [default: disabled]" },
 
-	{ { "interval", required_argument, NULL, 'n' }, "Specify statistics update interval (default: 1 sec)." },
+	{ { "app-stats", no_argument, NULL, 'a' }, "Display application (syscall) statistics [default: disabled]" },
 
-	{ { "quiet", no_argument, NULL, 'Q' }, "Quiet mode (no output) (default: disabled)" },
+	{ { "extra-stats", no_argument, NULL, 'x' }, "Display extra (xdp) statistics [default: disabled]" },
 
-	{ { "smart-poll", no_argument, NULL, 'p' }, "Smart polling mode (default: disabled)" },
+	{ { "interval", required_argument, NULL, 'n' }, "Specify statistics update interval [default: 1 sec]", "<interval>" },
 
-	{ { "idle-timeout", required_argument, NULL, 'i' }, "Idle timeout for smart polling mode in ms. (default: 100)" },
+	{ { "quiet", no_argument, NULL, 'Q' }, "Quiet mode (no output) [default: disabled]" },
 
-	{ { "idleness", required_argument, NULL, 'I' }, "Idleness for smart polling, busy-polling (0) to poll (1) (default: 0)" },
+	{ { "smart-poll", no_argument, NULL, 'p' }, "Smart polling mode [default: disabled]" },
 
-	{ { "bp-timeout", required_argument, NULL, 'b' }, "Sleep duration on backpressure in us (default: 1000)" },
+	{ { "idle-timeout", required_argument, NULL, 'i' }, "Idle timeout for smart polling mode in ms [default: 100]", "<val>" },
+
+	{ { "idleness", required_argument, NULL, 'I' },
+	  "Idleness for smart polling, busy-polling (0) to poll (1) [default: 0]",
+	  "<idleness>" },
+
+	{ { "timeout", required_argument, NULL, 'b' }, "Sleep duration on backpressure in us [default: 1000]", "<timeout>" },
 
 	{ { "bp-sense", required_argument, NULL, 'B' },
-	  "Sensitivity for detecting backpressure, 0: 0 pkts - 1: 2048 pkts (default: 0.5)" },
+	  "Sensitivity for detecting backpressure, 0: 0 pkts - 1: 2048 pkts [default: 0.5]",
+	  "<val>" },
 
-	{ { "frags", no_argument, NULL, 'F' }, "Enable frags (multi-buffer) support. -- not implemented yet" },
+	{ { "frags", no_argument, NULL, 'F' }, "Enable frags (multi-buffer) support -- not implemented yet", false },
 
-	{ { "clock", required_argument, NULL, 'w' }, "Clock NAME (default MONOTONIC). -- not implemented yet" },
-
-	{ { "help", no_argument, NULL, 'h' }, "Show help", false },
+	{ { "clock", required_argument, NULL, 'w' }, "Clock NAME (default MONOTONIC) -- not implemented yet", "<clock>", false },
 
 	{ { 0, 0, NULL, 0 }, NULL, false }
 };
@@ -102,25 +105,38 @@ static void _print_options(const struct option_wrapper *long_options, bool requi
 	}
 }
 
-static void usage(const char *prog_name, const char *doc, const struct option_wrapper *long_options, bool full)
+static void usage(const char *prog_name, const struct option_wrapper *long_options, bool full, struct config *cfg)
 {
-	printf("Usage: %s [options]\n", prog_name);
+	printf("\nUsage: %s [options] -- [app-options]\n", prog_name);
 
 	if (!full) {
 		printf("Use --help (or -h) to see full option list.\n");
 		return;
 	}
 
-	printf("\nDOCUMENTATION:\n %s\n", doc);
+	printf("\n");
+	if (cfg->app_name)
+		printf("%s using FLASH AF_XDP Library\n\n", cfg->app_name);
+	else
+		printf("FLASH AF_XDP Library\n\n");
 	printf("Required options:\n");
 	_print_options(long_options, true);
 	printf("\n");
 	printf("Other options:\n");
 	_print_options(long_options, false);
 	printf("\n");
+	if (cfg->app_options) {
+		printf("Application options:\n");
+		for (int i = 0; cfg->app_options[i]; i++) {
+			printf(" %s\n", cfg->app_options[i]);
+		}
+		printf("\n");
+	}
+
+	printf("For more help on how to use FLASH, head to https://github.com/networkedsystemsIITB/flash\n\n");
 }
 
-static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper *options_wrapper, struct config *cfg, const char *doc)
+static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper *options_wrapper, struct config *cfg)
 {
 	int opt, ret;
 	int longindex = 0;
@@ -134,18 +150,21 @@ static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper
 	optind = 1;
 
 	if (option_wrappers_to_options(options_wrapper, &long_options)) {
-		log_error("ERROR: (Parsing error) Unable to malloc()\n");
-		exit(EXIT_FAILURE);
+		log_error("ERROR: (Parsing error) Unable to malloc()");
+		return -1;
 	}
 
 	/* Parse commands line args */
-	while ((opt = getopt_long(argc, argv, "u:f:axn:Qpi:I:b:B:Fw:h", long_options, &longindex)) != -1) {
+	while ((opt = getopt_long(argc, argv, "u:f:taxn:Qpi:I:b:B:Fw:h", long_options, &longindex)) != -1) {
 		switch (opt) {
 		case 'u':
 			cfg->umem_id = atoi(optarg);
 			break;
 		case 'f':
 			cfg->nf_id = atoi(optarg);
+			break;
+		case 't':
+			cfg->rx_first = false;
 			break;
 		case 'a':
 			cfg->app_stats = true;
@@ -179,18 +198,25 @@ static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper
 			break;
 		case 'w':
 			if (get_clockid(&cfg->clock, optarg))
-				log_error("ERROR: Invalid clock %s. Default to CLOCK_MONOTONIC.\n", optarg);
+				log_warn("ERROR: Invalid clock %s. Default to CLOCK_MONOTONIC.", optarg);
 			break;
 		case 'h':
 			full_help = true;
 			/* fall-through */
 		default:
-			usage(argv[0], doc, options_wrapper, full_help);
+			usage(argv[0], options_wrapper, full_help, cfg);
 			free(long_options);
-			exit(EXIT_FAILURE);
+			return -1;
 		}
 	}
 	free(long_options);
+
+	/* Check for required options */
+	if (cfg->umem_id < 0 || cfg->nf_id < 0) {
+		log_fatal("ERROR: (Parsing error) Required options missing: --umem-id and --nf-id");
+		usage(argv[0], options_wrapper, (argc == 1), cfg);
+		return -1;
+	}
 
 	if (optind >= 0)
 		argv[optind - 1] = argv[0];
@@ -206,13 +232,18 @@ static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper
 
 int flash__parse_cmdline_args(int argc, char **argv, struct config *cfg)
 {
+	int ret;
+
 	cfg->umem = calloc(1, sizeof(struct umem_config));
 	cfg->xsk = calloc(1, sizeof(struct xsk_config));
 	if (!cfg->xsk || !cfg->umem) {
-		log_error("ERROR: Memory allocation failed\n");
-		exit(EXIT_FAILURE);
+		log_error("ERROR: Memory allocation failed");
+		return -1;
 	}
 
+	cfg->umem_id = -1;
+	cfg->nf_id = -1;
+	cfg->rx_first = true;
 	cfg->xsk->batch_size = BATCH_SIZE;
 	cfg->umem->frame_size = FRAME_SIZE;
 	cfg->stats_interval = 1;
@@ -226,12 +257,19 @@ int flash__parse_cmdline_args(int argc, char **argv, struct config *cfg)
 	cfg->xsk->bp_timeout = 1000;
 	cfg->xsk->bp_thres = (__u32)(XSK_RING_PROD__DEFAULT_NUM_DESCS * 0.5);
 
-	int ret = parse_cmdline_args(argc, argv, long_options, cfg, __doc__);
+	ret = parse_cmdline_args(argc, argv, long_options, cfg);
+	if (ret < 0)
+		goto cleanup;
 
 	if ((cfg->umem->frame_size & (cfg->umem->frame_size - 1))) {
-		log_error("ERROR: (Parsing error) --frame-size=%d is not a power of two\n", cfg->umem->frame_size);
-		exit(EXIT_FAILURE);
+		log_error("ERROR: (Parsing error) --frame-size=%d is not a power of two", cfg->umem->frame_size);
+		goto cleanup;
 	}
 
 	return ret;
+
+cleanup:
+	free(cfg->umem);
+	free(cfg->xsk);
+	return -1;
 }

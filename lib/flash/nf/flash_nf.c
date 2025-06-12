@@ -9,33 +9,36 @@
 
 #include <flash_uds.h>
 #include <flash_common.h>
+#include <flash_pool.h>
 #include <log.h>
 
 #include "flash_nf.h"
 
 bool done;
 
-int set_nonblocking(int sockfd)
+static int set_nonblocking(int sockfd)
 {
 	int flags = fcntl(sockfd, F_GETFL, 0);
 	if (flags == -1) {
-		perror("fcntl F_GETFL");
+		log_error("fcntl F_GETFL");
 		return -1;
 	}
 
 	flags |= O_NONBLOCK; // Add the O_NONBLOCK flag
 	if (fcntl(sockfd, F_SETFL, flags) == -1) {
-		perror("fcntl F_SETFL");
+		log_error("fcntl F_SETFL");
 		return -1;
 	}
 
 	return 0;
 }
 
-void wait_for_cmd(struct config *cfg)
+void flash__wait(struct config *cfg)
 {
 	int cmd;
-	set_nonblocking(cfg->uds_sockfd);
+
+	if (set_nonblocking(cfg->uds_sockfd) < 0)
+		log_warn("Failed to set UDS socket to non-blocking mode");
 
 	while (!done) {
 		int bytes_received = read(cfg->uds_sockfd, &cmd, sizeof(int));
@@ -96,7 +99,7 @@ static int *__configure(struct config *cfg, struct nf *nf)
 		send_cmd(uds_sockfd, FLASH__CREATE_SOCKET);
 		recv_fd(uds_sockfd, received_fd + i);
 		recv_data(uds_sockfd, &cfg->ifqueue[i], sizeof(int));
-		log_info("RECEIVED SOCKET-%d FD-%d, binded to Queue-%d", i, received_fd[i], cfg->ifqueue[i]);
+		log_info("RECEIVED SOCKET-%d FD-%d, bound to Queue-%d", i, received_fd[i], cfg->ifqueue[i]);
 	}
 
 	send_cmd(uds_sockfd, FLASH__GET_ROUTE_INFO);
@@ -261,19 +264,59 @@ void flash__populate_fill_ring(struct thread **thread, int frame_size, int total
 	}
 }
 
+static int __populate_fill_ring(struct thread *thread, bool full, int umem_scale)
+{
+	int ret, i;
+	int nr_frames;
+	uint32_t idx = 0;
+	uint64_t fill_addr;
+
+	if (full)
+		nr_frames = (size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS * (size_t)2 * (size_t)umem_scale;
+	else
+		nr_frames = (size_t)XSK_RING_PROD__DEFAULT_NUM_DESCS * (size_t)umem_scale;
+
+	ret = xsk_ring_prod__reserve(&thread->socket->fill, nr_frames, &idx);
+	if (ret != nr_frames) {
+		log_error("errno: %d/\"%s\"", errno, strerror(errno));
+		return -1;
+	}
+
+	for (i = 0; i < nr_frames; i++) {
+		if (!flash_pool__get(thread->socket->flash_pool, &fill_addr)) {
+			log_error("ERROR: Unable to get frame from flash pool");
+			return -1;
+		}
+
+		*xsk_ring_prod__fill_addr(&thread->socket->fill, idx++) = fill_addr;
+	}
+
+	xsk_ring_prod__submit(&thread->socket->fill, nr_frames);
+
+	return 0;
+}
+
 void flash__xsk_close(struct config *cfg, struct nf *nf)
 {
-	log_info("Shutting down...");
-
-	close_uds_conn(cfg);
-
-	size_t desc_sz = sizeof(struct xdp_desc);
 	struct xdp_mmap_offsets off;
+	size_t desc_sz = sizeof(struct xdp_desc);
 	int err;
 
-	if (!nf)
+	log_debug("Shutting down...");
+
+	if (!cfg || !nf)
 		return;
+
+	// Corner case handling to be done properly
+	close_uds_conn(cfg);
+
 	for (int i = 0; i < cfg->total_sockets; i++) {
+		if (!nf->thread[i] && !nf->thread[i]->socket)
+			return;
+
+		if (nf->thread[i]->socket->flash_pool)
+			flash_pool__destroy(nf->thread[i]->socket->flash_pool);
+
 		err = xsk_get_mmap_offsets(nf->thread[i]->socket->fd, &off);
 		if (!err) {
 			munmap(nf->thread[i]->socket->rx.ring - off.rx.desc, off.rx.desc + cfg->xsk_config->rx_size * desc_sz);
@@ -283,20 +326,28 @@ void flash__xsk_close(struct config *cfg, struct nf *nf)
 			munmap(nf->thread[i]->socket->comp.ring - off.cr.desc,
 			       off.cr.desc + cfg->umem_config->comp_size * sizeof(uint64_t));
 		}
+
 		free(nf->thread[i]->socket);
 		free(nf->thread[i]);
 	}
+
 	free(nf->thread);
+	free(nf->next);
 	free(nf);
 
-	if (cfg->umem->buffer) {
-		munmap(cfg->umem->buffer, NUM_FRAMES * cfg->umem->frame_size * cfg->total_sockets);
+	if (cfg->umem) {
+		if (cfg->umem->buffer)
+			munmap(cfg->umem->buffer, NUM_FRAMES * cfg->umem->frame_size * cfg->total_sockets);
+
+		free(cfg->umem);
 	}
 
-	if (cfg && cfg->umem && cfg->xsk) {
-		free(cfg->umem);
+	if (cfg->xsk)
 		free(cfg->xsk);
-		free(cfg);
+
+	if (cfg->umem_config && cfg->xsk_config) {
+		free(cfg->umem_config);
+		free(cfg->xsk_config);
 	}
 }
 
@@ -307,45 +358,92 @@ static bool xsk_page_aligned(void *buffer)
 	return !(addr & (getpagesize() - 1));
 }
 
-void flash__configure_nf(struct nf **_nf, struct config *cfg)
+int flash__configure_nf(struct nf **_nf, struct config *cfg)
 {
-	struct nf *nf = (struct nf *)calloc(1, sizeof(struct nf));
-	int *sockfd = __configure(cfg, nf);
+	int i, size;
+	int *sockfd;
+	struct nf *nf;
 
-	if (cfg->total_sockets <= 0)
-		log_error("Invalid number of sockets");
-	nf->thread = (struct thread **)calloc(cfg->total_sockets, sizeof(struct thread *));
+	nf = (struct nf *)calloc(1, sizeof(struct nf));
+	if (!nf) {
+		log_error("ERROR: Memory allocation failed for nf");
+		return -1;
+	}
 
-	for (int i = 0; i < cfg->total_sockets; i++)
-		nf->thread[i] = (struct thread *)calloc(1, sizeof(struct thread));
+	// monitor communication happens here - overhaul required
+	// corner case handling etc.
+	// routing should be handled better
+	sockfd = __configure(cfg, nf);
 
-	int size = cfg->umem->size;
+	size = cfg->umem->size;
 	cfg->umem->buffer = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, cfg->umem_fd, 0);
 	if (cfg->umem->buffer == MAP_FAILED) {
-		log_error("ERROR: (UMEM setup) mmap failed \"%s\"\n", strerror(errno));
-		exit(EXIT_FAILURE);
+		log_error("ERROR: (UMEM setup) mmap failed \"%s\"", strerror(errno));
+		goto out_error;
 	}
 
 	if (!size && !xsk_page_aligned(cfg->umem->buffer)) {
-		log_error("ERROR: UMEM size is not page aligned \"%s\"\n", strerror(errno));
-		exit(EXIT_FAILURE);
+		log_error("ERROR: UMEM size is not page aligned \"%s\"", strerror(errno));
+		goto out_error;
+	}
+
+	if (cfg->total_sockets <= 0) {
+		log_error("Invalid number of sockets");
+		goto out_error;
+	}
+
+	nf->thread = (struct thread **)calloc(cfg->total_sockets, sizeof(struct thread *));
+	if (!nf->thread) {
+		log_error("ERROR: Memory allocation failed for threads");
+		goto out_error;
 	}
 
 	setup_xsk_config(&cfg->xsk_config, &cfg->umem_config, cfg);
 
-	for (int i = 0; i < cfg->total_sockets; i++) {
-		log_info("SOCKET FD (Thread %d) :::: %d\n", i, sockfd[i]);
-	}
+	for (i = 0; i < cfg->total_sockets; i++) {
+		log_debug("Thread %d: socket fd ::: %d", i, sockfd[i]);
+		nf->thread[i] = (struct thread *)calloc(1, sizeof(struct thread));
+		if (!nf->thread[i]) {
+			log_error("ERROR: Memory allocation failed for thread %d", i);
+			goto out_error;
+		}
 
-	for (int i = 0; i < cfg->total_sockets; i++) {
 		nf->thread[i]->socket = (struct socket *)calloc(1, sizeof(struct socket));
+		if (!nf->thread[i]->socket) {
+			log_error("ERROR: Memory allocation failed for socket %d", i);
+			goto out_error;
+		}
+
+		nf->thread[i]->socket->flash_pool = flash_pool__create(cfg->umem->frame_size, cfg->umem_offset + i, cfg->umem_scale);
+		if (!nf->thread[i]->socket->flash_pool) {
+			log_error("ERROR: (Flash Pool setup) flash_pool__create failed \"%s\"", strerror(errno));
+			goto out_error;
+		}
+
 		nf->thread[i]->socket->fd = sockfd[i];
 		nf->thread[i]->socket->ifqueue = cfg->ifqueue[i];
-		if (xsk_mmap_umem_rings(nf->thread[i]->socket, *cfg->umem_config, *cfg->xsk_config) != 0) {
-			log_error("ERROR: (Ring setup) mmap failed \"%s\"\n", strerror(errno));
-			exit(EXIT_FAILURE);
+		nf->thread[i]->socket->idle_fd.fd = sockfd[i];
+		nf->thread[i]->socket->idle_fd.events = POLLIN;
+
+		if (xsk_mmap_umem_rings(nf->thread[i]->socket, *cfg->umem_config, *cfg->xsk_config) < 0) {
+			log_error("ERROR: (Ring setup) mmap failed \"%s\"", strerror(errno));
+			goto out_error;
+		}
+
+		if (__populate_fill_ring(nf->thread[i], cfg->rx_first, cfg->umem_scale) < 0) {
+			log_error("ERROR: (Fill ring setup) __populate_fill_ring failed \"%s\"", strerror(errno));
+			goto out_error;
 		}
 	}
+
+	// Is this handling correct??
+	free(cfg->ifqueue);
 	free(sockfd);
 	*_nf = nf;
+	return 0;
+
+out_error:
+	free(sockfd);
+	flash__xsk_close(cfg, nf);
+	return -1;
 }

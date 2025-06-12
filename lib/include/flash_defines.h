@@ -50,6 +50,8 @@ struct umem_config {
 };
 
 struct config {
+	const char *app_name;
+	const char * const *app_options;
 	int umem_fd;
 	int uds_sockfd;
 	int umem_scale;
@@ -67,6 +69,7 @@ struct config {
 	int nf_id;
 	int umem_offset;
 	bool frags_enabled;
+	bool rx_first;
 #ifdef STATS
 	clockid_t clock;
 	int verbose;
@@ -169,6 +172,7 @@ struct socket {
 	struct xsk_ring_cons comp;
 	struct pollfd idle_fd;
 	bool idle;
+	void *flash_pool;
 	uint32_t outstanding_tx;
 	uint64_t idle_timestamp;
 

@@ -23,19 +23,121 @@ struct xskmsghdr {
 	uint32_t msg_len;	/* Number of vectors */
 };
 
+struct stats_conf {
+	struct nf *nf;
+	struct config *cfg;
+};
+
 extern bool done;
 
-void flash__populate_fill_ring(struct thread **thread, int frame_size, int total_sockets, int umem_offset, int umem_scale);
-void flash__configure_nf(struct nf **_nf, struct config *cfg);
+/* Control Path API */
+
+/** 
+ * Configure the NF with the provided configuration.
+ * Communicates with the monitor to set up the NF.
+ * 
+ * @param nf: Pointer to the nf structure pointer to be configured.
+ * @param cfg: Pointer to the configuration structure.
+ *
+ * This function sets up the NF with the provided configuration, including
+ * memory mapping, socket setup, and thread initialization.
+ * Therefore nf is a pointer to a pointer, where as cfg is a pointer to the configuration structure.
+ *
+ * @return 0 on success, or -1 on failure.
+ */
+int flash__configure_nf(struct nf **_nf, struct config *cfg);
+
+/**
+ * Wait for a signal from the server to indicate that server wants to close the nf.
+ * This function sets the UDS socket to non-blocking mode and checks
+ * for incoming signals until it receives one or the connection is closed.
+ *
+ * @param cfg Pointer to the configuration structure.
+ */
+void flash__wait(struct config *cfg);
+
+/**
+ * Close the NF and clean up resources.
+ * This function unmaps memory regions, frees allocated structures,
+ * and closes file descriptors associated with the NF.
+ *
+ * @param cfg: Pointer to the configuration structure.
+ * @param nf: Pointer to the nf structure to be closed.
+ */
 void flash__xsk_close(struct config *cfg, struct nf *nf);
-int flash__poll(struct socket *xsk, struct pollfd *fds, nfds_t nfds, int timeout);
-size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg);
-size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t nsend);
-size_t flash__dropmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t ndrop);
+
+/* Data Path API */
+
+/**
+ * Poll the NF for incoming packets.
+ * 
+ * @param cfg: Pointer to the configuration structure.
+ * @param xsk: Pointer to the socket structure.
+ * @param fds: Pointer to the array of pollfd structures.
+ * @param nfds: Number of file descriptors to poll.
+ * 
+ * @return Number of file descriptors that are ready for reading, or -2 if polling is not enabled.
+ * 0 if timeout occurs or no file descriptors are ready. -1 on error.
+ */
+int flash__poll(struct config *cfg, struct socket *xsk, struct pollfd *fds, nfds_t nfds);
+
+/**
+ * Receive messages from the socket.
+ * 
+ * @param cfg: Pointer to the configuration structure.
+ * @param xsk: Pointer to the socket structure.
+ * @param xskvecs: Pointer to the array of xskvec structures to receive data into.
+ * @param nrecv: Number of messages to receive.
+ * 
+ * @return Number of messages received, or 0 if no messages are available.
+ */
+size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t nrecv);
+
+/**
+ * Send messages through the socket.
+ * 
+ * @param cfg: Pointer to the configuration structure.
+ * @param xsk: Pointer to the socket structure.
+ * @param xskvecs: Pointer to the array of xskvec structures containing data to send.
+ * @param nsend: Number of messages to send.
+ * 
+ * @return Number of messages sent, or 0 if no messages were sent.
+ */
+size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t nsend);
+
+int flash__oldpoll(struct socket *xsk, struct pollfd *fds, nfds_t nfds, int timeout);
+size_t flash__oldrecvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg);
+size_t flash__oldsendmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t nsend);
+size_t flash__olddropmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t ndrop);
+
+/**
+ * Thread function to periodically dump statistics of the NF.
+ * 
+ * @param conf: Pointer to the stats_conf structure containing NF and config.
+ * 
+ * This routine should be invoked via threads, and it will periodically clear the terminal
+ * and dump statistics for each socket in the NF.
+ */
+void *flash__stats_thread(void *conf);
+
+/* Advanced API */
+
+void flash__populate_fill_ring(struct thread **thread, int frame_size, int total_sockets, int umem_offset, int umem_scale);
+
+/**
+ * Get the current time in nanoseconds.
+ * @param cfg: Pointer to the configuration structure.
+ *
+ * Returns the current time in nanoseconds since the epoch.
+ */
 unsigned long flash__get_nsecs(struct config *cfg);
+
+/**
+ * Dump statistics for the given socket.
+ * @param cfg: Pointer to the configuration structure.
+ * @param xsk: Pointer to the socket structure.
+ */
 void flash__dump_stats(struct config *cfg, struct socket *xsk);
-void wait_for_cmd(struct config *cfg);
-int set_nonblocking(int sockfd);
 
 /* Experimental */
 size_t flash__sendmsg_us(struct config *cfg, struct socket *xsk, struct socket *xsk_first, struct xskvec **msgiov, uint32_t nsend);

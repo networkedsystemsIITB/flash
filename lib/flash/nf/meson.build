@@ -4,7 +4,7 @@
 sources = files('flash_nf.c', 'flash_stats.c', 'flash_txrx.c', 'flash_txrx_dev.c')
 headers = files('flash_nf.h')
 
-deps += [uds, common]
+deps += [uds, common, pool]
 
 libnf = library(libname, sources, install: true, dependencies: deps)
 nf = declare_dependency(link_with: libnf, include_directories: include_directories('.'))

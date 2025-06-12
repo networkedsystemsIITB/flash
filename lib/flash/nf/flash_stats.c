@@ -4,6 +4,8 @@
 
 #include <log.h>
 #include <limits.h>
+#include <locale.h>
+#include <unistd.h>
 
 #include "flash_nf.h"
 
@@ -219,4 +221,29 @@ void flash__dump_stats(struct config *cfg, struct socket *xsk)
 	if (cfg->irq_no) {
 		__dump_driver_stats(cfg, xsk, diff);
 	}
+}
+
+void *flash__stats_thread(void *conf)
+{
+	struct stats_conf *arg = (struct stats_conf *)conf;
+	struct nf *nf = arg->nf;
+	struct config *cfg = arg->cfg;
+
+	if (cfg->verbose) {
+		unsigned int interval = cfg->stats_interval;
+		setlocale(LC_ALL, "");
+
+		for (int i = 0; i < cfg->total_sockets; i++)
+			nf->thread[i]->socket->timestamp = flash__get_nsecs(cfg);
+
+		while (!done) {
+			sleep(interval);
+			if (system("clear") != 0)
+				log_error("Terminal clear error");
+			for (int i = 0; i < cfg->total_sockets; i++) {
+				flash__dump_stats(cfg, nf->thread[i]->socket);
+			}
+		}
+	}
+	return NULL;
 }

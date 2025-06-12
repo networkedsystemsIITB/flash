@@ -339,16 +339,16 @@ static void *socket_routine(void *arg)
 	unsigned int count = 0;
 	for (;;) {
 		if (cfg->xsk->mode & FLASH__POLL) {
-			ret = flash__poll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
+			ret = flash__oldpoll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
 			if (ret != 1)
 				continue;
 		}
 
-		// ret = flash__poll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
+		// ret = flash__oldpoll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
 		// if (ret <= 0 || ret > 1)
 		// 	continue;
 
-		nrecv = flash__recvmsg(cfg, nf->thread[socket_id]->socket, &msg);
+		nrecv = flash__oldrecvmsg(cfg, nf->thread[socket_id]->socket, &msg);
 
 		// if (nrecv == 0) {
 		// 	uint64_t tstamp = rdtsc();
@@ -361,9 +361,9 @@ static void *socket_routine(void *arg)
 		// 	if (idle_timestamp && (tstamp > idle_timestamp)) {
 		// 		idle_timestamp = 0;
 
-		// 		ret = flash__poll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
+		// 		ret = flash__oldpoll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
 		// 		if (ret)
-		// 			nrecv = flash__recvmsg(cfg, nf->thread[socket_id]->socket, &msg);
+		// 			nrecv = flash__oldrecvmsg(cfg, nf->thread[socket_id]->socket, &msg);
 		// 		else
 		// 			continue;
 		// 	}
@@ -391,7 +391,7 @@ static void *socket_routine(void *arg)
 		}
 
 		if (nrecv) {
-			ret = flash__sendmsg(cfg, nf->thread[socket_id]->socket, send, tot_pkt_send);
+			ret = flash__oldsendmsg(cfg, nf->thread[socket_id]->socket, send, tot_pkt_send);
 			if (ret != nrecv) {
 				log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
 				exit(EXIT_FAILURE);
@@ -504,7 +504,7 @@ int main(int argc, char **argv)
 	}
 	pthread_detach(stats_thread);
 
-	wait_for_cmd(cfg);
+	flash__wait(cfg);
 
 	flash__xsk_close(cfg, nf);
 

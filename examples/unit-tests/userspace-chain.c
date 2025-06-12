@@ -22,8 +22,8 @@ struct nf *nf;
 #define FLASH_MAX_SOCKETS 8
 
 ///////////// owner ring buffer /////////////
-#define struct_size(p, member, count)                                    \
-	({                                                                   \
+#define struct_size(p, member, count)                                            \
+	({                                                                       \
 		size_t __size = sizeof(*(p)) + (count) * sizeof((p)->member[0]); \
 		(__size < sizeof(*(p))) ? SIZE_MAX : __size;                     \
 	})
@@ -76,8 +76,8 @@ struct guest_queue *guest_queues[FLASH_MAX_SOCKETS][FLASH_MAX_SOCKETS];
 
 ///////////// guest ring buffer operations /////////////
 
-#define guest_cpu_relax()                       \
-	do {                                        \
+#define guest_cpu_relax()                               \
+	do {                                            \
 		asm volatile("pause\n" : : : "memory"); \
 	} while (0)
 
@@ -477,10 +477,10 @@ static void *socket_routine(void *arg)
 			} else {
 				ret = guest_bulk_enqueue_rxtx(guest_queues[socket_id][socket_id + 1], descs, tot_pkt_send);
 
-				#ifdef STATS
-					nf->thread[socket_id]->socket->ring_stats.tx_npkts += ret;
-					nf->thread[socket_id]->socket->ring_stats.tx_frags += ret;
-				#endif
+#ifdef STATS
+				nf->thread[socket_id]->socket->ring_stats.tx_npkts += ret;
+				nf->thread[socket_id]->socket->ring_stats.tx_frags += ret;
+#endif
 			}
 			if (ret != nrecv) {
 				log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
@@ -589,7 +589,7 @@ int main(int argc, char **argv)
 	}
 	pthread_detach(stats_thread);
 
-	wait_for_cmd(cfg);
+	flash__wait(cfg);
 
 	flash__xsk_close(cfg, nf);
 
