@@ -342,7 +342,7 @@ size_t flash__oldrecvmsg(struct config *cfg, struct socket *xsk, struct xskmsghd
 	__complete_tx_rx_first(cfg, xsk);
 
 	if (cfg->smart_poll && cfg->xsk->idle_timeout && xsk->idle_timestamp && rdtsc() > xsk->idle_timestamp) {
-		ret = flash__oldpoll(xsk, &xsk->idle_fd, 1, cfg->xsk->poll_timeout);
+		ret = flash__oldpoll(xsk, &xsk->idle_fd, 1, -1);
 		if (ret <= 0) {
 			xsk->idle_timestamp = rdtsc() + ((get_timer_hz(cfg) / MS_PER_S) * cfg->xsk->idle_timeout);
 			return 0;
@@ -364,7 +364,7 @@ size_t flash__oldrecvmsg(struct config *cfg, struct socket *xsk, struct xskmsghd
 		return 0;
 	}
 
-	if (cfg->smart_poll && rcvd >= cfg->xsk->idle_thres)
+	if (cfg->smart_poll && (rcvd >= cfg->xsk->idle_thres || xsk->outstanding_tx))
 		xsk->idle_timestamp = 0;
 
 	if (rcvd > cfg->xsk->batch_size) {
@@ -444,7 +444,7 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskvec *xsk
 	__complete_tx_completions(cfg, xsk);
 
 	if (cfg->smart_poll && cfg->xsk->idle_timeout && xsk->idle_timestamp && rdtsc() > xsk->idle_timestamp) {
-		ret = flash__oldpoll(xsk, &xsk->idle_fd, 1, cfg->xsk->poll_timeout);
+		ret = flash__oldpoll(xsk, &xsk->idle_fd, 1, -1);
 		if (ret <= 0) {
 			xsk->idle_timestamp = rdtsc() + ((get_timer_hz(cfg) / MS_PER_S) * cfg->xsk->idle_timeout);
 			return 0;
@@ -468,7 +468,7 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskvec *xsk
 		return 0;
 	}
 
-	if (cfg->smart_poll && rcvd >= cfg->xsk->idle_thres)
+	if (cfg->smart_poll && (rcvd >= cfg->xsk->idle_thres || xsk->outstanding_tx))
 		xsk->idle_timestamp = 0;
 
 	if (rcvd > cfg->xsk->batch_size)
