@@ -62,83 +62,178 @@ void flash__wait(struct config *cfg)
 
 static void close_uds_conn(struct config *cfg)
 {
-	send_cmd(cfg->uds_sockfd, FLASH__CLOSE_CONN);
+	flash__send_cmd(cfg->uds_sockfd, FLASH__CLOSE_CONN);
 	close(cfg->uds_sockfd);
 	return;
 }
 
-static int *__configure(struct config *cfg, struct nf *nf)
+static int __configure(struct config *cfg, struct nf *nf, int **received_fd)
 {
-	int uds_sockfd = start_uds_client();
-	cfg->uds_sockfd = uds_sockfd;
+	int uds_sockfd, i;
 	struct nf_data data;
+
+	uds_sockfd = flash__start_uds_client();
+	if (uds_sockfd < 0) {
+		log_error("Failed to start UDS client");
+		return -1;
+	}
+
+	cfg->uds_sockfd = uds_sockfd;
+
 	data.nf_id = cfg->nf_id;
 	data.umem_id = cfg->umem_id;
 
-	send_cmd(uds_sockfd, FLASH__GET_UMEM);
-	send_data(uds_sockfd, &data, sizeof(struct nf_data));
-	recv_fd(uds_sockfd, &cfg->umem_fd);
-	log_info("RECEIVED EXISTING UMEM FD");
+	if (flash__send_cmd(uds_sockfd, FLASH__GET_UMEM) < 0) {
+		log_error("Failed to send command to get UMEM");
+		goto close_uds;
+	}
 
-	recv_data(uds_sockfd, &cfg->total_sockets, sizeof(int));
-	log_info("TOTAL SOCKETS: %d", cfg->total_sockets);
+	if (flash__send_data(uds_sockfd, &data, sizeof(struct nf_data)) < 0) {
+		log_error("Failed to send NF data to UDS server");
+		goto close_uds;
+	}
 
-	recv_data(uds_sockfd, &cfg->umem->size, sizeof(int));
-	log_info("UMEM SIZE: %d", cfg->umem->size);
+	if (flash__recv_fd(uds_sockfd, &cfg->umem_fd) < 0) {
+		log_error("Failed to receive UMEM FD from UDS server");
+		goto close_uds;
+	}
 
-	recv_data(uds_sockfd, &cfg->umem_scale, sizeof(int));
-	log_info("UMEM SCALE: %d", cfg->umem_scale);
+	log_debug("RECEIVED EXISTING UMEM FD");
 
-	send_cmd(uds_sockfd, FLASH__GET_UMEM_OFFSET);
-	recv_data(uds_sockfd, &cfg->umem_offset, sizeof(int));
-	log_info("RECEIVED umem_offset: %d", cfg->umem_offset);
+	if (flash__recv_data(uds_sockfd, &cfg->total_sockets, sizeof(int)) < 0) {
+		log_error("Failed to receive total sockets from UDS server");
+		goto close_uds;
+	}
 
-	int *received_fd = (int *)calloc(cfg->total_sockets, sizeof(int));
+	log_debug("TOTAL SOCKETS: %d", cfg->total_sockets);
+
+	if (flash__recv_data(uds_sockfd, &cfg->umem->size, sizeof(int)) < 0) {
+		log_error("Failed to receive UMEM size from UDS server");
+		goto close_uds;
+	}
+
+	log_debug("UMEM SIZE: %d", cfg->umem->size);
+
+	if (flash__recv_data(uds_sockfd, &cfg->umem_scale, sizeof(int)) < 0) {
+		log_error("Failed to receive UMEM scale from UDS server");
+		goto close_uds;
+	}
+
+	log_debug("UMEM SCALE: %d", cfg->umem_scale);
+
+	if (flash__send_cmd(uds_sockfd, FLASH__GET_UMEM_OFFSET) < 0) {
+		log_error("Failed to send command to get UMEM offset");
+		goto close_uds;
+	}
+
+	if (flash__recv_data(uds_sockfd, &cfg->umem_offset, sizeof(int)) < 0) {
+		log_error("Failed to receive UMEM offset from UDS server");
+		goto close_uds;
+	}
+
+	log_debug("RECEIVED umem_offset: %d", cfg->umem_offset);
+
+	*received_fd = (int *)calloc(cfg->total_sockets, sizeof(int));
 	cfg->ifqueue = (int *)calloc(cfg->total_sockets, sizeof(int));
-	for (int i = 0; i < cfg->total_sockets; i++) {
-		send_cmd(uds_sockfd, FLASH__CREATE_SOCKET);
-		recv_fd(uds_sockfd, received_fd + i);
-		recv_data(uds_sockfd, &cfg->ifqueue[i], sizeof(int));
-		log_info("RECEIVED SOCKET-%d FD-%d, bound to Queue-%d", i, received_fd[i], cfg->ifqueue[i]);
+	for (i = 0; i < cfg->total_sockets; i++) {
+		if (flash__send_cmd(uds_sockfd, FLASH__CREATE_SOCKET) < 0) {
+			log_error("Failed to send command to create socket");
+			goto clean_rcv_fd;
+		}
+		if (flash__recv_fd(uds_sockfd, &(*received_fd)[i]) < 0) {
+			log_error("Failed to receive socket FD from UDS server");
+			goto clean_rcv_fd;
+		}
+
+		if (flash__recv_data(uds_sockfd, &cfg->ifqueue[i], sizeof(int)) < 0) {
+			log_error("Failed to receive ifqueue for socket %d", i);
+			goto clean_rcv_fd;
+		}
+		log_debug("RECEIVED SOCKET-%d FD-%d, bound to Queue-%d", i, (*received_fd)[i], cfg->ifqueue[i]);
 	}
 
-	send_cmd(uds_sockfd, FLASH__GET_ROUTE_INFO);
-	recv_data(uds_sockfd, &nf->next_size, sizeof(int));
-	log_info("ROUTE SIZE: %d", nf->next_size);
-
-	nf->next = (int *)calloc(nf->next_size, sizeof(int));
-	recv_data(uds_sockfd, nf->next, sizeof(int) * nf->next_size);
-	for (int i = 0; i < nf->next_size; i++) {
-		log_info("ROUTE ITEM-%d %d", i, nf->next[i]);
+	if (flash__send_cmd(uds_sockfd, FLASH__GET_ROUTE_INFO) < 0) {
+		log_error("Failed to send command to get route info");
+		goto clean_rcv_fd;
 	}
 
-	send_cmd(uds_sockfd, FLASH__GET_BIND_FLAGS);
-	recv_data(uds_sockfd, &cfg->xsk->bind_flags, sizeof(uint32_t));
-	log_info("BIND_FLAGS: %d", cfg->xsk->bind_flags);
+	if (flash__recv_data(uds_sockfd, &nf->next_size, sizeof(int)) < 0) {
+		log_error("Failed to receive route size from UDS server");
+		goto clean_rcv_fd;
+	}
+	log_debug("ROUTE SIZE: %d", nf->next_size);
 
-	send_cmd(uds_sockfd, FLASH__GET_XDP_FLAGS);
-	recv_data(uds_sockfd, &cfg->xsk->xdp_flags, sizeof(uint32_t));
-	log_info("XDP_FLAGS: %d", cfg->xsk->xdp_flags);
+	if (flash__send_cmd(uds_sockfd, FLASH__GET_BIND_FLAGS) < 0) {
+		log_error("Failed to send command to get bind flags");
+		goto clean_rcv_fd;
+	}
+	if (flash__recv_data(uds_sockfd, &cfg->xsk->bind_flags, sizeof(uint32_t)) < 0) {
+		log_error("Failed to receive bind flags from UDS server");
+		goto clean_rcv_fd;
+	}
 
-	send_cmd(uds_sockfd, FLASH__GET_MODE);
-	recv_data(uds_sockfd, &cfg->xsk->mode, sizeof(uint32_t));
-	log_info("MODE: %d", cfg->xsk->mode);
+	log_debug("BIND_FLAGS: %d", cfg->xsk->bind_flags);
+
+	if (flash__send_cmd(uds_sockfd, FLASH__GET_XDP_FLAGS) < 0) {
+		log_error("Failed to send command to get XDP flags");
+		goto clean_rcv_fd;
+	}
+	if (flash__recv_data(uds_sockfd, &cfg->xsk->xdp_flags, sizeof(uint32_t)) < 0) {
+		log_error("Failed to receive XDP flags from UDS server");
+		goto clean_rcv_fd;
+	}
+	log_debug("XDP_FLAGS: %d", cfg->xsk->xdp_flags);
+
+	if (flash__send_cmd(uds_sockfd, FLASH__GET_MODE) < 0) {
+		log_error("Failed to send command to get mode");
+		goto clean_rcv_fd;
+	}
+	if (flash__recv_data(uds_sockfd, &cfg->xsk->mode, sizeof(uint32_t)) < 0) {
+		log_error("Failed to receive mode from UDS server");
+		goto clean_rcv_fd;
+	}
+	log_debug("MODE: %d", cfg->xsk->mode);
 
 	if (cfg->xsk->mode & FLASH__POLL) {
-		send_cmd(uds_sockfd, FLASH__GET_POLL_TIMEOUT);
-		recv_data(uds_sockfd, &cfg->xsk->poll_timeout, sizeof(int));
-		log_info("POLL_TIMEOUT: %d", cfg->xsk->poll_timeout);
+		if (flash__send_cmd(uds_sockfd, FLASH__GET_POLL_TIMEOUT) < 0) {
+			log_error("Failed to send command to get poll timeout");
+			goto clean_rcv_fd;
+		}
+		if (flash__recv_data(uds_sockfd, &cfg->xsk->poll_timeout, sizeof(int)) < 0) {
+			log_error("Failed to receive poll timeout from UDS server");
+			goto clean_rcv_fd;
+		}
+		log_debug("POLL_TIMEOUT: %d", cfg->xsk->poll_timeout);
 	}
 
-	send_cmd(uds_sockfd, FLASH__GET_FRAGS_ENABLED);
-	recv_data(uds_sockfd, &cfg->frags_enabled, sizeof(bool));
-	log_info("FRAGS_ENABLED: %d", cfg->frags_enabled);
+	if (flash__send_cmd(uds_sockfd, FLASH__GET_FRAGS_ENABLED) < 0) {
+		log_error("Failed to send command to get frags enabled");
+		goto clean_rcv_fd;
+	}
+	if (flash__recv_data(uds_sockfd, &cfg->frags_enabled, sizeof(bool)) < 0) {
+		log_error("Failed to receive frags enabled from UDS server");
+		goto clean_rcv_fd;
+	}
+	log_debug("FRAGS_ENABLED: %d", cfg->frags_enabled);
 
-	send_cmd(uds_sockfd, FLASH__GET_IFNAME);
-	recv_data(uds_sockfd, cfg->ifname, IF_NAMESIZE);
-	log_info("IFNAME: %s", cfg->ifname);
+	if (flash__send_cmd(uds_sockfd, FLASH__GET_IFNAME) < 0) {
+		log_error("Failed to send command to get ifname");
+		goto clean_rcv_fd;
+	}
+	if (flash__recv_data(uds_sockfd, cfg->ifname, IF_NAMESIZE) < 0) {
+		log_error("Failed to receive ifname from UDS server");
+		goto clean_rcv_fd;
+	}
+	log_debug("IFNAME: %s", cfg->ifname);
 
-	return received_fd;
+	return 0;
+
+clean_rcv_fd:
+	free(*received_fd);
+	free(cfg->ifqueue);
+close_uds:
+	close_uds_conn(cfg);
+	return -1;
 }
 
 static int xsk_mmap_umem_rings(struct socket *socket, struct xsk_umem_config umem_config, struct xsk_socket_config xsk_config)
@@ -307,7 +402,6 @@ void flash__xsk_close(struct config *cfg, struct nf *nf)
 	if (!cfg || !nf)
 		return;
 
-	// Corner case handling to be done properly
 	close_uds_conn(cfg);
 
 	for (int i = 0; i < cfg->total_sockets; i++) {
@@ -332,7 +426,6 @@ void flash__xsk_close(struct config *cfg, struct nf *nf)
 	}
 
 	free(nf->thread);
-	free(nf->next);
 	free(nf);
 
 	if (cfg->umem) {
@@ -344,6 +437,9 @@ void flash__xsk_close(struct config *cfg, struct nf *nf)
 
 	if (cfg->xsk)
 		free(cfg->xsk);
+
+	if (cfg->ifqueue)
+		free(cfg->ifqueue);
 
 	if (cfg->umem_config && cfg->xsk_config) {
 		free(cfg->umem_config);
@@ -361,8 +457,13 @@ static bool xsk_page_aligned(void *buffer)
 int flash__configure_nf(struct nf **_nf, struct config *cfg)
 {
 	int i, size;
-	int *sockfd;
+	int *sockfd = NULL;
 	struct nf *nf;
+
+	if (!cfg || !_nf) {
+		log_error("ERROR: NULL pointer as arguments");
+		return -1;
+	}
 
 	nf = (struct nf *)calloc(1, sizeof(struct nf));
 	if (!nf) {
@@ -370,10 +471,11 @@ int flash__configure_nf(struct nf **_nf, struct config *cfg)
 		return -1;
 	}
 
-	// monitor communication happens here - overhaul required
-	// corner case handling etc.
-	// routing should be handled better
-	sockfd = __configure(cfg, nf);
+	if (__configure(cfg, nf, &sockfd) < 0) {
+		log_error("ERROR: (NF configuration) __configure failed");
+		free(nf);
+		return -1;
+	}
 
 	size = cfg->umem->size;
 	cfg->umem->buffer = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, cfg->umem_fd, 0);
@@ -436,8 +538,6 @@ int flash__configure_nf(struct nf **_nf, struct config *cfg)
 		}
 	}
 
-	// Is this handling correct??
-	free(cfg->ifqueue);
 	free(sockfd);
 	*_nf = nf;
 	return 0;

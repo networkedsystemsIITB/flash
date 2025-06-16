@@ -164,13 +164,13 @@ static void configure(void)
 {
 	// Need to change so that we get IPS of all NFS, not just of our local dest
 	// send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
-	// recv_data(cfg->uds_sockfd, &num_valid_ips, sizeof(int));
+	// flash__recv_data(cfg->uds_sockfd, &num_valid_ips, sizeof(int));
 	// if (num_valid_ips != 1){
 	// 	printf("Arp-resolver should be ran along with ip4ping only");
 	// 	exit(1);
 	// }
 	// log_info("Number of Backends: %d", num_valid_ips);
-	// recv_data(cfg->uds_sockfd, ip4ping_ip, INET_ADDRSTRLEN);
+	// flash__recv_data(cfg->uds_sockfd, ip4ping_ip, INET_ADDRSTRLEN);
 	// log_info("ip4ping_ip: %s", ip4ping_ip);
 
 	// configuring src_mac

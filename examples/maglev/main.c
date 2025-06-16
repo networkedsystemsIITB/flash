@@ -185,15 +185,15 @@ struct backend_entry {
 
 static void load_services(void)
 {
-	send_cmd(cfg->uds_sockfd, FLASH__GET_IP_ADDR);
-	recv_data(cfg->uds_sockfd, srv_addr, INET_ADDRSTRLEN);
+	flash__send_cmd(cfg->uds_sockfd, FLASH__GET_IP_ADDR);
+	flash__recv_data(cfg->uds_sockfd, srv_addr, INET_ADDRSTRLEN);
 	log_info("NF IP: %s", srv_addr);
 
-	send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
-	recv_data(cfg->uds_sockfd, &nbackends, sizeof(int));
+	flash__send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
+	flash__recv_data(cfg->uds_sockfd, &nbackends, sizeof(int));
 	log_info("Number of Backends: %d", nbackends);
 	for (int i = 0; i < nbackends; i++) {
-		recv_data(cfg->uds_sockfd, bkd_addr[i], INET_ADDRSTRLEN);
+		flash__recv_data(cfg->uds_sockfd, bkd_addr[i], INET_ADDRSTRLEN);
 		log_info("Backend %d IP: %s", i, bkd_addr[i]);
 	}
 

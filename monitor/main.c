@@ -35,74 +35,73 @@ static void *handle_nf(void *arg)
 
 	do {
 		log_info("Waiting for command...");
-		cmd = recv_cmd(msgsock);
+		cmd = flash__recv_cmd(msgsock);
 
 		switch (cmd) {
 		case FLASH__GET_UMEM:
-			recv_data(msgsock, data, sizeof(struct nf_data));
+			flash__recv_data(msgsock, data, sizeof(struct nf_data));
 			if (configure_umem(data, &umem) == -1) {
 				continue;
 			}
-			send_fd(msgsock, umem->cfg->umem_fd);
-			send_data(msgsock, &umem->nf[data->nf_id]->thread_count, sizeof(int));
-			send_data(msgsock, &umem->cfg->umem->size, sizeof(int));
-			send_data(msgsock, &umem->cfg->umem_scale, sizeof(int));
+			flash__send_fd(msgsock, umem->cfg->umem_fd);
+			flash__send_data(msgsock, &umem->nf[data->nf_id]->thread_count, sizeof(int));
+			flash__send_data(msgsock, &umem->cfg->umem->size, sizeof(int));
+			flash__send_data(msgsock, &umem->cfg->umem_scale, sizeof(int));
 			break;
 
 		case FLASH__CREATE_SOCKET:
 			if (umem != NULL) {
 				struct socket *sock = create_new_socket(umem, data->nf_id);
-				send_fd(msgsock, sock->fd);
-				send_data(msgsock, &sock->ifqueue, sizeof(int));
+				flash__send_fd(msgsock, sock->fd);
+				flash__send_data(msgsock, &sock->ifqueue, sizeof(int));
 			}
 			break;
 
 		case FLASH__GET_UMEM_OFFSET:
 			int offset = data->nf_id * umem->nf[data->nf_id]->thread_count + umem->nf[data->nf_id]->current_thread_count;
-			send_data(msgsock, &offset, sizeof(int));
+			flash__send_data(msgsock, &offset, sizeof(int));
 			break;
 
 		case FLASH__GET_ROUTE_INFO:
-			send_data(msgsock, &umem->nf[data->nf_id]->next_size, sizeof(int));
-			send_data(msgsock, umem->nf[data->nf_id]->next, sizeof(int) * umem->nf[data->nf_id]->next_size);
+			flash__send_data(msgsock, &umem->nf[data->nf_id]->next_size, sizeof(int));
 			break;
 
 		case FLASH__GET_BIND_FLAGS:
-			send_data(msgsock, &umem->cfg->xsk->bind_flags, sizeof(__u32));
+			flash__send_data(msgsock, &umem->cfg->xsk->bind_flags, sizeof(__u32));
 			break;
 
 		case FLASH__GET_XDP_FLAGS:
-			send_data(msgsock, &umem->cfg->xsk->xdp_flags, sizeof(__u32));
+			flash__send_data(msgsock, &umem->cfg->xsk->xdp_flags, sizeof(__u32));
 			break;
 
 		case FLASH__GET_MODE:
-			send_data(msgsock, &umem->cfg->xsk->mode, sizeof(__u32));
+			flash__send_data(msgsock, &umem->cfg->xsk->mode, sizeof(__u32));
 			break;
 
 		case FLASH__GET_POLL_TIMEOUT:
-			send_data(msgsock, &umem->cfg->xsk->poll_timeout, sizeof(int));
+			flash__send_data(msgsock, &umem->cfg->xsk->poll_timeout, sizeof(int));
 			break;
 
 		case FLASH__GET_FRAGS_ENABLED:
-			send_data(msgsock, &umem->cfg->frags_enabled, sizeof(bool));
+			flash__send_data(msgsock, &umem->cfg->frags_enabled, sizeof(bool));
 			break;
 
 		case FLASH__GET_IFNAME:
-			send_data(msgsock, &umem->cfg->ifname, IF_NAMESIZE);
+			flash__send_data(msgsock, &umem->cfg->ifname, IF_NAMESIZE);
 			break;
 
 		case FLASH__GET_IP_ADDR:
-			send_data(msgsock, umem->nf[data->nf_id]->ip, INET_ADDRSTRLEN);
+			flash__send_data(msgsock, umem->nf[data->nf_id]->ip, INET_ADDRSTRLEN);
 			log_info("NF IP: %s", umem->nf[data->nf_id]->ip);
 			break;
 
 		case FLASH__GET_DST_IP_ADDR:
-			send_data(msgsock, &umem->nf[data->nf_id]->next_size, sizeof(int));
+			flash__send_data(msgsock, &umem->nf[data->nf_id]->next_size, sizeof(int));
 			log_info("Number of Backends: %d", umem->nf[data->nf_id]->next_size);
 			for (int i = 0; i < umem->nf[data->nf_id]->next_size; i++) {
 				log_info("Sending IP %s", umem->nf[umem->nf[data->nf_id]->next[i]]->ip);
 				log_info("Next NF: %d", umem->nf[data->nf_id]->next[i]);
-				send_data(msgsock, umem->nf[umem->nf[data->nf_id]->next[i]]->ip, INET_ADDRSTRLEN);
+				flash__send_data(msgsock, umem->nf[umem->nf[data->nf_id]->next[i]]->ip, INET_ADDRSTRLEN);
 			}
 			break;
 
@@ -128,7 +127,7 @@ static void *worker__uds_server(void *arg)
 {
 	(void)arg;
 
-	unix_socket_server = start_uds_server();
+	unix_socket_server = flash__start_uds_server();
 	struct pollfd fds[1] = {};
 	fds[0].fd = unix_socket_server;
 	fds[0].events = POLLIN;

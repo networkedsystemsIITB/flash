@@ -116,13 +116,11 @@ static void swap_mac_addresses(void *data)
 
 struct sock_args {
 	int socket_id;
-	int *next;
 	int next_size;
 };
 
 static void *socket_routine(void *arg)
 {
-	int *next;
 	nfds_t nfds = 1;
 	int ret, next_size;
 	struct socket *xsk;
@@ -133,12 +131,7 @@ static void *socket_routine(void *arg)
 
 	log_debug("Socket ID: %d", a->socket_id);
 	xsk = nf->thread[a->socket_id]->socket;
-	next = a->next;
 	next_size = a->next_size;
-
-	for (int i = 0; i < next_size; i++) {
-		log_debug("Next Item [%d] ::: %d", i, next[i]);
-	}
 
 	xskvecs = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
 	if (!xskvecs) {
@@ -230,13 +223,9 @@ int main(int argc, char **argv)
 
 	for (int i = 0; i < cfg->total_sockets; i++) {
 		args[i].socket_id = i;
-		args[i].next = nf->next;
 		args[i].next_size = nf->next_size;
 
 		log_debug("Next Size ::: %d", args[i].next_size);
-
-		for (int i = 0; i < args[i].next_size; i++)
-			log_debug("Next Item [%d] ::: %d", i, nf->next[i]);
 
 		if (pthread_create(&socket_thread, NULL, socket_routine, &args[i])) {
 			log_error("Error creating socket thread");

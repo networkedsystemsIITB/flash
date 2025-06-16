@@ -51,7 +51,7 @@ struct umem_config {
 
 struct config {
 	const char *app_name;
-	const char * const *app_options;
+	const char *const *app_options;
 	int umem_fd;
 	int uds_sockfd;
 	int umem_scale;
@@ -199,7 +199,7 @@ struct nf {
 	int id;
 	char ip[INET_ADDRSTRLEN];
 	uint16_t port;
-	int *next;
+	int *next; // To be removed
 	int next_size;
 	struct thread **thread;
 	bool is_up;

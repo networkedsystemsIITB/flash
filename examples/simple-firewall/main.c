@@ -139,13 +139,13 @@ static void read_json_config(void)
 static void *configure(void)
 {
 	int nbackends;
-	send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
-	recv_data(cfg->uds_sockfd, &nbackends, sizeof(int));
+	flash__send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
+	flash__recv_data(cfg->uds_sockfd, &nbackends, sizeof(int));
 	if (nbackends != 1) {
 		printf("Firewall is linked to %d load balancers", nbackends);
 		exit(1);
 	}
-	recv_data(cfg->uds_sockfd, load_balancer_addr, INET_ADDRSTRLEN);
+	flash__recv_data(cfg->uds_sockfd, load_balancer_addr, INET_ADDRSTRLEN);
 
 	read_json_config();
 

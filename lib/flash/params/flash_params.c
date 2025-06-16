@@ -234,6 +234,11 @@ int flash__parse_cmdline_args(int argc, char **argv, struct config *cfg)
 {
 	int ret;
 
+	if (!cfg) {
+		log_error("ERROR: (Parsing error) NULL config pointer");
+		return -1;
+	}
+
 	cfg->umem = calloc(1, sizeof(struct umem_config));
 	cfg->xsk = calloc(1, sizeof(struct xsk_config));
 	if (!cfg->xsk || !cfg->umem) {
