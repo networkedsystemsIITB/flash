@@ -27,31 +27,8 @@ struct appconf {
 	int cpu_end;
 	int stats_cpu;
 	bool sriov;
-	uint8_t *dest_ether_addr_octet;
+	uint8_t dest_ether_addr_octet[6];
 } app_conf;
-
-static int hex2int(char ch)
-{
-	if (ch >= '0' && ch <= '9')
-		return ch - '0';
-	if (ch >= 'A' && ch <= 'F')
-		return ch - 'A' + 10;
-	if (ch >= 'a' && ch <= 'f')
-		return ch - 'a' + 10;
-	return -1;
-}
-
-static uint8_t *get_mac_addr(char *mac_addr)
-{
-	uint8_t *dest_ether_addr_octet = (uint8_t *)malloc(6 * sizeof(uint8_t));
-	for (int i = 0; i < 6; i++) {
-		dest_ether_addr_octet[i] = hex2int(mac_addr[0]) * 16;
-		mac_addr++;
-		dest_ether_addr_octet[i] += hex2int(mac_addr[0]);
-		mac_addr += 2;
-	}
-	return dest_ether_addr_octet;
-}
 
 // clang-format off
 static const char *l2fwd_options[] = {
@@ -66,6 +43,7 @@ static const char *l2fwd_options[] = {
 static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
 {
 	int c;
+	int ethaddr[6];
 	opterr = 0;
 
 	app_conf->cpu_start = 0;
@@ -91,7 +69,13 @@ static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int s
 			app_conf->stats_cpu = atoi(optarg);
 			break;
 		case 'S':
-			app_conf->dest_ether_addr_octet = get_mac_addr(optarg);
+			if (sscanf(optarg, "%x:%x:%x:%x:%x:%x", &ethaddr[0], &ethaddr[1], &ethaddr[2], &ethaddr[3], &ethaddr[4],
+				   &ethaddr[5]) != 6) {
+				log_error("Invalid MAC address format: %s", optarg);
+				return -1;
+			}
+			for (int i = 0; i < 6; i++)
+				app_conf->dest_ether_addr_octet[i] = (uint8_t)ethaddr[i];
 			app_conf->sriov = true;
 			break;
 		default:
@@ -133,8 +117,6 @@ static void swap_mac_addresses(void *data)
 
 struct sock_args {
 	int socket_id;
-	// int *next;
-	// int next_size;
 };
 
 static void *socket_routine(void *arg)
@@ -234,13 +216,6 @@ int main(int argc, char **argv)
 
 	for (int i = 0; i < cfg->total_sockets; i++) {
 		args[i].socket_id = i;
-		// args[i].next = nf->next;
-		// args[i].next_size = nf->next_size;
-
-		// log_debug("Next Size ::: %d", args[i].next_size);
-
-		// for (int i = 0; i < args[i].next_size; i++)
-		// 	log_debug("Next Item [%d] ::: %d", i, nf->next[i]);
 
 		if (pthread_create(&socket_thread, NULL, socket_routine, &args[i])) {
 			log_error("Error creating socket thread");

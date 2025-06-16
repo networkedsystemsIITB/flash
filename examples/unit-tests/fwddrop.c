@@ -27,31 +27,8 @@ struct appconf {
 	int stats_cpu;
 	int fwd_ratio;
 	bool sriov;
-	uint8_t *dest_ether_addr_octet;
+	uint8_t dest_ether_addr_octet[6];
 } app_conf;
-
-static int hex2int(char ch)
-{
-	if (ch >= '0' && ch <= '9')
-		return ch - '0';
-	if (ch >= 'A' && ch <= 'F')
-		return ch - 'A' + 10;
-	if (ch >= 'a' && ch <= 'f')
-		return ch - 'a' + 10;
-	return -1;
-}
-
-static uint8_t *get_mac_addr(char *mac_addr)
-{
-	uint8_t *dest_ether_addr_octet = (uint8_t *)malloc(6 * sizeof(uint8_t));
-	for (int i = 0; i < 6; i++) {
-		dest_ether_addr_octet[i] = hex2int(mac_addr[0]) * 16;
-		mac_addr++;
-		dest_ether_addr_octet[i] += hex2int(mac_addr[0]);
-		mac_addr += 2;
-	}
-	return dest_ether_addr_octet;
-}
 
 // clang-format off
 static const char *fwddrop_options[] = {
@@ -67,18 +44,18 @@ static const char *fwddrop_options[] = {
 static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
 {
 	int c;
+	int ethaddr[6];
 	opterr = 0;
 
 	app_conf->cpu_start = 0;
 	app_conf->cpu_end = 0;
 	app_conf->stats_cpu = 1;
 	app_conf->sriov = false;
-	app_conf->fwd_ratio = 50;
 
 	argc -= shift;
 	argv += shift;
 
-	while ((c = getopt(argc, argv, "hc:e:s:r:S:")) != -1)
+	while ((c = getopt(argc, argv, "hc:e:s:S:")) != -1)
 		switch (c) {
 		case 'h':
 			printf("Usage: %s -h\n", argv[-shift]);
@@ -92,15 +69,14 @@ static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int s
 		case 's':
 			app_conf->stats_cpu = atoi(optarg);
 			break;
-		case 'r':
-			app_conf->fwd_ratio = atoi(optarg);
-			if (app_conf->fwd_ratio < 0)
-				app_conf->fwd_ratio = 0;
-			if (app_conf->fwd_ratio > 100)
-				app_conf->fwd_ratio = 100;
-			break;
 		case 'S':
-			app_conf->dest_ether_addr_octet = get_mac_addr(optarg);
+			if (sscanf(optarg, "%x:%x:%x:%x:%x:%x", &ethaddr[0], &ethaddr[1], &ethaddr[2], &ethaddr[3], &ethaddr[4],
+				   &ethaddr[5]) != 6) {
+				log_error("Invalid MAC address format: %s", optarg);
+				return -1;
+			}
+			for (int i = 0; i < 6; i++)
+				app_conf->dest_ether_addr_octet[i] = (uint8_t)ethaddr[i];
 			app_conf->sriov = true;
 			break;
 		default:
