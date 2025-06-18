@@ -648,3 +648,36 @@ size_t flash__dropmsg(struct config *cfg, struct socket *xsk, struct xskvec *xsk
 #endif
 	return ndrop;
 }
+
+size_t flash__allocmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t nalloc)
+{
+	uint32_t i;
+	uint64_t addr;
+
+	if (!nalloc || !xsk || !xskvecs || !cfg || !xsk->flash_pool)
+		return 0;
+
+	if (cfg->rx_first) {
+		log_error("Cannot allocate xskvecs in rx_first mode");
+		return 0;
+	} else {
+		for (i = 0; i < nalloc; i++) {
+			while (!flash_pool__get(xsk->flash_pool, &addr)) {
+				__complete_tx_completions(cfg, xsk);
+				if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->tx)) {
+#ifdef STATS
+					xsk->app_stats.tx_wakeup_sendtos++;
+#endif
+					__kick_tx(xsk);
+				}
+			}
+
+			xskvecs[i].data = xsk_umem__get_data(cfg->umem->buffer, addr);
+			xskvecs[i].addr = addr;
+			xskvecs[i].len = cfg->umem->frame_size;
+			xskvecs[i].options = 0;
+		}
+	}
+
+	return nalloc;
+}

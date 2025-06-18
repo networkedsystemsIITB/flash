@@ -5,7 +5,7 @@ project(
     'flash',
     'C',
     version: '25.5-beta',
-    license: 'BSD',
+    license: 'Apache-2.0',
     default_options: [
         'buildtype=release',
         'default_library=shared',

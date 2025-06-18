@@ -30,7 +30,7 @@ struct stats_conf {
 
 extern bool done;
 
-/* Control Path API */
+/* Control Path APIs */
 
 /** 
  * Configure the NF with the provided configuration.
@@ -66,7 +66,7 @@ void flash__wait(struct config *cfg);
  */
 void flash__xsk_close(struct config *cfg, struct nf *nf);
 
-/* Data Path API */
+/* Data Path APIs */
 
 /**
  * Poll the NF for incoming packets.
@@ -117,10 +117,24 @@ size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec *xsk
  */
 size_t flash__dropmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t ndrop);
 
+/**
+ * Allocate memory for messages to be sent.
+ * 
+ * @param cfg: Pointer to the configuration structure.
+ * @param xsk: Pointer to the socket structure.
+ * @param xskvecs: Pointer to the array of xskvec structures to allocate memory for.
+ * @param nalloc: Number of messages to allocate memory for.
+ * 
+ * @return Number of messages allocated, or 0 on failure.
+ */
+size_t flash__allocmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t nalloc);
+
 int flash__oldpoll(struct socket *xsk, struct pollfd *fds, nfds_t nfds, int timeout);
 size_t flash__oldrecvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg);
 size_t flash__oldsendmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t nsend);
 size_t flash__olddropmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t ndrop);
+
+/* Helper APIs */
 
 /**
  * Thread function to periodically dump statistics of the NF.
@@ -132,7 +146,7 @@ size_t flash__olddropmsg(struct config *cfg, struct socket *xsk, struct xskvec *
  */
 void *flash__stats_thread(void *conf);
 
-/* Advanced API */
+/* Advanced APIs */
 
 void flash__populate_fill_ring(struct thread **thread, int frame_size, int total_sockets, int umem_offset, int umem_scale);
 
