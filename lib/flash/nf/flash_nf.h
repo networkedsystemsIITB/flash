@@ -29,6 +29,7 @@ struct stats_conf {
 };
 
 extern bool done;
+struct ether_addr;
 
 /* Control Path APIs */
 
@@ -145,6 +146,15 @@ size_t flash__olddropmsg(struct config *cfg, struct socket *xsk, struct xskvec *
  * and dump statistics for each socket in the NF.
  */
 void *flash__stats_thread(void *conf);
+
+/**
+ * Get the MAC address of the interface specified in the configuration.
+ * @param cfg: Pointer to the configuration structure.
+ * @param addr: Pointer to the ether_addr structure to store the MAC address.
+ * 
+ * @return 0 on success, or -1 on failure.
+ */
+int flash__get_macaddr(struct config *cfg, struct ether_addr *addr);
 
 /* Advanced APIs */
 

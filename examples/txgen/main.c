@@ -32,6 +32,8 @@ struct appconf {
 	int cpu_start;
 	int cpu_end;
 	int stats_cpu;
+	bool custom_src_ether_addr;
+	bool custom_dest_ether_addr;
 	uint8_t src_ether_addr_octet[6];
 	uint8_t dest_ether_addr_octet[6];
 	uint32_t src_ip;
@@ -46,8 +48,8 @@ static const char *txgen_options[] = {
     "-c <num>\tStart CPU (default: 0)",
     "-e <num>\tEnd CPU (default: 0)",
     "-s <num>\tStats CPU (default: 1)",
-	"-S <mac>\tSrc MAC address to use (default: a0:a1:a2:a3:a4:a5)",
-	"-D <mac>\tDest MAC address to use (default: a0:a1:a2:a3:a4:a5)",
+	"-S <mac>\tSrc MAC address to use (default: NIC MAC address)",
+	"-D <mac>\tDest MAC address to use (default: NIC MAC address)",
 	"-A <ipv4>\tSrc IPv4 address to use (default: 192.168.1.1)",
 	"-B <ipv4>\tDest IPv4 address to use (default: 192.168.2.1)",
 	"-P <port>\tSrc port to use (default: 1234)",
@@ -95,10 +97,8 @@ static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int s
 	app_conf->src_port = htons(1234);
 	app_conf->dest_port = htons(5678);
 	app_conf->payload_len = 5;
-	for (int i = 0; i < 6; i++) {
-		app_conf->src_ether_addr_octet[i] = 0xA0 + i;
-		app_conf->dest_ether_addr_octet[i] = 0xA0 + i;
-	}
+	app_conf->custom_src_ether_addr = false;
+	app_conf->custom_dest_ether_addr = false;
 
 	argc -= shift;
 	argv += shift;
@@ -120,10 +120,12 @@ static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int s
 		case 'S':
 			if (parse_mac(optarg, app_conf->src_ether_addr_octet) < 0)
 				return -1;
+			app_conf->custom_src_ether_addr = true;
 			break;
 		case 'D':
 			if (parse_mac(optarg, app_conf->dest_ether_addr_octet) < 0)
 				return -1;
+			app_conf->custom_dest_ether_addr = true;
 			break;
 		case 'A':
 			if (parse_ip(optarg, &app_conf->src_ip) < 0)
@@ -173,14 +175,32 @@ static uint16_t csum16(const void *data, size_t len)
 	return (uint16_t)(~sum);
 }
 
-static void setup_packet(void *data)
+static int setup_packet(void *data)
 {
 	struct ether_header *eth = (struct ether_header *)data;
 	struct iphdr *ip = (struct iphdr *)(eth + 1);
 	struct udphdr *udp = (struct udphdr *)(ip + 1);
+	struct ether_addr tmp_addr;
 
-	memcpy(eth->ether_shost, app_conf.src_ether_addr_octet, ETH_ALEN);
-	memcpy(eth->ether_dhost, app_conf.dest_ether_addr_octet, ETH_ALEN);
+	if (app_conf.custom_src_ether_addr)
+		memcpy(eth->ether_shost, app_conf.src_ether_addr_octet, ETH_ALEN);
+	else {
+		if (flash__get_macaddr(cfg, &tmp_addr) < 0) {
+			log_error("Failed to get source MAC address");
+			return -1;
+		}
+		memcpy(eth->ether_shost, tmp_addr.ether_addr_octet, ETH_ALEN);
+	}
+
+	if (app_conf.custom_dest_ether_addr)
+		memcpy(eth->ether_dhost, app_conf.dest_ether_addr_octet, ETH_ALEN);
+	else {
+		if (flash__get_macaddr(cfg, &tmp_addr) < 0) {
+			log_error("Failed to get destination MAC address");
+			return -1;
+		}
+		memcpy(eth->ether_dhost, tmp_addr.ether_addr_octet, ETH_ALEN);
+	}
 	eth->ether_type = htons(ETH_P_IP);
 
 	ip->ihl = 5;
@@ -203,6 +223,8 @@ static void setup_packet(void *data)
 
 	char *payload = (char *)(udp + 1);
 	memset(payload, 'A', app_conf.payload_len);
+
+	return 0;
 }
 
 struct sock_args {
@@ -276,21 +298,29 @@ int main(int argc, char **argv)
 	if (parse_app_args(argc, argv, &app_conf, shift) < 0)
 		goto out_cfg;
 
+	if (cfg->rx_first) {
+		log_error("ERROR: tx_first should be enabled in txgen");
+		goto out_cfg;
+	}
+
+	if (flash__configure_nf(&nf, cfg) < 0)
+		goto out_cfg;
+
+	log_info("Control Plane setup done...");
+
 	packet_size = sizeof(struct ether_header) + sizeof(struct iphdr) + sizeof(struct udphdr) + app_conf.payload_len;
 	log_debug("Packet size: %zu bytes", packet_size);
 
 	packet_template = (uint8_t *)calloc(1, packet_size);
 	if (!packet_template) {
 		log_error("ERROR: Memory allocation failed for packet template");
-		goto out_cfg;
+		goto out_cfg_close;
 	}
 
-	setup_packet(packet_template);
-
-	if (flash__configure_nf(&nf, cfg) < 0)
+	if (setup_packet(packet_template) < 0) {
+		log_error("ERROR: Failed to setup packet template");
 		goto out_pkt;
-
-	log_info("Control Plane setup done...");
+	}
 
 	signal(SIGINT, int_exit);
 	signal(SIGTERM, int_exit);
@@ -350,9 +380,13 @@ int main(int argc, char **argv)
 	exit(EXIT_SUCCESS);
 
 out_args:
+	done = true;
 	free(args);
 out_pkt:
-    free(packet_template);
+	free(packet_template);
+out_cfg_close:
+	sleep(1);
+	flash__xsk_close(cfg, nf);
 out_cfg:
 	free(cfg);
 	exit(EXIT_FAILURE);

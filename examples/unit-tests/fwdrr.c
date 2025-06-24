@@ -218,7 +218,7 @@ int main(int argc, char **argv)
 	args = calloc(cfg->total_sockets, sizeof(struct sock_args));
 	if (!args) {
 		log_error("ERROR: Memory allocation failed for sock_args");
-		goto out_cfg;
+		goto out_cfg_close;
 	}
 
 	for (int i = 0; i < cfg->total_sockets; i++) {
@@ -270,7 +270,11 @@ int main(int argc, char **argv)
 	exit(EXIT_SUCCESS);
 
 out_args:
+	done = true;
 	free(args);
+out_cfg_close:
+	sleep(1);
+	flash__xsk_close(cfg, nf);
 out_cfg:
 	free(cfg);
 	exit(EXIT_FAILURE);

@@ -51,11 +51,12 @@ static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int s
 	app_conf->cpu_end = 0;
 	app_conf->stats_cpu = 1;
 	app_conf->sriov = false;
+	app_conf->fwd_ratio = 50;
 
 	argc -= shift;
 	argv += shift;
 
-	while ((c = getopt(argc, argv, "hc:e:s:S:")) != -1)
+	while ((c = getopt(argc, argv, "hc:e:s:r:S:")) != -1)
 		switch (c) {
 		case 'h':
 			printf("Usage: %s -h\n", argv[-shift]);
@@ -68,6 +69,13 @@ static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int s
 			break;
 		case 's':
 			app_conf->stats_cpu = atoi(optarg);
+			break;
+		case 'r':
+			app_conf->fwd_ratio = atoi(optarg);
+			if (app_conf->fwd_ratio < 0 || app_conf->fwd_ratio > 100) {
+				log_error("Invalid forward ratio: %d. Must be between 0 and 100.", app_conf->fwd_ratio);
+				return -1;
+			}
 			break;
 		case 'S':
 			if (sscanf(optarg, "%x:%x:%x:%x:%x:%x", &ethaddr[0], &ethaddr[1], &ethaddr[2], &ethaddr[3], &ethaddr[4],
@@ -237,7 +245,7 @@ int main(int argc, char **argv)
 	args = calloc(cfg->total_sockets, sizeof(struct sock_args));
 	if (!args) {
 		log_error("ERROR: Memory allocation failed for sock_args");
-		goto out_cfg;
+		goto out_cfg_close;
 	}
 
 	for (int i = 0; i < cfg->total_sockets; i++) {
@@ -286,7 +294,11 @@ int main(int argc, char **argv)
 	exit(EXIT_SUCCESS);
 
 out_args:
+	done = true;
 	free(args);
+out_cfg_close:
+	sleep(1);
+	flash__xsk_close(cfg, nf);
 out_cfg:
 	free(cfg);
 	exit(EXIT_FAILURE);
