@@ -19,6 +19,19 @@ use_static_libs = get_option('default_library') == 'static'
 
 cc = meson.get_compiler('c')
 
+enable_rust = get_option('enable_rust')
+cargo = find_program('cargo', required: enable_rust)
+rust_build = []
+rust_target_dir = ''
+rust_profile = ''
+
+if enable_rust and cargo.found()
+    message('Rust support enabled')
+    rust_target_dir = meson.current_build_dir() / 'rust-target'
+else
+    message('Rust support disabled')
+endif
+
 build_dir = meson.current_build_dir()
 flash_libs = []
 enabled_libs = []
@@ -172,3 +185,9 @@ pkg.generate(
     install_dir: 'lib/pkgconfig',
 )
 message('<<< Done pkg-config file')
+
+# Rust builds are now handled in examples/meson.build
+if enable_rust and cargo.found()
+    message('>>> Rust builds will be handled by examples/meson.build')
+    message('<<< Rust builds configured')
+endif

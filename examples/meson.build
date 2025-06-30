@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025 Debojeet Das
 
+# C examples
 dirs = [
     'unit-tests',
     'helloworld',
@@ -15,6 +16,19 @@ dirs = [
     'txgen'
 ]
 
+# Rust examples (only if Rust is enabled)
+rust_dirs = []
+if get_option('enable_rust')
+    rust_dirs = [
+        'helloworld-rs',
+        'simplefwd-rs',
+        'l2fwd-rs',
+        'ip4ping-rs',
+        'maglev-rs',
+        'firewall-rs'
+    ]
+endif
+
 def_deps = [include, log, nf, params, uds]
 
 foreach d : dirs
@@ -28,3 +42,35 @@ foreach d : dirs
 
     install_headers(headers, subdir: meson.project_name().to_lower())
 endforeach
+
+if get_option('enable_rust') and cargo.found()
+    message('>>> Configuring Rust examples')
+    
+    cargo_build_args = ['build', '--target-dir', rust_target_dir]
+    
+    if get_option('buildtype') == 'release'
+        cargo_build_args += ['--release']
+        message('Rust: Building in release mode')
+    else
+        message('Rust: Building in debug mode')
+    endif
+    
+    if get_option('buildtype') == 'debug' or get_option('buildtype') == 'debugoptimized'
+        cargo_build_args += ['-F', 'tracing']
+    endif
+    
+    rust_build = custom_target(
+        'rust_workspace',
+        output: 'rust_build_complete',
+        command: [cargo] + cargo_build_args,
+        console: true,
+        build_by_default: true,
+        build_always_stale: true,
+    )
+    
+    foreach rust_dir : rust_dirs
+        message('Rust example: ' + rust_dir + ' will be built with the workspace')
+    endforeach
+    
+    message('<<< Rust examples configured')
+endif
