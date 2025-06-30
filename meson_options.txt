@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2025 Debojeet Das
+
+option('log_use_color', type: 'boolean', value: true,
+       description: 'Enable colored output in the log library')

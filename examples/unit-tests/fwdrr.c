@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <net/ethernet.h>
+#include <stdlib.h>
 
 #include <flash_nf.h>
 #include <flash_params.h>

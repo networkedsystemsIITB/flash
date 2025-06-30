@@ -6,6 +6,10 @@
 #include <limits.h>
 #include <locale.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <linux/limits.h>
 
 #include "flash_nf.h"
 

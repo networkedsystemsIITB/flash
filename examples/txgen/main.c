@@ -12,6 +12,7 @@
 #include <arpa/inet.h>
 #include <linux/ip.h>
 #include <linux/udp.h>
+#include <stdlib.h>
 
 #include <flash_nf.h>
 #include <flash_params.h>
@@ -24,7 +25,7 @@ uint8_t *packet_template = NULL;
 
 static void int_exit(int sig)
 {
-	log_debug("Received Signal: %d", sig);
+	log_info("Received Signal: %d", sig);
 	done = true;
 }
 

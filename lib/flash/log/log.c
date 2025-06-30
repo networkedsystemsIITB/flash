@@ -19,13 +19,30 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  *
- * Taken from https://github.com/rxi/log.c
+ * Taken from https://github.com/rxi/log.c and modified for flash
  */
 
 #include "log.h"
 
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
 #define MAX_CALLBACKS 32
-#define LOG_USE_COLOR
+
+struct log_Event {
+	va_list ap;
+	const char *fmt;
+	const char *file;
+	const char *caller;
+	struct tm *time;
+	void *udata;
+	int line;
+	int level;
+};
 
 typedef struct {
 	log_LogFn fn;
@@ -39,7 +56,13 @@ static struct {
 	int level;
 	bool quiet;
 	Callback callbacks[MAX_CALLBACKS];
-} L;
+} L = { .level =
+#ifdef LOG_ENABLE_DEBUG
+		LOG_TRACE, /* Debug builds: start with trace level */
+#else
+		LOG_INFO, /* Release builds: start with info level */
+#endif
+	.quiet = false };
 
 static const char *level_strings[] = { "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL" };
 
@@ -102,9 +125,9 @@ void log_set_level(int level)
 	L.level = level;
 }
 
-void log_set_quiet(bool enable)
+void log_set_quiet(int enable)
 {
-	L.quiet = enable;
+	L.quiet = enable != false;
 }
 
 int log_add_callback(log_LogFn fn, void *udata, int level)
@@ -118,9 +141,9 @@ int log_add_callback(log_LogFn fn, void *udata, int level)
 	return -1;
 }
 
-int log_add_fp(FILE *fp, int level)
+int log_add_fp(void *fp, int level)
 {
-	return log_add_callback(file_callback, fp, level);
+	return log_add_callback(file_callback, (FILE *)fp, level); /* Cast void* back to FILE* */
 }
 
 static void init_event(log_Event *ev, void *udata)

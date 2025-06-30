@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <net/ethernet.h>
+#include <stdlib.h>
 
 #include <flash_nf.h>
 #include <flash_params.h>
@@ -18,7 +19,7 @@ struct nf *nf = NULL;
 
 static void int_exit(int sig)
 {
-	log_debug("Received Signal: %d", sig);
+	log_info("Received Signal: %d", sig);
 	done = true;
 }
 

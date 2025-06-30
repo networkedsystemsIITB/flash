@@ -8,6 +8,8 @@
 #include <flash_params.h>
 #include <log.h>
 
+#include <stdlib.h>
+
 struct config *cfg = NULL;
 struct nf *nf = NULL;
 
