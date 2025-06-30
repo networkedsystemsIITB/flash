@@ -23,9 +23,8 @@
 
 bool done = false;
 struct config *cfg = NULL;
-struct nf *nf;
+struct nf *nf = NULL;
 struct test_stats *stats_arr;
-// bool *bool_array;
 
 static void int_exit(int sig)
 {
@@ -34,21 +33,27 @@ static void int_exit(int sig)
 }
 
 struct testHeader {
-	__u8 lastHop;
-	__u8 hopCount;
-	__u64 pktId;
-	__u16 old_dst;
+	uint8_t lastHop;
+	uint8_t hopCount;
+	uint64_t pktId;
+	uint16_t old_dst;
+	int sender_nf_id;
+	int sender_next_size;
 };
 
+#define MAX_NFS 16
+struct nf_info {
+	int sender_next_size;
+	bool first_packet_received;
+	uint64_t expected_mod_value;
+	uint64_t next_expected_pkt_id;
+} nf_info_arr[MAX_NFS] = {0};
+
 struct test_stats {
-	__u64 pkt_count;
-	__u64 even_next; // Next expected even packet ID
-	__u64 odd_next;	 // Next expected odd packet ID
-	__u64 pkt_dropped;
-	__u64 pkt_corrupted;
-	__u64 pkt_correct;
-	__u64 even;
-	__u64 odd;
+	uint64_t pkt_count;
+	uint64_t pkt_dropped;
+	uint64_t pkt_corrupted;
+	uint64_t pkt_correct;
 };
 
 struct appconf {
@@ -58,7 +63,15 @@ struct appconf {
 	int hops;
 } app_conf;
 
-static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
+static const char *correctness_options[] = {
+	"-c <num>\tStart CPU (default: 0)",
+    "-e <num>\tEnd CPU (default: 0)",
+    "-s <num>\tStats CPU (default: 1)",
+	"-h <num>\tNumber of hops (default: 1)",
+	NULL
+};
+
+static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
 {
 	int c;
 	opterr = 0;
@@ -67,6 +80,7 @@ static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int 
 	app_conf->cpu_start = 0;
 	app_conf->cpu_end = 0;
 	app_conf->stats_cpu = 1;
+	app_conf->hops = 1;
 
 	argc -= shift;
 	argv += shift;
@@ -86,39 +100,16 @@ static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int 
 			app_conf->hops = atoi(optarg);
 			break;
 		default:
-			abort();
+			printf("Usage: %s -h\n", argv[-shift]);
+			return -1;
 		}
-}
-
-static void __hex_dump(void *pkt, size_t length)
-{
-	const unsigned char *address = (unsigned char *)pkt;
-	size_t line_size = 32;
-	int i = 0;
-
-	while (length-- > 0) {
-		printf("%02X ", *address++);
-		if (!(++i % line_size) || (length == 0 && i % line_size)) {
-			if (length == 0) {
-				while (i++ % line_size)
-					printf("__ ");
-			}
-			printf("\n");
-		}
-	}
-	printf("\n");
+	return 0;
 }
 
 static void process_packets(void *data, __u32 *len, struct test_stats *stats)
 {
 	void *pos = data;
 	void *data_end = data + *len;
-
-	// if (*before1_1 < 2) {
-	// 	printf("before: %lld, len %d\n", stats->pkt_count, *len);
-	// 	__hex_dump(data, *len);
-	// 	*before1_1 = *before1_1 + 1;
-	// }
 
 	struct ethhdr *eth = (struct ethhdr *)pos;
 	if ((void *)(eth + 1) > data_end) {
@@ -173,241 +164,198 @@ static void process_packets(void *data, __u32 *len, struct test_stats *stats)
 	payload_len = ntohs(udphdr->len) - sizeof(struct udphdr);
 
 	size_t testHeaderLen = sizeof(struct testHeader);
+    void *payload_end = pos + payload_len;
+
+	struct testHeader *testHeader = NULL;
 
 	/* First NF */
 	if (ntohs(udphdr->dest) != TEST_PORT) {
-		// Shift the data to add the test header. Can we do this without memmove??
-		memmove(pos + testHeaderLen, pos, payload_len);
+		// Append test header at the end of the UDP payload
+        testHeader = (struct testHeader *)payload_end;
+        testHeader->lastHop = app_conf.hops;
+        testHeader->hopCount = 1;
+        testHeader->old_dst = udphdr->dest;
 
-		// Add test header and update the old length
-		struct testHeader *testHeader = pos;
-		testHeader->lastHop = app_conf.hops;
-		testHeader->hopCount = 1;
-		testHeader->pktId = stats->pkt_count++;
-		*len += testHeaderLen;
+        *len += testHeaderLen;
+        udphdr->len = htons(ntohs(udphdr->len) + testHeaderLen);
+        iph->tot_len = htons(ntohs(iph->tot_len) + testHeaderLen);
+        
+        udphdr->dest = htons(TEST_PORT);
 
-		// update the udp header
-		testHeader->old_dst = udphdr->dest;
-		udphdr->dest = htons(TEST_PORT);
-		udphdr->len = htons(ntohs(udphdr->len) + testHeaderLen);
-
-		// update the ip payload length
-		iph->tot_len = htons(ntohs(iph->tot_len) + testHeaderLen);
+        stats->pkt_correct++;
 	} else {
-		struct testHeader *testHeader = pos;
+        // testHeader is at the end of the UDP payload
+        testHeader = (struct testHeader *)(payload_end - testHeaderLen);
 
 		testHeader->hopCount++;
 
-		// Verify if the pktId is equal to the pkt_count++ and update the pkt_count
-		// if (testHeader->pktId != stats->pkt_count) {
-		// 	if (testHeader->pktId < stats->pkt_count) {
-		// 		stats->pkt_corrupted++;
-		// 		stats->pkt_count = testHeader->pktId + 1;
-		// 	} else {
-		// 		stats->pkt_corrupted++;
-		// 		stats->pkt_count = testHeader->pktId + 1;
-		// 	}
-		// } else {
-		// 	stats->pkt_count = testHeader->pktId + 1;
-		// 	stats->pkt_correct++;
-		// }
+		uint64_t received_pktId = testHeader->pktId;
+		int sender_nf_id = testHeader->sender_nf_id;
+		int sender_next_size = testHeader->sender_next_size;
 
-		// if (bool_array[testHeader->pktId]) {
-		// 	stats->pkt_corrupted++;
-		// } else {
-		// 	bool_array[testHeader->pktId] = true;
-		// 	stats->pkt_correct++;
-		// 	if (testHeader->pktId % 2 == 0) {
-		// 		stats->even++;
-		// 	} else {
-		// 		stats->odd++;
-		// 	}
-		// }
+		if (sender_nf_id < 0 || sender_nf_id >= MAX_NFS) {
+			log_error("ERROR: Invalid sender NF ID %d", sender_nf_id);
+			stats->pkt_corrupted++;
+			goto test_header_update;
+		}
+		if (sender_next_size <= 0) {
+			log_error("ERROR: Invalid sender next size %d", sender_next_size);
+			stats->pkt_corrupted++;
+			goto test_header_update;
+		}
 
-		if (testHeader->pktId % 2 == 0) { // Even packet
-			if (testHeader->pktId != stats->even_next) {
-				__hex_dump(data, *len);
-				if (testHeader->pktId < stats->even_next) {
-					stats->pkt_corrupted++;
-					stats->even_next = testHeader->pktId + 2;
-				} else {
-					stats->pkt_corrupted++;
-					stats->even_next = testHeader->pktId + 2;
-				}
-			} else {
-				stats->even++;
-				stats->pkt_correct++;
-				stats->even_next += 2;
+		struct nf_info *sender_info = &nf_info_arr[sender_nf_id];
+		
+		if (!sender_info->first_packet_received) {
+			sender_info->first_packet_received = true;
+			sender_info->sender_next_size = sender_next_size;
+			sender_info->expected_mod_value = received_pktId % sender_next_size;
+			sender_info->next_expected_pkt_id = received_pktId + sender_next_size;
+			stats->pkt_correct++; // first packet is always correct
+		} else {
+			if (sender_next_size != sender_info->sender_next_size) {
+				log_error("ERROR: nf_next_size mismatch for NF ID %d: expected %d, got %d",
+					sender_nf_id,
+					sender_info->sender_next_size,
+					sender_next_size);
+				stats->pkt_corrupted++;
+				goto test_header_update;
 			}
-		} else { // Odd packet
-			if (testHeader->pktId != stats->odd_next) {
-				if (testHeader->pktId < stats->odd_next) {
-					__hex_dump(data, *len);
+
+			if (received_pktId % sender_next_size != sender_info->expected_mod_value) {
+				log_error("ERROR: pktId %% sender_next_size mismatch for NF ID %d: expected %lu, got %lu",
+					sender_nf_id,
+					sender_info->expected_mod_value,
+					received_pktId % sender_next_size);
+				stats->pkt_corrupted++;
+				goto test_header_update;
+			}
+
+			uint64_t next_expected_pkt_id = sender_info->next_expected_pkt_id;
+
+			if(received_pktId != next_expected_pkt_id) {
+				if (received_pktId < next_expected_pkt_id) {
 					stats->pkt_corrupted++;
-					stats->odd_next = testHeader->pktId + 2;
 				} else {
-					stats->pkt_corrupted++;
-					stats->odd_next = testHeader->pktId + 2;
+					sender_info->next_expected_pkt_id = received_pktId + sender_next_size;
+					stats->pkt_dropped += (received_pktId - next_expected_pkt_id) / sender_next_size;
 				}
 			} else {
-				stats->odd++;
+				sender_info->next_expected_pkt_id += sender_next_size;
 				stats->pkt_correct++;
-				stats->odd_next += 2;
 			}
 		}
 
-		if (testHeader->lastHop == testHeader->hopCount) {
-			uint8_t tmp_mac[ETH_ALEN];
-			struct in_addr tmp_ip;
-			unsigned short tmp_port;
-			payload_len -= testHeaderLen;
-
-			tmp_port = testHeader->old_dst;
-
-			// Shift the data to remove the test header
-			memmove(pos, pos + testHeaderLen, payload_len);
-
-			// update the udp header
-			udphdr->dest = tmp_port;
-			udphdr->len = htons(ntohs(udphdr->len) - testHeaderLen);
-			*len -= testHeaderLen;
-
-			tmp_port = udphdr->dest;
-			udphdr->dest = udphdr->source;
-			udphdr->source = tmp_port;
-
-			// update the ip payload length
-			iph->tot_len = htons(ntohs(iph->tot_len) - testHeaderLen);
-
-			memcpy(tmp_mac, eth->h_dest, ETH_ALEN);
-			memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
-			memcpy(eth->h_source, tmp_mac, ETH_ALEN);
-
-			memcpy(&tmp_ip, &iph->saddr, sizeof(tmp_ip));
-			memcpy(&iph->saddr, &iph->daddr, sizeof(tmp_ip));
-			memcpy(&iph->daddr, &tmp_ip, sizeof(tmp_ip));
-		}
 	}
 
-	// if (*after1_1 < 2) {
-	// 	printf("after:\n");
-	// 	__hex_dump(data, *len);
-	// 	*after1_1 = *after1_1 + 1;
-	// }
+
+test_header_update:
+	testHeader->pktId = stats->pkt_count++;
+	testHeader->sender_nf_id = cfg->nf_id;
+	testHeader->sender_next_size = nf->next_size;
+
+	if (testHeader->lastHop == testHeader->hopCount) {
+		uint8_t tmp_mac[ETH_ALEN];
+		struct in_addr tmp_ip;
+		unsigned short tmp_port;
+		payload_len -= testHeaderLen;
+
+		tmp_port = testHeader->old_dst;
+
+		udphdr->dest = tmp_port;
+		udphdr->len = htons(ntohs(udphdr->len) - testHeaderLen);
+		*len -= testHeaderLen;
+		
+		tmp_port = udphdr->dest;
+		udphdr->dest = udphdr->source;
+		udphdr->source = tmp_port;
+		
+		iph->tot_len = htons(ntohs(iph->tot_len) - testHeaderLen);
+
+		memcpy(tmp_mac, eth->h_dest, ETH_ALEN);
+		memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
+		memcpy(eth->h_source, tmp_mac, ETH_ALEN);
+
+		memcpy(&tmp_ip, &iph->saddr, sizeof(tmp_ip));
+		memcpy(&iph->saddr, &iph->daddr, sizeof(tmp_ip));
+		memcpy(&iph->daddr, &tmp_ip, sizeof(tmp_ip));
+	}
 
 	return;
 }
 
-struct Args {
+struct sock_args {
 	int socket_id;
-	int *next;
 	int next_size;
 };
 
 static void *socket_routine(void *arg)
 {
-	struct Args *a = (struct Args *)arg;
-	int socket_id = a->socket_id;
-	int *next = a->next;
-	int next_size = a->next_size;
-	// free(arg);
-	log_info("SOCKET_ID: %d", socket_id);
-	static __u32 nb_frags;
-	int i, ret, nfds = 1, nrecv;
+	nfds_t nfds = 1;
+	int ret, next_size;
+	struct socket *xsk;
+	struct xskvec *xskvecs;
 	struct pollfd fds[1] = {};
-	struct xskmsghdr msg = {};
+	uint32_t i, nrecv, nsend, count, nb_frags = 0;
+	struct sock_args *a = (struct sock_args *)arg;
 
-	// int idle_timeout = 1;
-	// uint64_t idle_timestamp = 0;
+	next_size = a->next_size;
 
-	log_info("2_NEXT_SIZE: %d", next_size);
+	log_debug("SOCKET_ID: %d", a->socket_id);
+	xsk = nf->thread[a->socket_id]->socket;
 
-	for (int i = 0; i < next_size; i++) {
-		log_info("2_NEXT_ITEM_%d %d", i, next[i]);
+	xskvecs = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
+	if (!xskvecs) {
+		log_error("ERROR: Memory allocation failed for xskvecs");
+		return NULL;
 	}
 
-	cfg->xsk->poll_timeout = -1;
-
-	msg.msg_iov = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
-
-	fds[0].fd = nf->thread[socket_id]->socket->fd;
+	fds[0].fd = xsk->fd;
 	fds[0].events = POLLIN;
 
-	nf->thread[socket_id]->socket->idle_fd.fd = nf->thread[socket_id]->socket->fd;
-	nf->thread[socket_id]->socket->idle_fd.events = POLLIN;
-
-	unsigned int count = 0;
+	count = 0;
 	for (;;) {
-		if (cfg->xsk->mode & FLASH__POLL) {
-			ret = flash__oldpoll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
-			if (ret != 1)
-				continue;
-		}
+		ret = flash__poll(cfg, xsk, fds, nfds);
+		if (!(ret == 1 || ret == -2))
+			continue;
 
-		// ret = flash__oldpoll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
-		// if (ret <= 0 || ret > 1)
-		// 	continue;
+		nrecv = flash__recvmsg(cfg, xsk, xskvecs, cfg->xsk->batch_size);
 
-		nrecv = flash__oldrecvmsg(cfg, nf->thread[socket_id]->socket, &msg);
-
-		// if (nrecv == 0) {
-		// 	uint64_t tstamp = rdtsc();
-
-		// 	if (idle_timeout && idle_timestamp == 0) {
-		// 		idle_timestamp = tstamp + ((get_timer_hz(cfg) / MS_PER_S) * idle_timeout);
-		// 		continue;
-		// 	}
-
-		// 	if (idle_timestamp && (tstamp > idle_timestamp)) {
-		// 		idle_timestamp = 0;
-
-		// 		ret = flash__oldpoll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
-		// 		if (ret)
-		// 			nrecv = flash__oldrecvmsg(cfg, nf->thread[socket_id]->socket, &msg);
-		// 		else
-		// 			continue;
-		// 	}
-		// } else
-		// 	idle_timestamp = 0;
-
-		struct xskvec *send[nrecv];
-		unsigned int tot_pkt_send = 0;
 		for (i = 0; i < nrecv; i++) {
-			struct xskvec *xv = &msg.msg_iov[i];
-			bool eop = IS_EOP_DESC(xv->options);
-
 			if (next_size != 0) {
-				xv->options = ((count % next_size) << 16) | (xv->options & 0xFFFF);
+				xskvecs[i].options = ((count % next_size) << 16) | (xskvecs[i].options & 0xFFFF);
 				count++;
 			}
-			char *pkt = xv->data;
+			
+			char *pkt = xskvecs[i].data;
 
 			if (!nb_frags++)
-				process_packets(pkt, &xv->len, &stats_arr[socket_id]);
+				process_packets(pkt, &xskvecs[i].len, &stats_arr[a->socket_id]);
 
-			send[tot_pkt_send++] = &msg.msg_iov[i];
-			if (eop)
+			if (IS_EOP_DESC(xskvecs[i].options))
 				nb_frags = 0;
 		}
 
 		if (nrecv) {
-			ret = flash__oldsendmsg(cfg, nf->thread[socket_id]->socket, send, tot_pkt_send);
-			if (ret != nrecv) {
+			nsend = flash__sendmsg(cfg, xsk, xskvecs, nrecv);
+			if (nsend != nrecv) {
 				log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
-				exit(EXIT_FAILURE);
+				break;
 			}
 		}
 
 		if (done)
 			break;
 	}
-	free(msg.msg_iov);
+	free(xskvecs);
 	return NULL;
 }
 
-static void *worker__stats(void *arg)
+static void *worker__stats(void *conf)
 {
-	(void)arg;
+	struct stats_conf *arg = (struct stats_conf *)conf;
+	struct nf *nf = arg->nf;
+	struct config *cfg = arg->cfg;
 
 	if (cfg->verbose) {
 		unsigned int interval = cfg->stats_interval;
@@ -422,11 +370,9 @@ static void *worker__stats(void *arg)
 				log_error("Terminal clear error");
 			for (int i = 0; i < cfg->total_sockets; i++) {
 				flash__dump_stats(cfg, nf->thread[i]->socket);
-				printf("%-18s %'-14llu\n", "dropped", stats_arr[i].pkt_dropped);
-				printf("%-18s %'-14llu\n", "corrupt", stats_arr[i].pkt_corrupted);
-				printf("%-18s %'-14llu\n", "correct", stats_arr[i].pkt_correct);
-				printf("%-18s %'-14llu\n", "even", stats_arr[i].even);
-				printf("%-18s %'-14llu\n", "odd", stats_arr[i].odd);
+				printf("%-18s %'-14lu\n", "dropped", stats_arr[i].pkt_dropped);
+				printf("%-18s %'-14lu\n", "corrupt", stats_arr[i].pkt_corrupted);
+				printf("%-18s %'-14lu\n", "correct", stats_arr[i].pkt_correct);
 			}
 		}
 	}
@@ -435,26 +381,37 @@ static void *worker__stats(void *arg)
 
 int main(int argc, char **argv)
 {
+	int shift;
+	struct sock_args *args;
+	struct stats_conf stats_cfg = { NULL };
 	cpu_set_t cpuset;
+	pthread_t socket_thread, stats_thread;
+
 	cfg = calloc(1, sizeof(struct config));
 	if (!cfg) {
 		log_error("ERROR: Memory allocation failed\n");
 		exit(EXIT_FAILURE);
 	}
 
-	int n = flash__parse_cmdline_args(argc, argv, cfg);
-	parse_app_args(argc, argv, &app_conf, n);
-	flash__configure_nf(&nf, cfg);
-	flash__populate_fill_ring(nf->thread, cfg->umem->frame_size, cfg->total_sockets, cfg->umem_offset, cfg->umem_scale);
+	cfg->app_name = "Correctness Test Application";
+	cfg->app_options = correctness_options;
+
+	shift = flash__parse_cmdline_args(argc, argv, cfg);
+
+	if (shift < 0)
+		goto out_cfg;
+	
+	if (parse_app_args(argc, argv, &app_conf, shift) < 0)
+		goto out_cfg;
+	
+	if (flash__configure_nf(&nf, cfg) < 0)
+		goto out_cfg;
 
 	stats_arr = calloc(cfg->total_sockets, sizeof(struct test_stats));
-	stats_arr->even_next = 0;
-	stats_arr->odd_next = 1;
-	// bool_array = calloc(UINT32_MAX, sizeof(bool));
-	// if (!bool_array) {
-	// 	fprintf(stderr, "ERROR: Unable to allocate memory for boolean array\n");
-	// 	exit(EXIT_FAILURE);
-	// }
+	if (!stats_arr) {
+		log_error("ERROR: Memory allocation failed for stats_arr");
+		goto out_cfg;
+	}
 
 	log_info("Control Plane Setup Done");
 
@@ -464,49 +421,67 @@ int main(int argc, char **argv)
 
 	log_info("STARTING Data Path");
 
+	args = calloc(cfg->total_sockets, sizeof(struct sock_args));
+	if (!args) {
+		log_error("ERROR: Memory allocation failed for sock_args");
+		goto out_cfg_close;
+	}
+
 	for (int i = 0; i < cfg->total_sockets; i++) {
-		struct Args *args = calloc(1, sizeof(struct Args));
-		args->socket_id = i;
-		args->next = nf->next;
-		args->next_size = nf->next_size;
+		args[i].socket_id = i;
+		args[i].next_size = nf->next_size;
 
-		log_info("2_NEXT_SIZE: %d", args->next_size);
+		log_info("2_NEXT_SIZE: %d", args[i].next_size);
 
-		for (int i = 0; i < args->next_size; i++) {
-			log_info("2_NEXT_ITEM_%d %d", i, nf->next[i]);
-		}
-
-		pthread_t socket_thread;
-		if (pthread_create(&socket_thread, NULL, socket_routine, args)) {
+		if (pthread_create(&socket_thread, NULL, socket_routine, &args[i])) {
 			log_error("Error creating socket thread");
-			exit(EXIT_FAILURE);
+			goto out_args;
 		}
 		CPU_ZERO(&cpuset);
 		CPU_SET((i % (app_conf.cpu_end - app_conf.cpu_start + 1)) + app_conf.cpu_start, &cpuset);
 		if (pthread_setaffinity_np(socket_thread, sizeof(cpu_set_t), &cpuset) != 0) {
 			log_error("ERROR: Unable to set thread affinity: %s\n", strerror(errno));
-			exit(EXIT_FAILURE);
+			goto out_args;
 		}
 
-		pthread_detach(socket_thread);
+		if (pthread_detach(socket_thread) != 0) {
+			log_error("ERROR: Unable to detach thread: %s", strerror(errno));
+			goto out_args;
+		}
 	}
 
-	pthread_t stats_thread;
-	if (pthread_create(&stats_thread, NULL, worker__stats, NULL)) {
+	stats_cfg.nf = nf;
+	stats_cfg.cfg = cfg;
+
+	if (pthread_create(&stats_thread, NULL, worker__stats, &stats_cfg)) {
 		log_error("Error creating statistics thread");
-		exit(EXIT_FAILURE);
+		goto out_args;
 	}
 	CPU_ZERO(&cpuset);
 	CPU_SET(app_conf.stats_cpu, &cpuset);
 	if (pthread_setaffinity_np(stats_thread, sizeof(cpu_set_t), &cpuset) != 0) {
 		log_error("ERROR: Unable to set thread affinity: %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
+		goto out_args;
 	}
-	pthread_detach(stats_thread);
+	if (pthread_detach(stats_thread) != 0) {
+		log_error("ERROR: Unable to detach thread: %s", strerror(errno));
+		goto out_args;
+	}
 
 	flash__wait(cfg);
 
 	flash__xsk_close(cfg, nf);
 
 	return EXIT_SUCCESS;
+
+out_args:
+	done = true;
+	free(args);
+out_cfg_close:
+	free(stats_arr);
+	sleep(1);
+	flash__xsk_close(cfg, nf);
+out_cfg:
+	free(cfg);
+	exit(EXIT_FAILURE);
 }
