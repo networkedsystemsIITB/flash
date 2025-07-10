@@ -3,8 +3,8 @@ use std::io;
 pub(super) type MemResult<T> = Result<T, MemError>;
 
 #[derive(Debug, thiserror::Error)]
+#[error("mem error: {0}")]
 pub enum MemError {
-    #[error("mem error: {0}")]
     IO(#[from] io::Error),
 
     #[error("mem error: mmap not page aligned")]
@@ -12,6 +12,9 @@ pub enum MemError {
 
     #[error("mem error: mmap offset out of bounds")]
     MmapOffset,
+
+    #[error("mem error: could not populate fq")]
+    FqPopulate,
 }
 
 impl MemError {

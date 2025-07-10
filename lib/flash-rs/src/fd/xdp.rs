@@ -13,7 +13,7 @@ pub(super) const XDP_MMAP_OFFSETS_SIZEOF: u32 = mem::size_of::<xdp_mmap_offsets>
 pub(super) const XDP_STATISTICS_SIZEOF: u32 = mem::size_of::<xdp_statistics>() as _;
 
 #[repr(transparent)]
-pub(super) struct XdpMmapOffsets(xdp_mmap_offsets);
+pub(crate) struct XdpMmapOffsets(xdp_mmap_offsets);
 
 impl Default for XdpMmapOffsets {
     fn default() -> Self {
@@ -37,30 +37,29 @@ fn new_xdp_ring_offset() -> xdp_ring_offset {
 
 impl XdpMmapOffsets {
     #[inline]
-    pub(super) fn rx(&self) -> &xdp_ring_offset {
+    pub(crate) fn rx(&self) -> &xdp_ring_offset {
         &self.0.rx
     }
 
     #[inline]
-    pub(super) fn tx(&self) -> &xdp_ring_offset {
+    pub(crate) fn tx(&self) -> &xdp_ring_offset {
         &self.0.tx
     }
 
     #[inline]
-    pub(super) fn fr(&self) -> &xdp_ring_offset {
+    pub(crate) fn fr(&self) -> &xdp_ring_offset {
         &self.0.fr
     }
 
     #[inline]
-    pub(super) fn cr(&self) -> &xdp_ring_offset {
+    pub(crate) fn cr(&self) -> &xdp_ring_offset {
         &self.0.cr
     }
 }
 
 #[cfg(feature = "stats")]
-#[derive(Debug)]
 #[repr(transparent)]
-pub struct XdpStatistics(xdp_statistics);
+pub(crate) struct XdpStatistics(xdp_statistics);
 
 #[cfg(feature = "stats")]
 impl Default for XdpStatistics {

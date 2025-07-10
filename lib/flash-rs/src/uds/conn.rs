@@ -36,6 +36,14 @@ impl UdsConn {
     }
 
     #[inline]
+    pub(super) fn recv_u32(&mut self) -> io::Result<u32> {
+        let mut buf = [0; 4];
+        self.0.read_exact(&mut buf)?;
+
+        Ok(u32::from_ne_bytes(buf))
+    }
+
+    #[inline]
     pub(super) fn recv_bool(&mut self) -> io::Result<bool> {
         let mut buf = [0; 1];
         self.0.read_exact(&mut buf)?;

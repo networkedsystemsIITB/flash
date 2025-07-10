@@ -1,6 +1,6 @@
 use std::{io, net::AddrParseError};
 
-use crate::{config::ConfigError, uds::UdsError, xsk::SocketError};
+use crate::{config::ConfigError, fd::FdError, uds::UdsError, xsk::SocketError};
 
 #[derive(Debug, thiserror::Error)]
 #[error("flash error: {0}")]
@@ -10,5 +10,6 @@ pub enum FlashError {
 
     Config(#[from] ConfigError),
     UDS(#[from] UdsError),
+    Fd(#[from] FdError),
     Socket(#[from] SocketError),
 }

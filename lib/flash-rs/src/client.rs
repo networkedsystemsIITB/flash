@@ -3,13 +3,14 @@ use std::{net::Ipv4Addr, str::FromStr, sync::Arc};
 use crate::{
     FlashError, Socket,
     config::{BindFlags, FlashConfig, Mode, PollConfig, XskConfig},
+    fd::Fd,
     mem::Umem,
     uds::UdsClient,
-    xsk::{Fd, SocketShared},
+    xsk::SocketShared,
 };
 
 #[cfg(feature = "stats")]
-use crate::{config::XdpFlags, xsk::Stats};
+use crate::{config::XdpFlags, stats::Stats};
 
 pub struct Route {
     pub ip_addr: Ipv4Addr,
@@ -52,43 +53,35 @@ pub fn connect(config: &FlashConfig) -> Result<(Vec<Socket>, Route), FlashError>
     #[cfg(feature = "tracing")]
     tracing::debug!("Mode: {mode:?}");
 
-    let poll_timeout = if mode.contains(Mode::FLASH_POLL) {
-        uds_client.get_poll_timeout()?
-    } else {
-        0
-    };
+    // let poll_timeout = if mode.contains(Mode::FLASH_POLL) {
+    //     uds_client.get_poll_timeout()?
+    // } else {
+    //     0
+    // };
 
-    #[cfg(feature = "tracing")]
-    tracing::debug!("Poll Timeout: {poll_timeout}");
+    // #[cfg(feature = "tracing")]
+    // tracing::debug!("Poll Timeout: {poll_timeout}");
 
     let mut socket_info = Vec::with_capacity(total_sockets);
 
     for _ in 0..total_sockets {
-        #[cfg(feature = "stats")]
+        #[cfg(any(feature = "stats", feature = "tracing"))]
         let (fd, ifqueue) = uds_client.create_socket()?;
 
-        #[cfg(not(feature = "stats"))]
+        #[cfg(not(any(feature = "stats", feature = "tracing")))]
         let (fd, _) = uds_client.create_socket()?;
 
-        let fd = Fd::new(fd, poll_timeout)?;
-
         #[cfg(feature = "tracing")]
-        {
-            #[cfg(feature = "stats")]
-            tracing::debug!(
-                "Socket: {} :: FD: {fd:?} Ifqueue: {ifqueue}",
-                socket_info.len()
-            );
-
-            #[cfg(not(feature = "stats"))]
-            tracing::debug!("Socket: {} :: FD: {fd:?}", socket_info.len());
-        }
+        tracing::debug!(
+            "Socket: {} :: FD: {fd:?} Ifqueue: {ifqueue}",
+            socket_info.len()
+        );
 
         #[cfg(feature = "stats")]
-        socket_info.push((fd, ifqueue));
+        socket_info.push((Fd::new(fd), ifqueue));
 
         #[cfg(not(feature = "stats"))]
-        socket_info.push(fd);
+        socket_info.push(Fd::new(fd));
     }
 
     #[cfg(feature = "stats")]
@@ -96,6 +89,11 @@ pub fn connect(config: &FlashConfig) -> Result<(Vec<Socket>, Route), FlashError>
 
     #[cfg(all(feature = "stats", feature = "tracing"))]
     tracing::debug!("Ifname: {ifname}");
+
+    // let route_size = uds_client.get_route_info()?;
+
+    // #[cfg(feature = "tracing")]
+    // tracing::debug!("Route Size: {route_size}");
 
     let route = Route {
         ip_addr: Ipv4Addr::from_str(&uds_client.get_ip_addr()?)?,
@@ -121,12 +119,16 @@ pub fn connect(config: &FlashConfig) -> Result<(Vec<Socket>, Route), FlashError>
     let socket_shared = Arc::new(SocketShared::new(xsk_config, poll_config, uds_client));
 
     #[cfg(feature = "stats")]
-    let mut sockets = socket_info
+    let sockets = socket_info
         .into_iter()
-        .map(|(fd, ifqueue)| {
+        .enumerate()
+        .map(|(i, (fd, ifqueue))| {
             Socket::new(
                 fd.clone(),
-                Umem::new(umem_fd, umem_size, umem_scale, umem_offset)?,
+                Umem::new(umem_fd, umem_size)?,
+                i,
+                umem_scale,
+                umem_offset,
                 Stats::new(fd, ifname.clone(), ifqueue, xdp_flags.clone()),
                 socket_shared.clone(),
             )
@@ -134,21 +136,20 @@ pub fn connect(config: &FlashConfig) -> Result<(Vec<Socket>, Route), FlashError>
         .collect::<Result<Vec<_>, _>>()?;
 
     #[cfg(not(feature = "stats"))]
-    let mut sockets = socket_info
+    let sockets = socket_info
         .into_iter()
-        .map(|fd| {
+        .enumerate()
+        .map(|(i, fd)| {
             Socket::new(
                 fd.clone(),
-                Umem::new(umem_fd, umem_size, umem_scale, umem_offset)?,
+                Umem::new(umem_fd, umem_size)?,
+                i,
+                umem_scale,
+                umem_offset,
                 socket_shared.clone(),
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-
-    sockets
-        .iter_mut()
-        .enumerate()
-        .try_for_each(|(i, socket)| socket.populate_fq(i))?;
 
     Ok((sockets, route))
 }

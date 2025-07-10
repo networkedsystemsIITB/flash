@@ -5,10 +5,10 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 pub struct FlashConfig {
     #[arg(short, long, help = "Umem id used to connect to monitor")]
-    pub(crate) umem_id: u32,
+    pub(crate) umem_id: u16,
 
     #[arg(short = 'f', long, help = "NF id used to connect to monitor")]
-    pub(crate) nf_id: u32,
+    pub(crate) nf_id: u16,
 
     #[arg(
         short = 'p',

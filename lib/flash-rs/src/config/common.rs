@@ -5,8 +5,8 @@ use super::FlashConfig;
 impl FlashConfig {
     #[allow(clippy::must_use_candidate)]
     pub fn new(
-        umem_id: u32,
-        nf_id: u32,
+        umem_id: u16,
+        nf_id: u16,
         smart_poll: bool,
         idle_timeout: Duration,
         idleness: f32,

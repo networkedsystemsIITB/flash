@@ -1,57 +1,74 @@
-use std::{io, ptr};
+use std::{fmt, io, ptr};
 
-use libc::{MSG_DONTWAIT, SOL_XDP, XDP_MMAP_OFFSETS, pollfd, ssize_t};
+use libc::{
+    EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, SOL_XDP, XDP_MMAP_OFFSETS, pollfd, ssize_t,
+};
 
 #[cfg(feature = "stats")]
 use libc::XDP_STATISTICS;
 
-use crate::mem::{MemError, Mmap};
+use crate::{
+    mem::{MemError, Mmap},
+    util,
+};
 
 use super::{
-    error::{SocketError, SocketResult},
+    error::{FdError, FdResult},
     xdp::{XDP_MMAP_OFFSETS_SIZEOF, XdpMmapOffsets},
 };
 
 #[cfg(feature = "stats")]
 use super::xdp::{XDP_STATISTICS_SIZEOF, XdpStatistics};
 
-#[allow(clippy::struct_field_names)]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct Fd {
     id: i32,
     poll_fd: pollfd,
-    poll_timeout: i32,
+    // poll_timeout: i32,
+}
+
+impl fmt::Debug for Fd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self, f)
+    }
 }
 
 impl Fd {
-    pub(crate) fn new(id: i32, poll_timeout: i32) -> SocketResult<Self> {
-        if id < 0 {
-            Err(SocketError::InvalidFd)
-        } else {
-            Ok(Fd {
-                id,
-                poll_fd: pollfd {
-                    fd: id,
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-                poll_timeout,
-            })
+    pub(crate) fn new(id: i32) -> Self {
+        assert!(id >= 0, "Invalid file descriptor: {id}");
+
+        Fd {
+            id,
+            poll_fd: pollfd {
+                fd: id,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            // poll_timeout,
         }
     }
 
     #[inline]
-    pub(super) fn mmap(&self, len: usize, offset: i64) -> Result<Mmap, MemError> {
+    pub(crate) fn mmap(&self, len: usize, offset: i64) -> Result<Mmap, MemError> {
         Mmap::new(len, self.id, offset, true)
     }
 
     #[inline]
-    pub(super) fn kick(&self) -> ssize_t {
-        unsafe { libc::sendto(self.id, ptr::null(), 0, MSG_DONTWAIT, ptr::null(), 0) }
+    pub(crate) fn kick(&self) -> Result<ssize_t, ()> {
+        let n = unsafe { libc::sendto(self.id, ptr::null(), 0, MSG_DONTWAIT, ptr::null(), 0) };
+
+        if n >= 0 {
+            Ok(n)
+        } else {
+            match util::get_errno() {
+                ENOBUFS | EAGAIN | EBUSY | ENETDOWN => Ok(0),
+                _ => Err(()),
+            }
+        }
     }
 
     #[inline]
-    pub(super) fn wakeup(&self) {
+    pub(crate) fn wakeup(&self) {
         unsafe {
             libc::recvfrom(
                 self.id,
@@ -65,15 +82,15 @@ impl Fd {
     }
 
     #[inline]
-    pub(super) fn poll(&mut self) -> io::Result<bool> {
-        match unsafe { libc::poll(&mut self.poll_fd, 1, self.poll_timeout) } {
+    pub(crate) fn poll(&mut self) -> io::Result<bool> {
+        match unsafe { libc::poll(&raw mut self.poll_fd, 1, -1) } {
             -1 => Err(io::Error::last_os_error()),
             0 => Ok(false),
             _ => Ok(true),
         }
     }
 
-    pub(super) fn xdp_mmap_offsets(&self) -> SocketResult<XdpMmapOffsets> {
+    pub(crate) fn xdp_mmap_offsets(&self) -> FdResult<XdpMmapOffsets> {
         let mut off = XdpMmapOffsets::default();
         let mut optlen = XDP_MMAP_OFFSETS_SIZEOF;
 
@@ -83,20 +100,20 @@ impl Fd {
                 SOL_XDP,
                 XDP_MMAP_OFFSETS,
                 (&raw mut off).cast(),
-                &mut optlen,
+                &raw mut optlen,
             )
         } != 0
         {
-            Err(SocketError::last_os_error())
+            Err(FdError::last_os_error())
         } else if optlen == XDP_MMAP_OFFSETS_SIZEOF {
             Ok(off)
         } else {
-            Err(SocketError::SockOptSize)
+            Err(FdError::SockOptSize)
         }
     }
 
     #[cfg(feature = "stats")]
-    pub(super) fn xdp_statistics(&self) -> SocketResult<XdpStatistics> {
+    pub(crate) fn xdp_statistics(&self) -> FdResult<XdpStatistics> {
         let mut stats = XdpStatistics::default();
         let mut optlen = XDP_STATISTICS_SIZEOF;
 
@@ -110,11 +127,11 @@ impl Fd {
             )
         } != 0
         {
-            Err(SocketError::last_os_error())
+            Err(FdError::last_os_error())
         } else if optlen == XDP_STATISTICS_SIZEOF {
             Ok(stats)
         } else {
-            Err(SocketError::SockOptSize)
+            Err(FdError::SockOptSize)
         }
     }
 }
