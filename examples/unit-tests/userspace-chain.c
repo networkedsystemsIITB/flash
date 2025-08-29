@@ -76,10 +76,17 @@ struct guest_queue *guest_queues[FLASH_MAX_SOCKETS][FLASH_MAX_SOCKETS];
 
 ///////////// guest ring buffer operations /////////////
 
+#if defined(__ARM_ARCH_ISA_A64)
+#define guest_cpu_relax()                               \
+	do {                                            \
+		asm volatile("yield\n" : : : "memory"); \
+	} while (0)
+#elif defined(__x86_64__)
 #define guest_cpu_relax()                               \
 	do {                                            \
 		asm volatile("pause\n" : : : "memory"); \
 	} while (0)
+#endif
 
 static inline __u32 guest_move_prod_head(struct guest_queue *r, __u32 n, __u32 *old_head, __u32 *new_head)
 {
