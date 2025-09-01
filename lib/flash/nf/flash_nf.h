@@ -28,7 +28,6 @@ struct stats_conf {
 	struct config *cfg;
 };
 
-extern bool done;
 struct ether_addr;
 
 /* Control Path APIs */

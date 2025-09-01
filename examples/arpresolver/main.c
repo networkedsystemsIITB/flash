@@ -28,7 +28,7 @@
 #define PROTO_STRLEN 4
 #define IFNAME_STRLEN 256
 
-bool done = false;
+volatile bool done = false;
 struct config *cfg = NULL;
 struct nf *nf;
 
@@ -178,7 +178,7 @@ static void *socket_routine(void *arg)
 	struct sock_args *a = (struct sock_args *)arg;
 
 	int socket_id = a->socket_id;
-	
+
 	log_info("SOCKET_ID: %d", socket_id);
 	xsk = nf->thread[socket_id]->socket;
 
@@ -302,6 +302,7 @@ int main(int argc, char **argv)
 
 	cfg->app_name = "ARP Resolver";
 	cfg->app_options = arpresolver_options;
+	cfg->done = &done;
 
 	shift = flash__parse_cmdline_args(argc, argv, cfg);
 	if (shift < 0)
@@ -320,7 +321,7 @@ int main(int argc, char **argv)
 		log_error("ERROR: Unable to get MAC address for interface %s", cfg->ifname);
 		goto out_cfg;
 	}
-	
+
 	memcpy(src_mac, tmp_addr.ether_addr_octet, ETH_ALEN);
 
 	// Parse JSON
@@ -360,7 +361,7 @@ int main(int argc, char **argv)
 	stats_cfg.nf = nf;
 	stats_cfg.cfg = cfg;
 
-	if (pthread_create(&stats_thread, NULL, flash__stats_thread, &stats_cfg)){
+	if (pthread_create(&stats_thread, NULL, flash__stats_thread, &stats_cfg)) {
 		log_error("Error creating statistics thread");
 		goto out_args;
 	}

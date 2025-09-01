@@ -240,7 +240,7 @@ void *flash__stats_thread(void *conf)
 		for (int i = 0; i < cfg->total_sockets; i++)
 			nf->thread[i]->socket->timestamp = flash__get_nsecs(cfg);
 
-		while (!done) {
+		while (!*cfg->done) {
 			sleep(interval);
 			if (system("clear") != 0)
 				log_error("Terminal clear error");

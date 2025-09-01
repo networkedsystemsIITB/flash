@@ -25,7 +25,7 @@
 #define IFNAME_STRLEN 256
 #define NUM_INVALID_SESSIONS 1000
 
-bool done = false;
+volatile bool done = false;
 struct config *cfg = NULL;
 struct nf *nf;
 
@@ -64,7 +64,7 @@ static void *configure(void)
 {
 	// Initialise invalid_sessions with random numbers
 	srand(time(NULL)); // Seed only once before generating any random numbers
-	
+
 	for (int i = 0; i < NUM_INVALID_SESSIONS; i++) {
 		int r = rand(); // Different value each iteration
 		invalid_sessions[i] = r;
@@ -100,7 +100,7 @@ static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int s
 		case 's':
 			app_conf->stats_cpu = atoi(optarg);
 			break;
-			default:
+		default:
 			printf("Usage: %s -h\n", argv[-shift]);
 			return -1;
 		}
@@ -123,7 +123,7 @@ static void *socket_routine(void *arg)
 
 	int socket_id = a->socket_id;
 
-	log_info("SOCKET_ID: %d", socket_id);	
+	log_info("SOCKET_ID: %d", socket_id);
 
 	xsk = nf->thread[socket_id]->socket;
 
@@ -155,7 +155,7 @@ static void *socket_routine(void *arg)
 		ret = flash__poll(cfg, xsk, fds, nfds);
 		if (!(ret == 1 || ret == -2))
 			continue;
-		
+
 		nrecv = flash__recvmsg(cfg, xsk, xskvecs, cfg->xsk->batch_size);
 		wsend = 0;
 		wdrop = 0;
@@ -272,14 +272,15 @@ int main(int argc, char **argv)
 
 	cfg->app_name = "Firewall Application";
 	cfg->app_options = firewall_options;
+	cfg->done = &done;
 
 	shift = flash__parse_cmdline_args(argc, argv, cfg);
 	if (shift < 0)
 		goto out_cfg;
-	
+
 	if (parse_app_args(argc, argv, &app_conf, shift) < 0)
 		goto out_cfg;
-	
+
 	if (flash__configure_nf(&nf, cfg) < 0)
 		goto out_cfg;
 

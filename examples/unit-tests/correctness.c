@@ -21,7 +21,7 @@
 
 #define TEST_PORT 8080
 
-bool done = false;
+volatile bool done = false;
 struct config *cfg = NULL;
 struct nf *nf = NULL;
 struct test_stats *stats_arr;
@@ -47,7 +47,7 @@ struct nf_info {
 	bool first_packet_received;
 	uint64_t expected_mod_value;
 	uint64_t next_expected_pkt_id;
-} nf_info_arr[MAX_NFS] = {0};
+} nf_info_arr[MAX_NFS] = { 0 };
 
 struct test_stats {
 	uint64_t pkt_count;
@@ -63,13 +63,8 @@ struct appconf {
 	int hops;
 } app_conf;
 
-static const char *correctness_options[] = {
-	"-c <num>\tStart CPU (default: 0)",
-    "-e <num>\tEnd CPU (default: 0)",
-    "-s <num>\tStats CPU (default: 1)",
-	"-h <num>\tNumber of hops (default: 1)",
-	NULL
-};
+static const char *correctness_options[] = { "-c <num>\tStart CPU (default: 0)", "-e <num>\tEnd CPU (default: 0)",
+					     "-s <num>\tStats CPU (default: 1)", "-h <num>\tNumber of hops (default: 1)", NULL };
 
 static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
 {
@@ -164,28 +159,28 @@ static void process_packets(void *data, __u32 *len, struct test_stats *stats)
 	payload_len = ntohs(udphdr->len) - sizeof(struct udphdr);
 
 	size_t testHeaderLen = sizeof(struct testHeader);
-    void *payload_end = pos + payload_len;
+	void *payload_end = pos + payload_len;
 
 	struct testHeader *testHeader = NULL;
 
 	/* First NF */
 	if (ntohs(udphdr->dest) != TEST_PORT) {
 		// Append test header at the end of the UDP payload
-        testHeader = (struct testHeader *)payload_end;
-        testHeader->lastHop = app_conf.hops;
-        testHeader->hopCount = 1;
-        testHeader->old_dst = udphdr->dest;
+		testHeader = (struct testHeader *)payload_end;
+		testHeader->lastHop = app_conf.hops;
+		testHeader->hopCount = 1;
+		testHeader->old_dst = udphdr->dest;
 
-        *len += testHeaderLen;
-        udphdr->len = htons(ntohs(udphdr->len) + testHeaderLen);
-        iph->tot_len = htons(ntohs(iph->tot_len) + testHeaderLen);
-        
-        udphdr->dest = htons(TEST_PORT);
+		*len += testHeaderLen;
+		udphdr->len = htons(ntohs(udphdr->len) + testHeaderLen);
+		iph->tot_len = htons(ntohs(iph->tot_len) + testHeaderLen);
 
-        stats->pkt_correct++;
+		udphdr->dest = htons(TEST_PORT);
+
+		stats->pkt_correct++;
 	} else {
-        // testHeader is at the end of the UDP payload
-        testHeader = (struct testHeader *)(payload_end - testHeaderLen);
+		// testHeader is at the end of the UDP payload
+		testHeader = (struct testHeader *)(payload_end - testHeaderLen);
 
 		testHeader->hopCount++;
 
@@ -205,7 +200,7 @@ static void process_packets(void *data, __u32 *len, struct test_stats *stats)
 		}
 
 		struct nf_info *sender_info = &nf_info_arr[sender_nf_id];
-		
+
 		if (!sender_info->first_packet_received) {
 			sender_info->first_packet_received = true;
 			sender_info->sender_next_size = sender_next_size;
@@ -214,26 +209,22 @@ static void process_packets(void *data, __u32 *len, struct test_stats *stats)
 			stats->pkt_correct++; // first packet is always correct
 		} else {
 			if (sender_next_size != sender_info->sender_next_size) {
-				log_error("ERROR: nf_next_size mismatch for NF ID %d: expected %d, got %d",
-					sender_nf_id,
-					sender_info->sender_next_size,
-					sender_next_size);
+				log_error("ERROR: nf_next_size mismatch for NF ID %d: expected %d, got %d", sender_nf_id,
+					  sender_info->sender_next_size, sender_next_size);
 				stats->pkt_corrupted++;
 				goto test_header_update;
 			}
 
 			if (received_pktId % sender_next_size != sender_info->expected_mod_value) {
 				log_error("ERROR: pktId %% sender_next_size mismatch for NF ID %d: expected %lu, got %lu",
-					sender_nf_id,
-					sender_info->expected_mod_value,
-					received_pktId % sender_next_size);
+					  sender_nf_id, sender_info->expected_mod_value, received_pktId % sender_next_size);
 				stats->pkt_corrupted++;
 				goto test_header_update;
 			}
 
 			uint64_t next_expected_pkt_id = sender_info->next_expected_pkt_id;
 
-			if(received_pktId != next_expected_pkt_id) {
+			if (received_pktId != next_expected_pkt_id) {
 				if (received_pktId < next_expected_pkt_id) {
 					stats->pkt_corrupted++;
 				} else {
@@ -245,9 +236,7 @@ static void process_packets(void *data, __u32 *len, struct test_stats *stats)
 				stats->pkt_correct++;
 			}
 		}
-
 	}
-
 
 test_header_update:
 	testHeader->pktId = stats->pkt_count++;
@@ -265,11 +254,11 @@ test_header_update:
 		udphdr->dest = tmp_port;
 		udphdr->len = htons(ntohs(udphdr->len) - testHeaderLen);
 		*len -= testHeaderLen;
-		
+
 		tmp_port = udphdr->dest;
 		udphdr->dest = udphdr->source;
 		udphdr->source = tmp_port;
-		
+
 		iph->tot_len = htons(ntohs(iph->tot_len) - testHeaderLen);
 
 		memcpy(tmp_mac, eth->h_dest, ETH_ALEN);
@@ -326,7 +315,7 @@ static void *socket_routine(void *arg)
 				xskvecs[i].options = ((count % next_size) << 16) | (xskvecs[i].options & 0xFFFF);
 				count++;
 			}
-			
+
 			char *pkt = xskvecs[i].data;
 
 			if (!nb_frags++)
@@ -395,15 +384,16 @@ int main(int argc, char **argv)
 
 	cfg->app_name = "Correctness Test Application";
 	cfg->app_options = correctness_options;
+	cfg->done = &done;
 
 	shift = flash__parse_cmdline_args(argc, argv, cfg);
 
 	if (shift < 0)
 		goto out_cfg;
-	
+
 	if (parse_app_args(argc, argv, &app_conf, shift) < 0)
 		goto out_cfg;
-	
+
 	if (flash__configure_nf(&nf, cfg) < 0)
 		goto out_cfg;
 

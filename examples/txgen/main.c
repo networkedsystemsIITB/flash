@@ -18,7 +18,7 @@
 #include <flash_params.h>
 #include <log.h>
 
-bool done = false;
+volatile bool done = false;
 struct config *cfg = NULL;
 struct nf *nf = NULL;
 uint8_t *packet_template = NULL;
@@ -291,6 +291,7 @@ int main(int argc, char **argv)
 
 	cfg->app_name = "Traffic Generation Application";
 	cfg->app_options = txgen_options;
+	cfg->done = &done;
 
 	shift = flash__parse_cmdline_args(argc, argv, cfg);
 	if (shift < 0)

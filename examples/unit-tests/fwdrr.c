@@ -12,7 +12,7 @@
 #include <flash_params.h>
 #include <log.h>
 
-bool done = false;
+volatile bool done = false;
 struct config *cfg = NULL;
 struct nf *nf = NULL;
 
@@ -197,6 +197,7 @@ int main(int argc, char **argv)
 
 	cfg->app_name = "Round-Robin Forwarding Application";
 	cfg->app_options = fwdrr_options;
+	cfg->done = &done;
 
 	shift = flash__parse_cmdline_args(argc, argv, cfg);
 	if (shift < 0)

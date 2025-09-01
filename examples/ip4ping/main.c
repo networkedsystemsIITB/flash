@@ -17,7 +17,7 @@
 #include <netinet/in.h>
 #include <log.h>
 
-bool done = false;
+volatile bool done = false;
 struct config *cfg = NULL;
 struct nf *nf;
 
@@ -232,7 +232,7 @@ static void *socket_routine(void *arg)
 				dropvecs[wdrop++] = xskvecs[i];
 
 			if (ntohs(eth->h_proto) != ETH_P_IP || len < (sizeof(*eth) + sizeof(*ip) + sizeof(*icmp)) ||
-				ip->protocol != IPPROTO_ICMP || icmp->type != ICMP_ECHO) {
+			    ip->protocol != IPPROTO_ICMP || icmp->type != ICMP_ECHO) {
 				sendvecs[wsend++] = xskvecs[i];
 
 				if (app_conf.sriov) {
@@ -291,14 +291,15 @@ int main(int argc, char **argv)
 
 	cfg->app_name = "IP4 Ping Application";
 	cfg->app_options = ip4ping_options;
+	cfg->done = &done;
 
 	shift = flash__parse_cmdline_args(argc, argv, cfg);
 	if (shift < 0)
 		goto out_cfg;
-	
+
 	if (parse_app_args(argc, argv, &app_conf, shift) < 0)
 		goto out_cfg;
-	
+
 	if (flash__configure_nf(&nf, cfg) < 0)
 		goto out_cfg;
 

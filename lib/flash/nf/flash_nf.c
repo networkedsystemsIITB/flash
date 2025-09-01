@@ -14,8 +14,6 @@
 
 #include "flash_nf.h"
 
-bool done;
-
 static int set_nonblocking(int sockfd)
 {
 	int flags = fcntl(sockfd, F_GETFL, 0);
@@ -40,7 +38,7 @@ void flash__wait(struct config *cfg)
 	if (set_nonblocking(cfg->uds_sockfd) < 0)
 		log_warn("Failed to set UDS socket to non-blocking mode");
 
-	while (!done) {
+	while (!*cfg->done) {
 		int bytes_received = read(cfg->uds_sockfd, &cmd, sizeof(int));
 		if (bytes_received < 0) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -51,11 +49,11 @@ void flash__wait(struct config *cfg)
 			}
 		} else if (bytes_received == 0) {
 			log_info("Server closed the connection");
-			done = true;
+			*cfg->done = true;
 			break;
 		} else {
 			log_info("Received signal from server");
-			done = true;
+			*cfg->done = true;
 		}
 	}
 }

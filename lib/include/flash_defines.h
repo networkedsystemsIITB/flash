@@ -70,6 +70,7 @@ struct config {
 	int umem_offset;
 	bool frags_enabled;
 	bool rx_first;
+	volatile bool *done;
 #ifdef STATS
 	clockid_t clock;
 	int verbose;
@@ -175,7 +176,6 @@ struct socket {
 	void *flash_pool;
 	uint32_t outstanding_tx;
 	uint64_t idle_timestamp;
-
 #ifdef STATS
 	struct xsk_ring_stats ring_stats;
 	struct xsk_app_stats app_stats;
