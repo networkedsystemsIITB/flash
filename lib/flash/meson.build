@@ -7,6 +7,13 @@ special_dirs = [
 
 dirs = ['uds', 'common', 'monitor', 'params', 'pool', 'nf', 'util']
 
+if get_option('enable_mtcp')
+    dirs += ['mtcp']
+    message('mTCP support enabled')
+else
+    message('mTCP support disabled')
+endif
+
 foreach special_dir : special_dirs
     sources = []
     headers = []

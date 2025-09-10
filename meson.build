@@ -139,6 +139,27 @@ foreach arg : warning_flags
     endif
 endforeach
 
+# Enable mtcp if the option is set
+if get_option('enable_mtcp')
+    mtcp_flag = [
+    '-DDISABLE_ONVM',
+    '-DDISABLE_PSIO',
+    '-DDISABLE_DPDK',
+    '-DDISABLE_NETMAP',
+    '-fgnu89-inline',
+    '-DNDEBUG',
+    '-DNETSTAT',
+    '-DINFO',
+    '-DDBGERR',
+    '-DDBGCERR',
+    '-D__USRLIB__',
+    ]
+
+    foreach arg : mtcp_flag
+        add_project_arguments(arg, language: 'c')
+    endforeach
+endif
+
 # set loggging options for log library
 if get_option('log_use_color')
     add_project_arguments('-DLOG_USE_COLOR', language: 'c')
