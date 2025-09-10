@@ -60,6 +60,7 @@ static inline int list_empty(const struct list_head *head)
 	return head->next == head;
 }
 
+#define container_of(ptr, type, member) ((type *)((char *)(ptr) - offsetof(type, member)))
 #define list_entry(ptr, type, member) container_of(ptr, type, member)
 #define list_first_entry(ptr, type, member) list_entry((ptr)->next, type, member)
 #define list_next_entry(pos, member) list_entry((pos)->member.next, typeof(*(pos)), member)

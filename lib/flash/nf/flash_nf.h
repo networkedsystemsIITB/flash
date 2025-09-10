@@ -155,6 +155,17 @@ void *flash__stats_thread(void *conf);
  */
 int flash__get_macaddr(struct config *cfg, struct ether_addr *addr);
 
+/**
+ * Dump the contents of a packet in hexadecimal format.
+ * 
+ * @param pkt: Pointer to the packet data.
+ * @param length: Length of the packet data.
+ * @param verbose: If true, print additional information.
+ * 
+ * This function prints the packet data in a human-readable hexadecimal format.
+ */
+void flash__hex_dump(void *pkt, size_t length, bool verbose);
+
 /* Advanced APIs */
 
 void flash__populate_fill_ring(struct thread **thread, int frame_size, int total_sockets, int umem_offset, int umem_scale);
