@@ -56,6 +56,11 @@ if cc.has_header('ncurses.h', required: true)
     add_project_link_arguments('-lncurses', language: 'c')
 endif
 
+# use libnuma library
+if cc.has_header('numa.h', required: true)
+    add_project_link_arguments('-lnuma', language: 'c')
+endif
+
 add_project_link_arguments('-ldl', language: 'c')
 
 xdp_dep = dependency(
