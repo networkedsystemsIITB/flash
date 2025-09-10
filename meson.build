@@ -4,7 +4,7 @@
 project(
     'flash',
     'C',
-    version: '25.5-beta',
+    version: '25.9-beta',
     license: 'Apache-2.0',
     default_options: [
         'buildtype=release',
@@ -19,6 +19,7 @@ use_static_libs = get_option('default_library') == 'static'
 
 cc = meson.get_compiler('c')
 
+# Enable Rust support if the option is set and Cargo is available
 enable_rust = get_option('enable_rust')
 cargo = find_program('cargo', required: enable_rust)
 rust_build = []
@@ -55,7 +56,6 @@ if cc.has_header('ncurses.h', required: true)
     add_project_link_arguments('-lncurses', language: 'c')
 endif
 
-# if link_lib is empty, do not add it to project properties
 add_project_link_arguments('-ldl', language: 'c')
 
 xdp_dep = dependency(
@@ -134,6 +134,18 @@ foreach arg : warning_flags
     endif
 endforeach
 
+# set loggging options for log library
+if get_option('log_use_color')
+    add_project_arguments('-DLOG_USE_COLOR', language: 'c')
+endif
+
+if get_option('buildtype') == 'debug' or get_option('buildtype') == 'debugoptimized'
+    add_project_arguments('-DLOG_ENABLE_DEBUG', language: 'c')
+    message('Log library: debug/trace logging enabled for build type - ' + get_option('buildtype'))
+else
+    message('Log library: debug/trace logging disabled for build type - ' + get_option('buildtype'))
+endif
+
 # specify -D_GNU_SOURCE unconditionally
 add_project_arguments('-D_GNU_SOURCE', language: 'c')
 
@@ -185,9 +197,3 @@ pkg.generate(
     install_dir: 'lib/pkgconfig',
 )
 message('<<< Done pkg-config file')
-
-# Rust builds are now handled in examples/meson.build
-if enable_rust and cargo.found()
-    message('>>> Rust builds will be handled by examples/meson.build')
-    message('<<< Rust builds configured')
-endif

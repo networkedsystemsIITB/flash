@@ -4,5 +4,5 @@
 option('log_use_color', type: 'boolean', value: true,
        description: 'Enable colored output in the log library')
 
-option('enable_rust', type: 'boolean', value: false,
+option('enable_rust', type: 'boolean', value: true,
        description: 'Enable building Rust applications and libraries')

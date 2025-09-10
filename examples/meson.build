@@ -16,19 +16,6 @@ dirs = [
     'txgen'
 ]
 
-# Rust examples (only if Rust is enabled)
-rust_dirs = []
-if get_option('enable_rust')
-    rust_dirs = [
-        'helloworld-rs',
-        'simplefwd-rs',
-        'l2fwd-rs',
-        'ip4ping-rs',
-        'maglev-rs',
-        'firewall-rs'
-    ]
-endif
-
 def_deps = [include, log, nf, params, uds]
 
 foreach d : dirs
@@ -67,10 +54,6 @@ if get_option('enable_rust') and cargo.found()
         build_by_default: true,
         build_always_stale: true,
     )
-    
-    foreach rust_dir : rust_dirs
-        message('Rust example: ' + rust_dir + ' will be built with the workspace')
-    endforeach
     
     message('<<< Rust examples configured')
 endif
