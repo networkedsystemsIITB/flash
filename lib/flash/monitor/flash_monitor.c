@@ -58,6 +58,13 @@ void close_nf(struct umem *umem, int umem_id, int nf_id)
 				umem->cfg->umem->size = 0;
 			}
 			umem->cfg->umem_fd = -1;
+			close(umem->cfg->nf_pollout_status_fd);
+			if (umem->cfg->nf_pollout_status) {
+				munmap((void *)(uintptr_t)umem->cfg->nf_pollout_status, umem->cfg->nf_pollout_status_size);
+				umem->cfg->nf_pollout_status = NULL;
+				umem->cfg->nf_pollout_status_size = 0;
+			}
+			umem->cfg->nf_pollout_status_fd = -1;
 			free(umem->cfg->umem_config);
 			free(umem->cfg->xsk_config);
 			free(umem->umem_info);
@@ -141,11 +148,11 @@ const char *process_input(char *input)
 	return NULL;
 }
 
-static int create_umem_fd(size_t size)
+static int create_memfd(const char *name, size_t size)
 {
 	int fd, ret;
 
-	fd = memfd_create("UMEM0", MFD_ALLOW_SEALING);
+	fd = memfd_create(name, MFD_ALLOW_SEALING);
 	if (fd == -1)
 		exit(1);
 
@@ -221,7 +228,7 @@ static void flash__setup_umem(struct umem *umem)
 
 	log_info("UMEM size: %lu", size);
 
-	fd = create_umem_fd(size);
+	fd = create_memfd("UMEM0", size);
 	flags = MAP_SHARED;
 
 	/* Reserve memory for the umem. Use hugepages if unaligned chunk mode is enabled */
@@ -232,10 +239,21 @@ static void flash__setup_umem(struct umem *umem)
 	}
 	umem->cfg->umem->buffer = packet_buffer;
 	umem->cfg->umem->size = size;
-
-	__configure_umem(umem);
 	umem->cfg->umem_fd = fd;
 
+	size = FLASH_MAX_XSK * sizeof(uint8_t);
+	fd = create_memfd("POLLOUT_STATUS_MEM0", size);
+	flags = MAP_SHARED;
+
+	umem->cfg->nf_pollout_status = mmap(NULL, size, PROT_READ | PROT_WRITE, flags, fd, 0);
+	if (umem->cfg->nf_pollout_status == MAP_FAILED) {
+		log_error("ERROR: (POLLOUT_STATUS setup) mmap failed \"%s\"\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+	umem->cfg->nf_pollout_status_size = size;
+	umem->cfg->nf_pollout_status_fd = fd;
+
+	__configure_umem(umem);
 	return;
 }
 
@@ -326,6 +344,7 @@ static void init_config(struct config *cfg)
 	cfg->umem->frame_size = FRAME_SIZE;
 	cfg->xsk->batch_size = BATCH_SIZE;
 	cfg->umem_fd = -1;
+	cfg->nf_pollout_status_fd = -1;
 }
 
 int configure_umem(struct nf_data *data, struct umem **_umem)

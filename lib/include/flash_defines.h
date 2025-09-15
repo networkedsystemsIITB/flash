@@ -30,6 +30,8 @@
 
 #define MS_PER_S 1000
 
+#define FLASH_MAX_XSK 64
+
 struct xsk_config {
 	uint32_t bind_flags;
 	uint32_t xdp_flags;
@@ -64,6 +66,7 @@ struct config {
 	struct xsk_umem_config *umem_config;
 	struct xsk_socket_config *xsk_config;
 	bool smart_poll;
+	bool sleep_poll;
 	bool custom_xsk;
 	int umem_id;
 	int nf_id;
@@ -71,6 +74,12 @@ struct config {
 	bool frags_enabled;
 	bool rx_first;
 	volatile bool *done;
+	int next_size;
+	int nf_pollout_status_fd;
+	int nf_pollout_status_size;
+	volatile uint8_t *nf_pollout_status;
+	int *prev;
+	int prev_size;
 #ifdef STATS
 	clockid_t clock;
 	int verbose;
@@ -172,6 +181,7 @@ struct socket {
 	struct xsk_ring_prod fill;
 	struct xsk_ring_cons comp;
 	struct pollfd idle_fd;
+	struct pollfd backpressure_fd;
 	bool idle;
 	void *flash_pool;
 	uint32_t outstanding_tx;
@@ -201,6 +211,8 @@ struct nf {
 	uint16_t port;
 	int *next; // To be removed
 	int next_size;
+	int *prev;
+	int prev_size;
 	struct thread **thread;
 	bool is_up;
 	int thread_count;

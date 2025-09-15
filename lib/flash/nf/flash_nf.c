@@ -160,6 +160,7 @@ static int __configure(struct config *cfg, struct nf *nf, int **received_fd)
 		goto clean_rcv_fd;
 	}
 	log_debug("ROUTE SIZE: %d", nf->next_size);
+	cfg->next_size = nf->next_size;
 
 	if (flash__send_cmd(uds_sockfd, FLASH__GET_BIND_FLAGS) < 0) {
 		log_error("Failed to send command to get bind flags");
@@ -224,6 +225,41 @@ static int __configure(struct config *cfg, struct nf *nf, int **received_fd)
 	}
 	log_debug("IFNAME: %s", cfg->ifname);
 
+	if (flash__send_cmd(uds_sockfd, FLASH__GET_POLLOUT_STATUS) < 0) {
+		log_error("Failed to send command to get pollout status fd, size, shared memory");
+		goto clean_rcv_fd;
+	}
+	if (flash__recv_fd(uds_sockfd, &cfg->nf_pollout_status_fd) < 0) {
+		log_error("Failed to receive pollout status fd from UDS server");
+		goto clean_rcv_fd;
+	}
+	log_debug("RECEIVED POLLOUT STATUS FD: %d", cfg->nf_pollout_status_fd);
+	if (flash__recv_data(uds_sockfd, &cfg->nf_pollout_status_size, sizeof(int)) < 0) {
+		log_error("Failed to receive pollout_status array size from UDS server");
+		goto clean_rcv_fd;
+	}
+	log_debug("RECEIVED POLLOUT_STATUS SIZE: %d", cfg->nf_pollout_status_size);
+
+	if (flash__send_cmd(uds_sockfd, FLASH__GET_PREV_NF) < 0) {
+		log_error("Failed to send command to get previous NFs");
+		goto clean_rcv_fd;
+	}
+	if (flash__recv_data(uds_sockfd, &cfg->prev_size, sizeof(int)) < 0) {
+		log_error("Failed to receive number of previous NFs from UDS server");
+		goto clean_rcv_fd;
+	}
+	log_debug("NUMBER OF PREVIOUS NFs: %d", cfg->prev_size);
+	cfg->prev = (int *)calloc(cfg->prev_size, sizeof(int));
+	for (i = 0; i < cfg->prev_size; i++) {
+		int prev_nf_id;
+		if (flash__recv_data(uds_sockfd, &prev_nf_id, sizeof(int)) < 0) {
+			log_error("Failed to receive previous NF id from UDS server");
+			free(cfg->prev);
+			goto clean_rcv_fd;
+		}
+		cfg->prev[i] = prev_nf_id;
+		log_debug("RECEIVED PREVIOUS NF ID: %d", prev_nf_id);
+	}
 	return 0;
 
 clean_rcv_fd:
@@ -419,6 +455,11 @@ void flash__xsk_close(struct config *cfg, struct nf *nf)
 			       off.cr.desc + cfg->umem_config->comp_size * sizeof(uint64_t));
 		}
 
+		close(cfg->nf_pollout_status_fd);
+		munmap((void *)(uintptr_t)cfg->nf_pollout_status, cfg->nf_pollout_status_size);
+		cfg->nf_pollout_status = NULL;
+		cfg->nf_pollout_status_size = 0;
+
 		free(nf->thread[i]->socket);
 		free(nf->thread[i]);
 	}
@@ -482,6 +523,15 @@ int flash__configure_nf(struct nf **_nf, struct config *cfg)
 		goto out_error;
 	}
 
+	void *shm_ptr = mmap(NULL, cfg->nf_pollout_status_size, PROT_READ | PROT_WRITE, MAP_SHARED, cfg->nf_pollout_status_fd, 0);
+	if (shm_ptr == MAP_FAILED) {
+		log_error("ERROR: mmap failed: %s", strerror(errno));
+		close(cfg->nf_pollout_status_fd);
+		goto out_error;
+	}
+	cfg->nf_pollout_status = (uint8_t *)shm_ptr;
+	cfg->nf_pollout_status[cfg->nf_id] = 0;
+
 	if (!size && !xsk_page_aligned(cfg->umem->buffer)) {
 		log_error("ERROR: UMEM size is not page aligned \"%s\"", strerror(errno));
 		goto out_error;
@@ -524,6 +574,8 @@ int flash__configure_nf(struct nf **_nf, struct config *cfg)
 		nf->thread[i]->socket->ifqueue = cfg->ifqueue[i];
 		nf->thread[i]->socket->idle_fd.fd = sockfd[i];
 		nf->thread[i]->socket->idle_fd.events = POLLIN;
+		nf->thread[i]->socket->backpressure_fd.fd = sockfd[i];
+		nf->thread[i]->socket->backpressure_fd.events = POLLOUT;
 
 		if (xsk_mmap_umem_rings(nf->thread[i]->socket, *cfg->umem_config, *cfg->xsk_config) < 0) {
 			log_error("ERROR: (Ring setup) mmap failed \"%s\"", strerror(errno));

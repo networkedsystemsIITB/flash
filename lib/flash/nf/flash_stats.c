@@ -157,6 +157,8 @@ void flash__dump_stats(struct config *cfg, struct socket *xsk)
 	if (cfg->xsk->mode & FLASH__BUSY_POLL) {
 		if (cfg->smart_poll)
 			printf("busy-poll | smart-poll ");
+		else if (cfg->sleep_poll)
+			printf("busy-poll | sleep-poll ");
 		else
 			printf("busy-poll ");
 	}

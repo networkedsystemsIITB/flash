@@ -31,6 +31,8 @@ const struct option_wrapper long_options[] = {
 
 	{ { "smart-poll", no_argument, NULL, 'p' }, "Smart polling mode [default: disabled]" },
 
+	{ { "sleep-poll", no_argument, NULL, 's' }, "Periodic sleep mode [default: disabled]" },
+
 	{ { "idle-timeout", required_argument, NULL, 'i' }, "Idle timeout for smart polling mode in ms [default: 100]", "<val>" },
 
 	{ { "idleness", required_argument, NULL, 'I' },
@@ -40,7 +42,7 @@ const struct option_wrapper long_options[] = {
 	{ { "timeout", required_argument, NULL, 'b' }, "Sleep duration on backpressure in us [default: 1000]", "<timeout>" },
 
 	{ { "bp-sense", required_argument, NULL, 'B' },
-	  "Sensitivity for detecting backpressure, 0: 0 pkts - 1: 2048 pkts [default: 0.5]",
+	  "Sensitivity for detecting backpressure, 0: 0 pkts - 1: 2048 pkts [default: 1]",
 	  "<val>" },
 
 	{ { "frags", no_argument, NULL, 'F' }, "Enable frags (multi-buffer) support -- not implemented yet", false },
@@ -155,7 +157,7 @@ static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper
 	}
 
 	/* Parse commands line args */
-	while ((opt = getopt_long(argc, argv, "u:f:taxn:Qpi:I:b:B:Fw:h", long_options, &longindex)) != -1) {
+	while ((opt = getopt_long(argc, argv, "u:f:taxn:Qpsi:I:b:B:Fw:h", long_options, &longindex)) != -1) {
 		switch (opt) {
 		case 'u':
 			cfg->umem_id = atoi(optarg);
@@ -180,6 +182,9 @@ static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper
 			break;
 		case 'p':
 			cfg->smart_poll = true;
+			break;
+		case 's':
+			cfg->sleep_poll = true;
 			break;
 		case 'i':
 			cfg->xsk->idle_timeout = atoi(optarg);
@@ -256,11 +261,12 @@ int flash__parse_cmdline_args(int argc, char **argv, struct config *cfg)
 	cfg->extra_stats = false;
 	cfg->verbose = true;
 	cfg->smart_poll = false;
+	cfg->sleep_poll = false;
 	cfg->xsk->idle_timeout = 100;
 	cfg->xsk->poll_timeout = -1;
 	cfg->xsk->idle_thres = 0;
 	cfg->xsk->bp_timeout = 1000;
-	cfg->xsk->bp_thres = (__u32)(XSK_RING_PROD__DEFAULT_NUM_DESCS * 0.5);
+	cfg->xsk->bp_thres = (__u32)(XSK_RING_PROD__DEFAULT_NUM_DESCS);
 
 	ret = parse_cmdline_args(argc, argv, long_options, cfg);
 	if (ret < 0)

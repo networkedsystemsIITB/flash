@@ -25,6 +25,8 @@
 #define FLASH__GET_IFNAME 13
 #define FLASH__GET_IP_ADDR 14
 #define FLASH__GET_DST_IP_ADDR 15
+#define FLASH__GET_POLLOUT_STATUS 16
+#define FLASH__GET_PREV_NF 17
 
 /* UDS Control path APIs*/
 

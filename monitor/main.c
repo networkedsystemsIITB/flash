@@ -104,6 +104,22 @@ static void *handle_nf(void *arg)
 				flash__send_data(msgsock, umem->nf[umem->nf[data->nf_id]->next[i]]->ip, INET_ADDRSTRLEN);
 			}
 			break;
+		case FLASH__GET_POLLOUT_STATUS:
+			flash__send_fd(msgsock, umem->cfg->nf_pollout_status_fd);
+			flash__send_data(msgsock, &umem->cfg->nf_pollout_status_size, sizeof(int));
+			log_info("SENT POLLOUT STATUS MEM_FD: %d", umem->cfg->nf_pollout_status_fd);
+			log_info("SENT POLLOUT STATUS MEM_SIZE: %d", umem->cfg->nf_pollout_status_size);
+			break;
+
+		case FLASH__GET_PREV_NF:
+			flash__send_data(msgsock, &umem->nf[data->nf_id]->prev_size, sizeof(int));
+			log_info("Number of Previous NFs: %d", umem->nf[data->nf_id]->prev_size);
+			for (int i = 0; i < umem->nf[data->nf_id]->prev_size; i++) {
+				int prev_nf_id = umem->nf[data->nf_id]->prev[i];
+				log_info("Sending Previous NF: %d", prev_nf_id);
+				flash__send_data(msgsock, &prev_nf_id, sizeof(int));
+			}
+			break;
 
 		case FLASH__CLOSE_CONN:
 			close_nf(umem, data->umem_id, data->nf_id);
