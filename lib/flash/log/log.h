@@ -40,4 +40,29 @@ void log_set_level_from_env(void);
 
 void log_log(int level, const char *file, int line, const char *caller, const char *fmt, ...);
 
+#define FAST_LOG_TO_FILE
+
+#ifdef FAST_LOG_TO_FILE
+#define FAST_LOG_BATCH_SIZE 1024
+#define FAST_LOG_SIZE 256
+#define FAST_LOG_DIR "flash_nf_logs/"
+
+/* Log a string to a file named after the nf_id
+   The log is buffered and written in batches for efficiency
+   Call fast_log_flush(nf_id) to flush the buffer to the file
+   NOTE: Manually clear the file contents before starting logging for a new run
+*/
+void fast_log(int nf_id, const char *fmt, ...);
+void fast_log_flush(int nf_id);
+#else
+
+#define fast_log(...) \
+	do {          \
+	} while (0)
+#define fast_log_flush(...) \
+	do {                \
+	} while (0)
+
+#endif
+
 #endif /* LOG_H */

@@ -215,3 +215,46 @@ void log_set_level_from_env(void)
 		log_set_level(LOG_INFO);
 	}
 }
+
+#ifdef FAST_LOG_TO_FILE
+
+char fast_log_buffer[FAST_LOG_BATCH_SIZE][FAST_LOG_SIZE];
+int fast_log_index = 0;
+
+static void fast_log_dump_in_file(int nf_id, int count)
+{
+	char filename[FAST_LOG_SIZE];
+	snprintf(filename, sizeof(filename), FAST_LOG_DIR "nf-%d.log", nf_id);
+	FILE *fp = fopen(filename, "a");
+	if (fp) {
+		for (int i = 0; i < count; i++) {
+			fprintf(fp, "%s\n", fast_log_buffer[i]);
+		}
+		fclose(fp);
+	} else {
+		log_error("Error opening string log file");
+	}
+}
+
+void fast_log(int nf_id, const char *fmt, ...)
+{
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(fast_log_buffer[fast_log_index++], FAST_LOG_SIZE, fmt, args);
+	va_end(args);
+
+	if (fast_log_index >= FAST_LOG_BATCH_SIZE) {
+		fast_log_dump_in_file(nf_id, FAST_LOG_BATCH_SIZE);
+		fast_log_index = 0;
+	}
+}
+
+void fast_log_flush(int nf_id)
+{
+	if (fast_log_index > 0) {
+		fast_log_dump_in_file(nf_id, fast_log_index);
+		fast_log_index = 0;
+	}
+}
+
+#endif
