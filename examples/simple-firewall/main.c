@@ -23,14 +23,14 @@
 #include <stdlib.h>
 #include <cjson/cJSON.h>
 
-#define CONFIG_FILE "./examples/firewall/config.json"
+#define CONFIG_FILE "./examples/simple-firewall/config.json"
 
 #define IP_STRLEN 16
 #define PROTO_STRLEN 4
 #define IFNAME_STRLEN 256
 #define MAX_VALID_SESSIONS 100
 
-bool done = false;
+volatile bool done = false;
 struct config *cfg = NULL;
 struct nf *nf;
 
@@ -46,11 +46,14 @@ struct appconf {
 	int stats_cpu;
 } app_conf;
 
-struct Args {
-	int socket_id;
-	int *next;
-	int next_size;
+// clang-format off
+static const char *firewall_options[] = {
+	"-c <num>\tStart CPU (default: 0)",
+	"-e <num>\tEnd CPU (default: 0)",
+	"-s <num>\tStats CPU (default: 1)",
+	NULL
 };
+// clang-format on
 
 struct session_id {
 	uint32_t saddr;
@@ -67,14 +70,14 @@ int num_sessions = 0;
 char load_balancer_addr[IP_STRLEN];
 unsigned int load_balancer_port = 80;
 
-static void read_json_config(void)
+static int read_json_config(void)
 {
 	struct in_addr addr;
 	inet_aton(load_balancer_addr, &addr);
 	FILE *file = fopen(CONFIG_FILE, "r");
 	if (!file) {
-		perror("Failed to open file");
-		return;
+		log_error("Failed to open file: %s", CONFIG_FILE);
+		return -1;
 	}
 
 	// Get file size
@@ -84,17 +87,17 @@ static void read_json_config(void)
 
 	char *json_data = (char *)malloc(file_size + 1);
 	if (!json_data) {
-		perror("Memory allocation failed");
+		log_error("Memory allocation failed for JSON data");
 		fclose(file);
-		return;
+		return -1;
 	}
 
 	size_t read_size = fread(json_data, 1, file_size, file);
 	if (read_size != file_size) {
-		perror("Failed to read entire file");
+		log_error("Failed to read entire file: %s", CONFIG_FILE);
 		free(json_data);
 		fclose(file);
-		exit(1);
+		return -1;
 	}
 	json_data[file_size] = '\0';
 
@@ -103,8 +106,8 @@ static void read_json_config(void)
 	cJSON *json = cJSON_Parse(json_data);
 	free(json_data);
 	if (!json) {
-		printf("Error parsing JSON\n");
-		return;
+		log_error("Error parsing JSON");
+		return -1;
 	}
 
 	cJSON *valid_src = cJSON_GetObjectItem(json, "valid_src");
@@ -113,8 +116,9 @@ static void read_json_config(void)
 		int size = cJSON_GetArraySize(valid_src);
 		num_sessions = size;
 		if (num_sessions > MAX_VALID_SESSIONS) {
-			printf("num_sessions > MAX_VALID_SESSIONS\n");
-			exit(1);
+			log_error("Number of sessions (%d) exceeds maximum allowed (%d)", num_sessions, MAX_VALID_SESSIONS);
+			cJSON_Delete(json); // Clean up
+			return -1;
 		}
 		for (int i = 0; i < num_sessions; i++) {
 			cJSON *entry = cJSON_GetArrayItem(valid_src, i);
@@ -127,38 +131,67 @@ static void read_json_config(void)
 				valid_sessions[i].proto = IPPROTO_UDP;
 				valid_sessions[i].daddr = addr.s_addr;
 				valid_sessions[i].dport = htons(load_balancer_port);
+				log_info("Valid session added: %s:%d -> %s:%d (proto: %d)", src_addr->valuestring, src_port->valueint,
+					 load_balancer_addr, load_balancer_port, valid_sessions[i].proto);
 			}
 		}
 	} else {
-		printf("Error: valid_src is not a valid array\n");
+		log_error("Error: valid_src is not a valid array");
+		cJSON_Delete(json); // Clean up
+		return -1;
 	}
 
 	cJSON_Delete(json); // Clean up
+	return 0;
 }
 
-static void *configure(void)
+static int configure(void)
 {
-	int nbackends;
-	flash__send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
-	flash__recv_data(cfg->uds_sockfd, &nbackends, sizeof(int));
-	if (nbackends != 1) {
-		printf("Firewall is linked to %d load balancers", nbackends);
-		exit(1);
+	int nbackends, ret;
+	ret = flash__send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
+	if (ret < 0) {
+		log_error("Failed to send command to UDS socket");
+		return -1;
 	}
-	flash__recv_data(cfg->uds_sockfd, load_balancer_addr, INET_ADDRSTRLEN);
+	ret = flash__recv_data(cfg->uds_sockfd, &nbackends, sizeof(int));
+	if (ret < 0) {
+		log_error("Failed to receive data from UDS socket");
+		return -1;
+	}
+	if (nbackends != 1) {
+		log_error("Firewall is linked to %d load balancers", nbackends);
+		return -1;
+	}
+	ret = flash__recv_data(cfg->uds_sockfd, load_balancer_addr, INET_ADDRSTRLEN);
+	if (ret < 0) {
+		log_error("Failed to receive data from UDS socket");
+		return -1;
+	}
 
-	read_json_config();
+	ret = read_json_config();
+	if (ret < 0) {
+		log_error("Failed to read JSON config");
+		return -1;
+	}
 
-	hashmap_init(&valid_sessions_map, sizeof(struct session_id), sizeof(int), MAX_VALID_SESSIONS);
+	ret = hashmap_init(&valid_sessions_map, sizeof(struct session_id), sizeof(int), MAX_VALID_SESSIONS);
+	if (ret != 1) {
+		log_error("ERROR: unable to initialize valid sessions hashmap");
+		return -1;
+	}
 	for (int session_num = 0; session_num < num_sessions; session_num++) {
 		struct session_id *key = &valid_sessions[session_num];
 		int val = 1;
-		hashmap_insert_elem(&valid_sessions_map, (void *)key, (void *)&val);
+		ret = hashmap_insert_elem(&valid_sessions_map, (void *)key, (void *)&val);
+		if (ret != 1) {
+			log_error("ERROR: unable to add valid session to hashmap");
+			return -1;
+		}
 	}
-	return NULL;
+	return 0;
 }
 
-static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
+static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
 {
 	int c;
 	opterr = 0;
@@ -171,8 +204,11 @@ static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int 
 	argc -= shift;
 	argv += shift;
 
-	while ((c = getopt(argc, argv, "c:e:s:")) != -1)
+	while ((c = getopt(argc, argv, "hc:e:s:")) != -1)
 		switch (c) {
+		case 'h':
+			printf("Usage: %s -h\n", argv[-shift]);
+			return -1;
 		case 'c':
 			app_conf->cpu_start = atoi(optarg);
 			break;
@@ -183,88 +219,85 @@ static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int 
 			app_conf->stats_cpu = atoi(optarg);
 			break;
 		default:
-			abort();
+			printf("Usage: %s -h\n", argv[-shift]);
+			return -1;
 		}
+	return 0;
 }
 
-static void *worker__stats(void *arg)
-{
-	(void)arg;
-
-	if (cfg->verbose) {
-		unsigned int interval = cfg->stats_interval;
-		setlocale(LC_ALL, "");
-
-		for (int i = 0; i < cfg->total_sockets; i++)
-			nf->thread[i]->socket->timestamp = flash__get_nsecs(cfg);
-
-		while (!done) {
-			sleep(interval);
-			if (system("clear") != 0)
-				log_error("Terminal clear error");
-			for (int i = 0; i < cfg->total_sockets; i++) {
-				flash__dump_stats(cfg, nf->thread[i]->socket);
-			}
-		}
-	}
-	return NULL;
-}
+struct sock_args {
+	int socket_id;
+};
 
 static void *socket_routine(void *arg)
 {
-	struct Args *a = (struct Args *)arg;
-	int socket_id = a->socket_id;
-	int *next = a->next;
-	int next_size = a->next_size;
-	// free(arg);
-	log_info("SOCKET_ID: %d", socket_id);
-	// static __u32 nb_frags;
-	int i, ret, nfds = 1, nrecv;
+	int ret;
+	nfds_t nfds = 1;
+	struct socket *xsk;
+	struct xskvec *xskvecs, *sendvecs, *dropvecs;
 	struct pollfd fds[1] = {};
-	struct xskmsghdr msg = {};
+	uint32_t i, nrecv, nsend, ndrop, wdrop, wsend;
+	struct sock_args *a = (struct sock_args *)arg;
 
-	log_info("2_NEXT_SIZE: %d", next_size);
+	int socket_id = a->socket_id;
 
-	for (int i = 0; i < next_size; i++) {
-		log_info("2_NEXT_ITEM_%d %d", i, next[i]);
+	xsk = nf->thread[socket_id]->socket;
+	log_info("SOCKET_ID: %d", socket_id);
+
+	xskvecs = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
+	if (!xskvecs) {
+		log_error("ERROR: Memory allocation failed for xskvecs");
+		return NULL;
 	}
 
-	msg.msg_iov = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
+	sendvecs = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
+	if (!sendvecs) {
+		log_error("ERROR: Memory allocation failed for sendvecs");
+		free(xskvecs);
+		return NULL;
+	}
 
-	fds[0].fd = nf->thread[socket_id]->socket->fd;
+	dropvecs = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
+	if (!dropvecs) {
+		log_error("ERROR: Memory allocation failed for dropvecs");
+		free(xskvecs);
+		free(sendvecs);
+		return NULL;
+	}
+
+	fds[0].fd = xsk->fd;
 	fds[0].events = POLLIN;
 
 	for (;;) {
-		if (cfg->xsk->mode & FLASH__POLL) {
-			ret = flash__oldpoll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
-			if (ret <= 0 || ret > 1)
-				continue;
-		}
-		nrecv = flash__oldrecvmsg(cfg, nf->thread[socket_id]->socket, &msg);
+		ret = flash__poll(cfg, xsk, fds, nfds);
+		if (!(ret == 1 || ret == -2))
+			continue;
+		nrecv = flash__recvmsg(cfg, xsk, xskvecs, cfg->xsk->batch_size);
 
-		struct xskvec *drop[nrecv];
-		unsigned int tot_pkt_drop = 0;
-		struct xskvec *send[nrecv];
-		unsigned int tot_pkt_send = 0;
-
+		wsend = 0;
+		wdrop = 0;
 		for (i = 0; i < nrecv; i++) {
-			struct xskvec *xv = &msg.msg_iov[i];
+			struct xskvec *xv = &xskvecs[i];
 			void *pkt = xv->data;
 			void *pkt_end = pkt + xv->len;
+
 			struct ethhdr *eth = pkt;
 			if ((void *)(eth + 1) > pkt_end) {
-				drop[tot_pkt_drop++] = &msg.msg_iov[i];
+				dropvecs[wdrop++] = xskvecs[i];
+				log_error("Packet too short for Ethernet header");
 				continue;
 			}
 
 			if (eth->h_proto != htons(ETH_P_IP)) {
-				drop[tot_pkt_drop++] = &msg.msg_iov[i];
+				dropvecs[wdrop++] = xskvecs[i];
+				log_error("Unsupported Ethernet protocol");
 				continue;
 			}
 
 			struct iphdr *iph = (void *)(eth + 1);
 			if ((void *)(iph + 1) > pkt_end) {
-				drop[tot_pkt_drop++] = &msg.msg_iov[i];
+				dropvecs[wdrop++] = xskvecs[i];
+				log_error("Packet too short for IP header");
 				continue;
 			}
 
@@ -276,7 +309,8 @@ static void *socket_routine(void *arg)
 			case IPPROTO_TCP:;
 				struct tcphdr *tcph = next;
 				if ((void *)(tcph + 1) > pkt_end) {
-					drop[tot_pkt_drop++] = &msg.msg_iov[i];
+					dropvecs[wdrop++] = xskvecs[i];
+					log_error("Packet too short for TCP header");
 					continue;
 				}
 
@@ -288,7 +322,8 @@ static void *socket_routine(void *arg)
 			case IPPROTO_UDP:;
 				struct udphdr *udph = next;
 				if ((void *)(udph + 1) > pkt_end) {
-					drop[tot_pkt_drop++] = &msg.msg_iov[i];
+					dropvecs[wdrop++] = xskvecs[i];
+					log_error("Packet too short for UDP header");
 					continue;
 				}
 
@@ -298,7 +333,8 @@ static void *socket_routine(void *arg)
 				break;
 
 			default:
-				drop[tot_pkt_drop++] = &msg.msg_iov[i];
+				dropvecs[wdrop++] = xskvecs[i];
+				log_error("Unsupported IP protocol: %d", iph->protocol);
 				continue;
 			}
 
@@ -310,94 +346,126 @@ static void *socket_routine(void *arg)
 			sid.dport = *dport;
 
 			if (hashmap_lookup_elem(&valid_sessions_map, (void *)&sid) == NULL) {
-				drop[tot_pkt_drop++] = &msg.msg_iov[i];
+				dropvecs[wdrop++] = xskvecs[i];
 				continue;
 			}
-			send[tot_pkt_send++] = &msg.msg_iov[i];
+			sendvecs[wsend++] = xskvecs[i];
 		}
 
 		if (nrecv) {
-			size_t ret_send = flash__oldsendmsg(cfg, nf->thread[socket_id]->socket, send, tot_pkt_send);
-			size_t ret_drop = flash__olddropmsg(cfg, nf->thread[socket_id]->socket, drop, tot_pkt_drop);
-			if (ret_send != tot_pkt_send || ret_drop != tot_pkt_drop) {
+			nsend = flash__sendmsg(cfg, xsk, sendvecs, wsend);
+			ndrop = flash__dropmsg(cfg, xsk, dropvecs, wdrop);
+			if (nsend != wsend || ndrop != wdrop) {
 				log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
-				exit(EXIT_FAILURE);
+				break;
 			}
 		}
 
 		if (done)
 			break;
 	}
-	free(msg.msg_iov);
+	free(xskvecs);
+	free(sendvecs);
+	free(dropvecs);
+	hashmap_free(&valid_sessions_map);
 	return NULL;
 }
 
 int main(int argc, char **argv)
 {
+	int shift;
+	struct sock_args *args;
+	struct stats_conf stats_cfg = { NULL };
 	cpu_set_t cpuset;
+	pthread_t socket_thread, stats_thread;
+
 	cfg = calloc(1, sizeof(struct config));
 	if (!cfg) {
 		log_error("ERROR: Memory allocation failed\n");
 		exit(EXIT_FAILURE);
 	}
 
-	int n = flash__parse_cmdline_args(argc, argv, cfg);
-	parse_app_args(argc, argv, &app_conf, n);
-	flash__configure_nf(&nf, cfg);
-	flash__populate_fill_ring(nf->thread, cfg->umem->frame_size, cfg->total_sockets, cfg->umem_offset, cfg->umem_scale);
+	cfg->app_name = "simple-firewall";
+	cfg->app_options = firewall_options;
+	cfg->done = &done;
+
+	shift = flash__parse_cmdline_args(argc, argv, cfg);
+	if (shift < 0)
+		goto out_cfg;
+
+	if (parse_app_args(argc, argv, &app_conf, shift) < 0)
+		goto out_cfg;
+
+	if (flash__configure_nf(&nf, cfg) < 0)
+		goto out_cfg;
 
 	log_info("Control Plane Setup Done");
 
-	configure();
+	if (configure() < 0) {
+		log_error("Error configuring the application");
+		goto out_cfg;
+	}
+
 	signal(SIGINT, int_exit);
 	signal(SIGTERM, int_exit);
 	signal(SIGABRT, int_exit);
 
 	log_info("STARTING Data Path");
 
+	args = calloc(cfg->total_sockets, sizeof(struct sock_args));
+	if (!args) {
+		log_error("ERROR: Memory allocation failed for sock_args");
+		goto out_cfg_close;
+	}
 	for (int i = 0; i < cfg->total_sockets; i++) {
-		struct Args *args = calloc(1, sizeof(struct Args));
-		args->socket_id = i;
-		args->next = nf->next;
-		args->next_size = nf->next_size;
+		args[i].socket_id = i;
 
-		log_info("2_NEXT_SIZE: %d", args->next_size);
-
-		for (int i = 0; i < args->next_size; i++) {
-			log_info("2_NEXT_ITEM_%d %d", i, nf->next[i]);
-		}
-
-		pthread_t socket_thread;
-		if (pthread_create(&socket_thread, NULL, socket_routine, args)) {
+		if (pthread_create(&socket_thread, NULL, socket_routine, &args[i])) {
 			log_error("Error creating socket thread");
-			exit(EXIT_FAILURE);
+			goto out_args;
 		}
 		CPU_ZERO(&cpuset);
 		CPU_SET((i % (app_conf.cpu_end - app_conf.cpu_start + 1)) + app_conf.cpu_start, &cpuset);
 		if (pthread_setaffinity_np(socket_thread, sizeof(cpu_set_t), &cpuset) != 0) {
 			log_error("ERROR: Unable to set thread affinity: %s\n", strerror(errno));
-			exit(EXIT_FAILURE);
+			goto out_args;
 		}
 
-		pthread_detach(socket_thread);
+		if (pthread_detach(socket_thread) != 0) {
+			log_error("ERROR: Unable to detach thread: %s", strerror(errno));
+			goto out_args;
+		}
 	}
 
-	pthread_t stats_thread;
-	if (pthread_create(&stats_thread, NULL, worker__stats, NULL)) {
+	stats_cfg.nf = nf;
+	stats_cfg.cfg = cfg;
+
+	if (pthread_create(&stats_thread, NULL, flash__stats_thread, &stats_cfg)) {
 		log_error("Error creating statistics thread");
-		exit(EXIT_FAILURE);
+		goto out_args;
 	}
 	CPU_ZERO(&cpuset);
 	CPU_SET(app_conf.stats_cpu, &cpuset);
 	if (pthread_setaffinity_np(stats_thread, sizeof(cpu_set_t), &cpuset) != 0) {
 		log_error("ERROR: Unable to set thread affinity: %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
+		goto out_args;
 	}
-	pthread_detach(stats_thread);
+	if (pthread_detach(stats_thread) != 0) {
+		log_error("ERROR: Unable to detach thread: %s", strerror(errno));
+		goto out_args;
+	}
 
 	flash__wait(cfg);
-
 	flash__xsk_close(cfg, nf);
 
-	return EXIT_SUCCESS;
+	exit(EXIT_SUCCESS);
+out_args:
+	done = true;
+	free(args);
+out_cfg_close:
+	sleep(1);
+	flash__xsk_close(cfg, nf);
+out_cfg:
+	free(cfg);
+	exit(EXIT_FAILURE);
 }

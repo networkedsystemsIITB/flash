@@ -63,8 +63,15 @@ struct appconf {
 	int hops;
 } app_conf;
 
-static const char *correctness_options[] = { "-c <num>\tStart CPU (default: 0)", "-e <num>\tEnd CPU (default: 0)",
-					     "-s <num>\tStats CPU (default: 1)", "-h <num>\tNumber of hops (default: 1)", NULL };
+// clang-format off
+static const char *correctness_options[] = {
+	"-c <num>\tStart CPU (default: 0)",
+	"-e <num>\tEnd CPU (default: 0)",
+	"-s <num>\tStats CPU (default: 1)",
+	"-h <num>\tNumber of hops (default: 1)",
+	NULL
+};
+// clang-format on
 
 static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
 {
