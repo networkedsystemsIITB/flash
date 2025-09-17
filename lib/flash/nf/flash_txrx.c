@@ -152,11 +152,7 @@ static inline void __try_kick_rx(struct config *cfg, struct socket *xsk)
 			break;
 		}
 	}
-	if (
-		fill_ring_nb_entries(xsk) >= xsk->fill.size / 2
-		&& rx_ring_free_entries(xsk) > xsk->rx.size / 2
-		&& any
-	) {
+	if (fill_ring_nb_entries(xsk) >= xsk->fill.size / 2 && rx_ring_free_entries(xsk) > xsk->rx.size / 2 && any) {
 		__kick_rx(xsk);
 	}
 }
@@ -342,9 +338,9 @@ static inline uint32_t __reserve_tx(struct config *cfg, struct socket *xsk, uint
 			usleep(cfg->xsk->bp_timeout);
 		}
 		xsk->idle_timestamp = 0;
-		#ifdef STATS
-				xsk->app_stats.backpressure++;
-		#endif
+#ifdef STATS
+		xsk->app_stats.backpressure++;
+#endif
 	}
 	ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
 	while (ret != num) {
@@ -509,7 +505,7 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskvec *xsk
 	/* Ensures that rx can happen during tx pressure */
 	__complete_tx_completions(cfg, xsk);
 
-	if (cfg->smart_poll && cfg->xsk->idle_timeout && xsk->idle_timestamp && rdtsc() > xsk->idle_timestamp) {
+	if ((cfg->smart_poll || cfg->sleep_poll) && cfg->xsk->idle_timeout && xsk->idle_timestamp && rdtsc() > xsk->idle_timestamp) {
 		ret = flash__oldpoll(xsk, &xsk->idle_fd, 1, -1);
 		if (ret <= 0) {
 			xsk->idle_timestamp = rdtsc() + ((get_timer_hz(cfg) / MS_PER_S) * cfg->xsk->idle_timeout);
@@ -528,13 +524,13 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskvec *xsk
 			recvfrom(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL, NULL);
 		}
 
-		if (cfg->smart_poll && cfg->xsk->idle_timeout && !xsk->idle_timestamp)
+		if ((cfg->smart_poll || cfg->sleep_poll) && cfg->xsk->idle_timeout && !xsk->idle_timestamp)
 			xsk->idle_timestamp = rdtsc() + ((get_timer_hz(cfg) / MS_PER_S) * cfg->xsk->idle_timeout);
 
 		return 0;
 	}
 
-	if (cfg->smart_poll && (rcvd >= cfg->xsk->idle_thres || xsk->outstanding_tx))
+	if ((cfg->smart_poll || cfg->sleep_poll) && (rcvd >= cfg->xsk->idle_thres || xsk->outstanding_tx))
 		xsk->idle_timestamp = 0;
 
 	if (rcvd > cfg->xsk->batch_size)
