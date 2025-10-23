@@ -106,6 +106,24 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskvec *xsk
 size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t nsend);
 
 /**
+ * Use this function in when there are multiple next NFs with different/variable throughput.
+ * It tracks the outstanding tx per NF and drops packets if necessary.
+ *
+ * @param cfg: Pointer to the configuration structure.
+ * @param xsk: Pointer to the socket structure.
+ * @param xskvecs: Pointer to the array of xskvec structures containing received data.
+ * @param nrecv: Number of messages received.
+ * @param sendvecs: Pointer to the array of xskvec structures to send data
+ * @param nsend: Pointer to the number of messages to send.
+ * @param dropvecs: Pointer to the array of xskvec structures to drop data
+ * @param ndrop: Pointer to the number of messages to drop.
+ *
+ * @return void
+ */
+void flash__track_tx_and_drop(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t nrecv, struct xskvec *sendvecs,
+			      uint32_t *nsend, struct xskvec *dropvecs, uint32_t *ndrop);
+
+/**
  * Drop messages from the socket.
  * 
  * @param cfg: Pointer to the configuration structure.

@@ -577,6 +577,19 @@ int flash__configure_nf(struct nf **_nf, struct config *cfg)
 		nf->thread[i]->socket->backpressure_fd.fd = sockfd[i];
 		nf->thread[i]->socket->backpressure_fd.events = POLLOUT;
 
+		if (nf->next_size != 0) {
+			for (int j = 0; j < nf->next_size; j++) {
+				nf->thread[i]->socket->per_edge_max_outstanding_tx[j] = 1;
+			}
+		} else {
+			nf->thread[i]->socket->per_edge_max_outstanding_tx[0] = 1;
+		}
+		nf->thread[i]->socket->completed_tx_descs = (int *)calloc(cfg->max_outstanding_tx, sizeof(int));
+		memset(nf->thread[i]->socket->completed_tx_descs, -1, sizeof(int) * cfg->max_outstanding_tx);
+		for (int j = 0; j < nf->next_size; j++) {
+			nf->thread[i]->socket->completed_tx_descs[nf->thread[i]->socket->completed_idx++] = j;
+		}
+
 		if (xsk_mmap_umem_rings(nf->thread[i]->socket, *cfg->umem_config, *cfg->xsk_config) < 0) {
 			log_error("ERROR: (Ring setup) mmap failed \"%s\"", strerror(errno));
 			goto out_error;

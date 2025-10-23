@@ -80,6 +80,8 @@ struct config {
 	volatile uint8_t *nf_pollout_status;
 	int *prev;
 	int prev_size;
+	bool track_tx_budget;
+	int max_outstanding_tx;
 #ifdef STATS
 	clockid_t clock;
 	int verbose;
@@ -186,6 +188,10 @@ struct socket {
 	void *flash_pool;
 	uint32_t outstanding_tx;
 	uint64_t idle_timestamp;
+	int per_edge_max_outstanding_tx[FLASH_MAX_XSK];
+	int per_edge_outstanding[FLASH_MAX_XSK];
+	int* completed_tx_descs;
+	int completed_idx;
 #ifdef STATS
 	struct xsk_ring_stats ring_stats;
 	struct xsk_app_stats app_stats;

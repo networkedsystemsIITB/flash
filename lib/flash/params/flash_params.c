@@ -49,6 +49,13 @@ const struct option_wrapper long_options[] = {
 
 	{ { "clock", required_argument, NULL, 'w' }, "Clock NAME (default MONOTONIC) -- not implemented yet", "<clock>", false },
 
+	{ { "track-outstanding-tx", no_argument, NULL, 'o' }, "Track outstanding Tx for each outgoing edge [default: false]", false },
+
+	{ { "max-outstanding-tx", required_argument, NULL, 'O' },
+	  "Maximum outstanding Tx packets for this NF (default: 256 (only in powers of 2))",
+	  "<num>",
+	  false },
+
 	{ { 0, 0, NULL, 0 }, NULL, false }
 };
 
@@ -157,7 +164,7 @@ static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper
 	}
 
 	/* Parse commands line args */
-	while ((opt = getopt_long(argc, argv, "u:f:taxn:Qpsi:I:b:B:Fw:h", long_options, &longindex)) != -1) {
+	while ((opt = getopt_long(argc, argv, "u:f:taxn:Qpsi:I:b:B:Fw:hoO:", long_options, &longindex)) != -1) {
 		switch (opt) {
 		case 'u':
 			cfg->umem_id = atoi(optarg);
@@ -204,6 +211,22 @@ static int parse_cmdline_args(int argc, char **argv, const struct option_wrapper
 		case 'w':
 			if (get_clockid(&cfg->clock, optarg))
 				log_warn("ERROR: Invalid clock %s. Default to CLOCK_MONOTONIC.", optarg);
+			break;
+		case 'o':
+			cfg->track_tx_budget = true;
+			break;
+		case 'O':
+			cfg->max_outstanding_tx = atoi(optarg);
+			// if not power of 2, make this nearest power of 2, floor
+			if (cfg->max_outstanding_tx & (cfg->max_outstanding_tx - 1)) {
+				int power = 1;
+				while (power <= cfg->max_outstanding_tx)
+					power <<= 1;
+				power >>= 1;
+				log_warn("WARNING: --max-outstanding-tx=%d is not a power of two. Using %d instead.",
+					 cfg->max_outstanding_tx, power);
+				cfg->max_outstanding_tx = power;
+			}
 			break;
 		case 'h':
 			full_help = true;
@@ -267,6 +290,8 @@ int flash__parse_cmdline_args(int argc, char **argv, struct config *cfg)
 	cfg->xsk->idle_thres = 0;
 	cfg->xsk->bp_timeout = 1000;
 	cfg->xsk->bp_thres = (__u32)(XSK_RING_PROD__DEFAULT_NUM_DESCS);
+	cfg->track_tx_budget = false;
+	cfg->max_outstanding_tx = 256;
 
 	ret = parse_cmdline_args(argc, argv, long_options, cfg);
 	if (ret < 0)

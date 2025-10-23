@@ -210,6 +210,7 @@ static inline void __complete_tx_completions(struct config *cfg, struct socket *
 	uint32_t idx_cq = 0, idx_fq = 0;
 	uint32_t completed, num_outstanding, i, ret;
 	uint64_t addr;
+	int temp;
 
 	if (!xsk->outstanding_tx)
 		return;
@@ -246,14 +247,43 @@ static inline void __complete_tx_completions(struct config *cfg, struct socket *
 			ret = xsk_ring_prod__reserve(&xsk->fill, completed, &idx_fq);
 		}
 
-		for (i = 0; i < completed; i++)
-			*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) = *xsk_ring_cons__comp_addr(&xsk->comp, idx_cq++);
+		for (i = 0; i < completed; i++) {
+			addr = *xsk_ring_cons__comp_addr(&xsk->comp, idx_cq++);
+			if (cfg->track_tx_budget && cfg->next_size != 0) {
+				uint8_t *data_ptr = (uint8_t *)(cfg->umem->buffer + addr); // edge_id
+				xsk->per_edge_outstanding[*data_ptr]--;
+				temp = xsk->completed_tx_descs[xsk->completed_idx];
+				if (temp != -1) {
+					xsk->per_edge_max_outstanding_tx[temp]--;
+				}
+				xsk->per_edge_max_outstanding_tx[*data_ptr]++;
+				xsk->completed_tx_descs[xsk->completed_idx] = *data_ptr;
+				xsk->completed_idx = (xsk->completed_idx + 1) & (cfg->max_outstanding_tx - 1);
+
+				*data_ptr = 0;
+			}
+			*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) = addr;
+		}
 
 		xsk_ring_prod__submit(&xsk->fill, completed);
 		__try_kick_rx(cfg, xsk);
 	} else {
 		for (i = 0; i < completed; i++) {
 			addr = *xsk_ring_cons__comp_addr(&xsk->comp, idx_cq++);
+			if (cfg->track_tx_budget && cfg->next_size != 0) {
+				uint8_t *data_ptr = (uint8_t *)(cfg->umem->buffer + addr); // edge_id
+				xsk->per_edge_outstanding[*data_ptr]--;
+
+				temp = xsk->completed_tx_descs[xsk->completed_idx];
+				if (temp != -1) {
+					xsk->per_edge_max_outstanding_tx[temp]--;
+				}
+				xsk->per_edge_max_outstanding_tx[*data_ptr]++;
+				xsk->completed_tx_descs[xsk->completed_idx] = *data_ptr;
+				xsk->completed_idx = (xsk->completed_idx + 1) & (cfg->max_outstanding_tx - 1);
+
+				*data_ptr = 0;
+			}
 			flash_pool__put(xsk->flash_pool, addr);
 		}
 	}
@@ -656,6 +686,28 @@ size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec *xsk
 	xsk->ring_stats.tx_frags += nsend;
 #endif
 	return nsend;
+}
+
+void flash__track_tx_and_drop(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t nrecv, struct xskvec *sendvecs,
+			      uint32_t *nsend, struct xskvec *dropvecs, uint32_t *ndrop)
+{
+	uint32_t i, next_size = cfg->next_size, wsend = 0, wdrop = 0, edge;
+	for (i = 0; i < nrecv; i++) {
+		if (next_size == 0 || !cfg->track_tx_budget) {
+			sendvecs[wsend++] = xskvecs[i];
+			continue;
+		}
+
+		edge = (xskvecs[i].options >> 16) & 0xFFFF;
+		if (xsk->per_edge_max_outstanding_tx[edge] > xsk->per_edge_outstanding[edge]) {
+			xsk->per_edge_outstanding[edge]++;
+			sendvecs[wsend++] = xskvecs[i];
+		} else {
+			dropvecs[wdrop++] = xskvecs[i];
+		}
+	}
+	*nsend = wsend;
+	*ndrop = wdrop;
 }
 
 size_t flash__olddropmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t ndrop)
