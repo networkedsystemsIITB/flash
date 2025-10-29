@@ -188,7 +188,7 @@ c. Clear all redirections:
 When sending packets from an AF_XDP socket:
 
 - Single target: All packets are forwarded to that target.
-- Multiple targets: The lower 16 bits of the packet descriptor’s flags field determine the destination index (default = 0). [index is the value written in the `next` file]
+- Multiple targets: The lower 16 bits of the packet descriptor’s flags field determine the destination index (default = 0). [index is the value shown in the `next` file]
 
 The redirection automatically happens in zero-copy if the sockets share UMEM. If the sockets do not share UMEM, FLASH falls back to copying packets between sockets.
 
