@@ -163,7 +163,7 @@ index   flash_id
 0       2
 ```
 
-Redirect socket 1 → sockets 2 and 3:
+b. Redirect socket 1 → sockets 2 and 3:
 
 ```console
 # cat /sys/kernel/flash/1/next
@@ -175,7 +175,7 @@ index   flash_id
 1       3
 ```
 
-Clear all redirections:
+c. Clear all redirections:
 
 ```console
 # echo "-1" | sudo tee /sys/kernel/flash/1/next
