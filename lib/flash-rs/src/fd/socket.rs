@@ -1,16 +1,11 @@
 use std::{fmt, io, ptr};
 
-use libc::{
-    EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT, SOL_XDP, XDP_MMAP_OFFSETS, pollfd, ssize_t,
-};
+use libc::{MSG_DONTWAIT, MSG_MORE, SOL_XDP, XDP_MMAP_OFFSETS, pollfd};
 
 #[cfg(feature = "stats")]
 use libc::XDP_STATISTICS;
 
-use crate::{
-    mem::{MemError, Mmap},
-    util,
-};
+use crate::mem::{MemError, Mmap};
 
 use super::{
     error::{FdError, FdResult},
@@ -21,31 +16,35 @@ use super::{
 use super::xdp::{XDP_STATISTICS_SIZEOF, XdpStatistics};
 
 #[derive(Clone)]
-pub(crate) struct Fd {
+pub(crate) struct SocketFd {
     id: i32,
-    poll_fd: pollfd,
-    // poll_timeout: i32,
+    idle: pollfd,
+    backpressure: pollfd,
 }
 
 #[allow(clippy::missing_fields_in_debug)]
-impl fmt::Debug for Fd {
+impl fmt::Debug for SocketFd {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Fd").field("id", &self.id).finish()
     }
 }
 
-impl Fd {
+impl SocketFd {
     pub(crate) fn new(id: i32) -> Self {
         assert!(id >= 0, "fd error: invalid file descriptor: {id}");
 
-        Fd {
+        Self {
             id,
-            poll_fd: pollfd {
+            idle: pollfd {
                 fd: id,
                 events: libc::POLLIN,
                 revents: 0,
             },
-            // poll_timeout,
+            backpressure: pollfd {
+                fd: id,
+                events: libc::POLLOUT,
+                revents: 0,
+            },
         }
     }
 
@@ -55,17 +54,13 @@ impl Fd {
     }
 
     #[inline]
-    pub(crate) fn kick(&self) -> Result<ssize_t, ()> {
-        let n = unsafe { libc::sendto(self.id, ptr::null(), 0, MSG_DONTWAIT, ptr::null(), 0) };
+    pub(crate) fn kick_tx(&self) {
+        unsafe { libc::sendto(self.id, ptr::null(), 0, MSG_DONTWAIT, ptr::null(), 0) };
+    }
 
-        if n >= 0 {
-            Ok(n)
-        } else {
-            match util::get_errno() {
-                ENOBUFS | EAGAIN | EBUSY | ENETDOWN => Ok(0),
-                _ => Err(()),
-            }
-        }
+    #[inline]
+    pub(crate) fn kick_rx(&self) {
+        unsafe { libc::sendto(self.id, ptr::null(), 0, MSG_MORE, ptr::null(), 0) };
     }
 
     #[inline]
@@ -83,8 +78,17 @@ impl Fd {
     }
 
     #[inline]
-    pub(crate) fn poll(&mut self) -> io::Result<bool> {
-        match unsafe { libc::poll(&raw mut self.poll_fd, 1, -1) } {
+    pub(crate) fn poll_idle(&mut self) -> io::Result<bool> {
+        match unsafe { libc::poll(&raw mut self.idle, 1, -1) } {
+            -1 => Err(io::Error::last_os_error()),
+            0 => Ok(false),
+            _ => Ok(true),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn poll_backpressure(&mut self) -> io::Result<bool> {
+        match unsafe { libc::poll(&raw mut self.backpressure, 1, 1000) } {
             -1 => Err(io::Error::last_os_error()),
             0 => Ok(false),
             _ => Ok(true),

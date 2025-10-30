@@ -6,7 +6,7 @@ use libxdp_sys::{
     xsk_ring_cons__release, xsk_ring_cons__rx_desc,
 };
 
-use crate::{fd::Fd, mem::Mmap};
+use crate::{fd::SocketFd, mem::Mmap};
 
 use super::{Cons, error::RingResult};
 
@@ -20,7 +20,7 @@ unsafe impl Send for RxRing {}
 
 impl RxRing {
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    pub(crate) fn new(fd: &Fd, off: &xdp_ring_offset, scale: u32) -> RingResult<Self> {
+    pub(crate) fn new(fd: &SocketFd, off: &xdp_ring_offset, scale: u32) -> RingResult<Self> {
         let rx_size = XSK_RING_CONS__DEFAULT_NUM_DESCS * scale;
 
         let mmap = fd.mmap(
@@ -48,6 +48,11 @@ impl RxRing {
     #[inline]
     pub(crate) fn desc(&self, idx: u32) -> Option<&xdp_desc> {
         unsafe { xsk_ring_cons__rx_desc(&raw const self.ring, idx).as_ref() }
+    }
+
+    #[inline]
+    pub(crate) fn is_half_empty(&mut self) -> bool {
+        self.ring.cached_prod - self.ring.cached_cons < self.ring.size / 2
     }
 }
 

@@ -7,7 +7,7 @@ use libxdp_sys::{
 };
 
 use crate::{
-    fd::Fd,
+    fd::SocketFd,
     mem::{FRAME_SIZE, Mmap},
 };
 
@@ -23,7 +23,7 @@ unsafe impl Send for FillRing {}
 
 impl FillRing {
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    pub(crate) fn new(fd: &Fd, off: &xdp_ring_offset, scale: u32) -> RingResult<Self> {
+    pub(crate) fn new(fd: &SocketFd, off: &xdp_ring_offset, scale: u32) -> RingResult<Self> {
         let fill_size = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2 * scale;
 
         let mmap = fd.mmap(
@@ -48,11 +48,6 @@ impl FillRing {
         })
     }
 
-    #[inline]
-    pub(crate) fn addr(&mut self, idx: u32) -> Option<&mut u64> {
-        unsafe { xsk_ring_prod__fill_addr(&raw mut self.ring, idx).as_mut() }
-    }
-
     pub(crate) fn populate(&mut self, scale: u32, offset: u64) -> RingResult<()> {
         let frame_size = u64::from(FRAME_SIZE);
         let nr_frames = XSK_RING_PROD__DEFAULT_NUM_DESCS * scale;
@@ -74,6 +69,16 @@ impl FillRing {
 
         self.submit(nr_frames);
         Ok(())
+    }
+
+    #[inline]
+    pub(crate) fn addr(&mut self, idx: u32) -> Option<&mut u64> {
+        unsafe { xsk_ring_prod__fill_addr(&raw mut self.ring, idx).as_mut() }
+    }
+
+    #[inline]
+    pub(crate) fn is_half_full(&mut self) -> bool {
+        self.ring.cached_cons - self.ring.cached_prod <= self.ring.size / 2
     }
 }
 

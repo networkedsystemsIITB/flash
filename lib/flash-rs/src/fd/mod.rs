@@ -1,9 +1,7 @@
 mod error;
+mod socket;
 mod xdp;
 
-#[allow(clippy::module_inception)]
-mod fd;
-
-pub(crate) use fd::Fd;
+pub(crate) use socket::SocketFd;
 
 pub use error::FdError;

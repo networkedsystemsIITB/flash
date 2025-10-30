@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Read, Write as _},
+    io::{self, Read as _, Write as _},
     os::unix::net::UnixStream,
     path::Path,
 };

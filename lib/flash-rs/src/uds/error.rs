@@ -39,4 +39,16 @@ pub enum UdsError {
 
     #[error("uds error: invalid xdp flags")]
     InvalidXdpFlags,
+
+    #[error("uds error: invalid pollout fd")]
+    InvalidPollOutFd,
+
+    #[error("uds error: invalid pollout size")]
+    InvalidPollOutSize,
+
+    #[error("uds error: invalid prev size")]
+    InvalidPrevSize,
+
+    #[error("uds error: invalid prev nf id")]
+    InvalidPrevNfId,
 }

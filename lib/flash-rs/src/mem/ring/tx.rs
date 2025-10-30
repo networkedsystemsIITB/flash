@@ -6,7 +6,7 @@ use libxdp_sys::{
     xsk_ring_prod__reserve, xsk_ring_prod__submit, xsk_ring_prod__tx_desc,
 };
 
-use crate::{fd::Fd, mem::Mmap};
+use crate::{fd::SocketFd, mem::Mmap};
 
 use super::{Prod, error::RingResult};
 
@@ -20,7 +20,7 @@ unsafe impl Send for TxRing {}
 
 impl TxRing {
     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    pub(crate) fn new(fd: &Fd, off: &xdp_ring_offset, scale: u32) -> RingResult<Self> {
+    pub(crate) fn new(fd: &SocketFd, off: &xdp_ring_offset, scale: u32) -> RingResult<Self> {
         let tx_size = XSK_RING_PROD__DEFAULT_NUM_DESCS * scale;
 
         let mmap = fd.mmap(

@@ -1,6 +1,7 @@
 mod common;
 mod error;
 mod poll;
+mod socket;
 mod xsk;
 
 #[cfg_attr(feature = "clap", path = "config_clap.rs")]
@@ -8,7 +9,8 @@ mod xsk;
 mod config;
 
 pub(crate) use {
-    poll::PollConfig,
+    poll::{PollConfig, PollMode},
+    socket::SocketConfig,
     xsk::{BindFlags, Mode, XskConfig},
 };
 

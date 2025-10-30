@@ -1,12 +1,12 @@
 use std::{net::Ipv4Addr, str::FromStr, sync::Arc};
 
 use crate::{
-    config::{BindFlags, FlashConfig, Mode, PollConfig, XskConfig},
+    config::{BindFlags, FlashConfig, Mode, PollConfig, SocketConfig, XskConfig},
     error::FlashResult,
-    fd::Fd,
-    mem::Umem,
+    fd::SocketFd,
+    mem::{PollOutStatus, Umem},
     uds::UdsClient,
-    xsk::{Socket, SocketShared},
+    xsk::Socket,
 };
 
 #[cfg(feature = "stats")]
@@ -79,10 +79,10 @@ pub fn connect(config: &FlashConfig) -> FlashResult<(Vec<Socket>, Route)> {
         );
 
         #[cfg(feature = "stats")]
-        socket_info.push((Fd::new(fd), ifqueue));
+        socket_info.push((SocketFd::new(fd), ifqueue));
 
         #[cfg(not(feature = "stats"))]
-        socket_info.push(Fd::new(fd));
+        socket_info.push(SocketFd::new(fd));
     }
 
     #[cfg(feature = "stats")]
@@ -90,11 +90,6 @@ pub fn connect(config: &FlashConfig) -> FlashResult<(Vec<Socket>, Route)> {
 
     #[cfg(all(feature = "stats", feature = "tracing"))]
     tracing::debug!("Ifname: {ifname}");
-
-    // let route_size = uds_client.get_route_info()?;
-
-    // #[cfg(feature = "tracing")]
-    // tracing::debug!("Route Size: {route_size}");
 
     let route = Route {
         ip_addr: Ipv4Addr::from_str(&uds_client.get_ip_addr()?)?,
@@ -108,8 +103,12 @@ pub fn connect(config: &FlashConfig) -> FlashResult<(Vec<Socket>, Route)> {
     uds_client.set_nonblocking()?;
 
     let xsk_config = XskConfig::new(bind_flags, mode);
+    let next_size = uds_client.get_route_info()?;
+
     let poll_config = PollConfig::new(
         config.smart_poll,
+        config.sleep_poll,
+        next_size != 0,
         config.idle_timeout,
         config.idleness,
         config.bp_timeout,
@@ -117,7 +116,17 @@ pub fn connect(config: &FlashConfig) -> FlashResult<(Vec<Socket>, Route)> {
         xsk_config.batch_size,
     )?;
 
-    let socket_shared = Arc::new(SocketShared::new(xsk_config, poll_config, uds_client));
+    let (pollout_fd, pollout_size) = uds_client.get_pollout_status()?;
+    let prev_nf = uds_client.get_prev_nf()?;
+
+    let pollout_status = PollOutStatus::new(pollout_fd, pollout_size, config.nf_id, prev_nf)?;
+
+    let socket_config = Arc::new(SocketConfig::new(
+        xsk_config,
+        poll_config,
+        pollout_status,
+        uds_client,
+    ));
 
     let sockets = socket_info
         .into_iter()
@@ -136,7 +145,7 @@ pub fn connect(config: &FlashConfig) -> FlashResult<(Vec<Socket>, Route)> {
                 umem_offset,
                 #[cfg(feature = "stats")]
                 Stats::new(fd, ifname.clone(), ifqueue, xdp_flags.clone()),
-                socket_shared.clone(),
+                socket_config.clone(),
             )
         })
         .collect::<Result<Vec<_>, _>>()?;

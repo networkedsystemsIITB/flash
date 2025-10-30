@@ -3,8 +3,8 @@ use std::{sync::Arc, thread};
 use quanta::{Clock, Instant};
 
 use crate::{
-    config::{BindFlags, Mode},
-    fd::Fd,
+    config::{BindFlags, Mode, PollMode, SocketConfig},
+    fd::SocketFd,
     mem::{CompRing, Cons as _, Desc, FillRing, Prod as _, RxRing, TxRing, Umem},
 };
 
@@ -14,14 +14,11 @@ use crate::mem::Pool;
 #[cfg(feature = "stats")]
 use crate::stats::Stats;
 
-use super::{
-    error::{SocketError, SocketResult},
-    shared::SocketShared,
-};
+use super::error::{SocketError, SocketResult};
 
 #[derive(Debug)]
 pub struct Socket {
-    fd: Fd,
+    fd: SocketFd,
     umem: Umem,
     fill: FillRing,
     comp: CompRing,
@@ -34,7 +31,7 @@ pub struct Socket {
     outstanding_tx: u32,
     clock: Clock,
     idle_timestamp: Option<Instant>,
-    shared: Arc<SocketShared>,
+    config: Arc<SocketConfig>,
 
     #[cfg(feature = "stats")]
     stats: Arc<Stats>,
@@ -42,13 +39,13 @@ pub struct Socket {
 
 impl Socket {
     pub(crate) fn new(
-        fd: Fd,
+        fd: SocketFd,
         umem: Umem,
         idx: usize,
         umem_scale: u32,
         umem_offset: u64,
         #[cfg(feature = "stats")] stats: Stats,
-        data: Arc<SocketShared>,
+        config: Arc<SocketConfig>,
     ) -> SocketResult<Self> {
         let off = fd.xdp_mmap_offsets()?;
 
@@ -57,11 +54,10 @@ impl Socket {
         let rx = RxRing::new(&fd, off.rx(), umem_scale)?;
         let tx = TxRing::new(&fd, off.tx(), umem_scale)?;
 
-        #[cfg(feature = "pool")]
-        fill.populate(umem_scale, idx as u64 + umem_offset)?;
-
         #[cfg(not(feature = "pool"))]
-        fill.populate(2 * umem_scale, idx as u64 + umem_offset)?;
+        let umem_scale = 2 * umem_scale;
+
+        fill.populate(umem_scale, idx as u64 + umem_offset)?;
 
         Ok(Self {
             fd,
@@ -75,11 +71,9 @@ impl Socket {
             pool: Pool::new(umem_scale, idx as u64 + umem_offset),
 
             outstanding_tx: 0,
-
             clock: Clock::new(),
             idle_timestamp: None,
-
-            shared: data,
+            config,
 
             #[cfg(feature = "stats")]
             stats: Arc::new(stats),
@@ -89,14 +83,25 @@ impl Socket {
     #[allow(clippy::missing_errors_doc)]
     #[inline]
     pub fn poll(&mut self) -> SocketResult<bool> {
-        if self.shared.xsk_config.mode.contains(Mode::FLASH_POLL) {
+        if self.config.xsk.mode.contains(Mode::FLASH_POLL) {
             #[cfg(feature = "stats")]
             unsafe {
                 (*self.stats.app.get()).opt_polls += 1;
             }
-            Ok(self.fd.poll()?)
+            Ok(self.fd.poll_idle()?)
         } else {
             Ok(true)
+        }
+    }
+
+    #[inline]
+    fn try_kick_rx(&mut self) {
+        if self.config.poll.mode == PollMode::Smart
+            && self.config.pollout_status.any()
+            && self.fill.is_half_full()
+            && self.rx.is_half_empty()
+        {
+            self.fd.kick_rx();
         }
     }
 
@@ -107,20 +112,15 @@ impl Socket {
             return;
         }
 
-        if self
-            .shared
-            .xsk_config
-            .bind_flags
-            .contains(BindFlags::XDP_COPY)
-        {
+        if self.config.xsk.bind_flags.contains(BindFlags::XDP_COPY) {
             #[cfg(feature = "stats")]
             unsafe {
                 (*self.stats.app.get()).tx_copy_sendtos += 1;
             }
-            let _ = self.fd.kick();
+            self.fd.kick_tx();
         }
 
-        let num_outstanding = self.outstanding_tx.min(self.shared.xsk_config.batch_size);
+        let num_outstanding = self.outstanding_tx.min(self.config.xsk.batch_size);
         let mut idx_cq = 0;
 
         let completed = self.comp.peek(num_outstanding, &mut idx_cq);
@@ -140,8 +140,7 @@ impl Socket {
         {
             let mut idx_fq = 0;
             while self.fill.reserve(completed, &mut idx_fq) != completed {
-                if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
-                    || self.fill.needs_wakeup()
+                if self.config.xsk.mode.contains(Mode::FLASH_BUSY_POLL) || self.fill.needs_wakeup()
                 {
                     #[cfg(feature = "stats")]
                     unsafe {
@@ -163,6 +162,7 @@ impl Socket {
             }
 
             self.fill.submit(completed);
+            self.try_kick_rx();
         }
 
         self.comp.release(completed);
@@ -172,11 +172,8 @@ impl Socket {
     #[inline]
     fn reserve_fq(&mut self, num: u32) -> u32 {
         let mut idx_fq = 0;
-
         while self.fill.reserve(num, &mut idx_fq) != num {
-            if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
-                || self.fill.needs_wakeup()
-            {
+            if self.config.xsk.mode.contains(Mode::FLASH_BUSY_POLL) || self.fill.needs_wakeup() {
                 #[cfg(feature = "stats")]
                 unsafe {
                     (*self.stats.app.get()).fill_fail_polls += 1;
@@ -190,39 +187,61 @@ impl Socket {
 
     #[inline]
     fn reserve_tx(&mut self, num: u32) -> u32 {
-        let mut idx_tx = 0;
-        if self.tx.reserve(num, &mut idx_tx) == num {
-            return idx_tx;
+        if self.config.xsk.mode.contains(Mode::FLASH_BUSY_POLL)
+            && self.outstanding_tx > self.config.poll.bp_threshold / 2
+        {
+            #[cfg(feature = "stats")]
+            unsafe {
+                (*self.stats.app.get()).tx_wakeup_sendtos += 1;
+            }
+            self.complete_tx_rx();
+            self.fd.kick_tx();
         }
 
-        loop {
-            self.complete_tx_rx();
+        if self.config.poll.mode != PollMode::None && self.config.poll.next_not_empty {
+            while self.outstanding_tx + num > self.config.poll.bp_threshold {
+                self.complete_tx_rx();
 
-            if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL) || self.tx.needs_wakeup()
-            {
-                #[cfg(feature = "stats")]
-                unsafe {
-                    (*self.stats.app.get()).tx_wakeup_sendtos += 1;
+                if self.config.xsk.mode.contains(Mode::FLASH_BUSY_POLL) || self.tx.needs_wakeup() {
+                    #[cfg(feature = "stats")]
+                    unsafe {
+                        (*self.stats.app.get()).tx_wakeup_sendtos += 1;
+                    }
+                    self.fd.kick_tx();
                 }
-                let _ = self.fd.kick();
-            }
 
-            if self.tx.reserve(num, &mut idx_tx) == num {
-                return idx_tx;
-            }
+                match self.config.poll.mode {
+                    PollMode::Smart => {
+                        self.config.pollout_status.set(true);
+                        let _ = self.fd.poll_backpressure();
+                        self.config.pollout_status.set(false);
+                    }
+                    PollMode::Sleep => thread::sleep(self.config.poll.bp_timeout),
+                    PollMode::None => {}
+                }
 
-            if let Some(poll_config) = &self.shared.poll_config
-                && self.outstanding_tx >= poll_config.bp_threshold
-            {
-                thread::sleep(poll_config.bp_timeout);
                 self.idle_timestamp = None;
-
                 #[cfg(feature = "stats")]
                 unsafe {
                     (*self.stats.app.get()).backpressure += 1;
                 }
             }
         }
+
+        let mut idx_tx = 0;
+        while self.tx.reserve(num, &mut idx_tx) != num {
+            self.complete_tx_rx();
+
+            if self.config.xsk.mode.contains(Mode::FLASH_BUSY_POLL) || self.tx.needs_wakeup() {
+                #[cfg(feature = "stats")]
+                unsafe {
+                    (*self.stats.app.get()).tx_wakeup_sendtos += 1;
+                }
+                self.fd.kick_tx();
+            }
+        }
+
+        idx_tx
     }
 
     #[cfg(feature = "pool")]
@@ -266,22 +285,20 @@ impl Socket {
     pub fn recv(&mut self) -> SocketResult<Vec<Desc>> {
         self.complete_tx_rx();
 
-        if let Some(poll_config) = &self.shared.poll_config
+        if self.config.poll.mode != PollMode::None
             && let Some(idle_timestamp) = self.idle_timestamp
             && self.clock.now() >= idle_timestamp
-            && !self.fd.poll()?
+            && !self.fd.poll_idle()?
         {
-            self.idle_timestamp = self.clock.now().checked_add(poll_config.idle_timeout);
+            self.idle_timestamp = self.clock.now().checked_add(self.config.poll.idle_timeout);
             return Ok(vec![]);
         }
 
         let mut idx_rx = 0;
-        let rcvd = self.rx.peek(self.shared.xsk_config.batch_size, &mut idx_rx);
+        let rcvd = self.rx.peek(self.config.xsk.batch_size, &mut idx_rx);
 
         if rcvd == 0 {
-            if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
-                || self.fill.needs_wakeup()
-            {
+            if self.config.xsk.mode.contains(Mode::FLASH_BUSY_POLL) || self.fill.needs_wakeup() {
                 #[cfg(feature = "stats")]
                 unsafe {
                     (*self.stats.app.get()).rx_empty_polls += 1;
@@ -289,17 +306,15 @@ impl Socket {
                 self.fd.wakeup();
             }
 
-            if let Some(poll_config) = &self.shared.poll_config
-                && self.idle_timestamp.is_none()
-            {
-                self.idle_timestamp = self.clock.now().checked_add(poll_config.idle_timeout);
+            if self.config.poll.mode != PollMode::None && self.idle_timestamp.is_none() {
+                self.idle_timestamp = self.clock.now().checked_add(self.config.poll.idle_timeout);
             }
 
             return Ok(vec![]);
         }
 
-        if let Some(poll_config) = &self.shared.poll_config
-            && (rcvd >= poll_config.idle_threshold || self.outstanding_tx > 0)
+        if self.config.poll.mode != PollMode::None
+            && (rcvd >= self.config.poll.idle_threshold || self.outstanding_tx > 0)
         {
             self.idle_timestamp = None;
         }
@@ -317,6 +332,7 @@ impl Socket {
         self.replenish_fq(rcvd);
 
         self.rx.release(rcvd);
+        self.try_kick_rx();
 
         #[cfg(feature = "stats")]
         unsafe {
@@ -413,6 +429,7 @@ impl Socket {
         }
 
         self.fill.submit(n);
+        self.try_kick_rx();
 
         #[cfg(feature = "stats")]
         unsafe {
