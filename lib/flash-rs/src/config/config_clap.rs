@@ -19,7 +19,7 @@ pub struct FlashConfig {
     pub(crate) smart_poll: bool,
 
     #[arg(
-        short = 'p',
+        short = 'P',
         long,
         default_value_t = false,
         help = "Enable periodic sleep mode"

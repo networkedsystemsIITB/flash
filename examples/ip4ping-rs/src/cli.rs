@@ -42,13 +42,13 @@ pub struct Cli {
 pub struct StatsConfig {
     #[arg(
         short = 's',
-        long,
+        long = "stats-cpu",
         default_value_t = 1,
         help = "CPU core index for stats thread"
     )]
     pub cpu: usize,
 
-    #[arg(short = 'f', long, default_value_t = 1, help = "Tui frames per second")]
+    #[arg(short = 'F', long, default_value_t = 1, help = "Tui frames per second")]
     pub fps: u64,
 
     #[arg(short = 'l', long, default_value_t = GridLayout::default(), value_parser = GridLayout::from_str, help = "Tui layout")]
