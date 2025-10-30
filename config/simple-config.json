@@ -15,7 +15,7 @@
                     ]
                 }
             ],
-            "ifname": "ens23f0np0",
+            "ifname": "enp1s0",
             "xdp_flags": "d",
             "bind_flags": "z",
             "mode": "b",
