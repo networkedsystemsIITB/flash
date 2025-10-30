@@ -5,10 +5,10 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 pub struct FlashConfig {
     #[arg(short, long, help = "Umem id used to connect to monitor")]
-    pub(crate) umem_id: u32,
+    pub(crate) umem_id: usize,
 
     #[arg(short = 'f', long, help = "NF id used to connect to monitor")]
-    pub(crate) nf_id: u32,
+    pub(crate) nf_id: usize,
 
     #[arg(
         short = 'p',
@@ -17,6 +17,14 @@ pub struct FlashConfig {
         help = "Enable smart polling mode"
     )]
     pub(crate) smart_poll: bool,
+
+    #[arg(
+        short = 'P',
+        long,
+        default_value_t = false,
+        help = "Enable periodic sleep mode"
+    )]
+    pub(crate) sleep_poll: bool,
 
     #[arg(
         short,
@@ -46,7 +54,7 @@ pub struct FlashConfig {
     #[arg(
         short = 'B',
         long,
-        default_value_t = 0.5,
+        default_value_t = 1.0,
         help = "Backpressure sensitivity [0.0 = low (0 pkts), 1.0 = high (2048 pkts)]"
     )]
     pub(crate) bp_sense: f32,

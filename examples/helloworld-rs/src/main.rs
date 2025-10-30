@@ -22,5 +22,5 @@ fn main() {
     }
 
     #[cfg(feature = "tracing")]
-    tracing::info!("sockets: {sockets:?}");
+    tracing::info!("Sockets: {sockets:?}");
 }

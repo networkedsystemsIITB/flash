@@ -19,7 +19,7 @@
 
 #define PROTO_STRLEN 4
 
-bool done = false;
+volatile bool done = false;
 struct config *cfg = NULL;
 struct nf *nf;
 
@@ -41,15 +41,24 @@ struct appconf {
 	int cpu_start;
 	int cpu_end;
 	int stats_cpu;
+	int srv_port;
+	int bkd_port;
+	uint8_t mac_addr[6];
 } app_conf;
 
-struct Args {
-	int socket_id;
-	int *next;
-	int next_size;
+// clang-format off
+static const char *maglev_options[] = {
+	"-c <num>\tStart CPU (default: 0)",
+	"-e <num>\tEnd CPU (default: 0)",
+	"-s <num>\tStats CPU (default: 1)",
+	"-S <mac>\tSet MAC address (default: 11:22:33:44:55:66)",
+	"-p <num>\tService port (default: 80)",
+	"-P <num>\tBackend port (default: 80)",
+	NULL
 };
+// clang-format on
 
-static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
+static int parse_app_args(int argc, char **argv, struct appconf *app_conf, int shift)
 {
 	int c;
 	opterr = 0;
@@ -58,12 +67,27 @@ static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int 
 	app_conf->cpu_start = 0;
 	app_conf->cpu_end = 0;
 	app_conf->stats_cpu = 1;
+	app_conf->srv_port = 80;
+	app_conf->bkd_port = 80;
+
+	int ethaddr[6];
+	ethaddr[0] = 0x11;
+	ethaddr[1] = 0x22;
+	ethaddr[2] = 0x33;
+	ethaddr[3] = 0x44;
+	ethaddr[4] = 0x55;
+	ethaddr[5] = 0x66;
+	for (int i = 0; i < 6; i++)
+		app_conf->mac_addr[i] = (uint8_t)ethaddr[i];
 
 	argc -= shift;
 	argv += shift;
 
-	while ((c = getopt(argc, argv, "c:e:s:")) != -1)
+	while ((c = getopt(argc, argv, "hc:e:s:S:p:P:")) != -1)
 		switch (c) {
+		case 'h':
+			printf("Usage: %s -h\n", argv[-shift]);
+			return -1;
 		case 'c':
 			app_conf->cpu_start = atoi(optarg);
 			break;
@@ -73,32 +97,26 @@ static void parse_app_args(int argc, char **argv, struct appconf *app_conf, int 
 		case 's':
 			app_conf->stats_cpu = atoi(optarg);
 			break;
-		default:
-			abort();
-		}
-}
-
-static void *worker__stats(void *arg)
-{
-	(void)arg;
-
-	if (cfg->verbose) {
-		unsigned int interval = cfg->stats_interval;
-		setlocale(LC_ALL, "");
-
-		for (int i = 0; i < cfg->total_sockets; i++)
-			nf->thread[i]->socket->timestamp = flash__get_nsecs(cfg);
-
-		while (!done) {
-			sleep(interval);
-			if (system("clear") != 0)
-				log_error("Terminal clear error");
-			for (int i = 0; i < cfg->total_sockets; i++) {
-				flash__dump_stats(cfg, nf->thread[i]->socket);
+		case 'S':
+			if (sscanf(optarg, "%x:%x:%x:%x:%x:%x", &ethaddr[0], &ethaddr[1], &ethaddr[2], &ethaddr[3], &ethaddr[4],
+				   &ethaddr[5]) != 6) {
+				log_error("Invalid MAC address format: %s", optarg);
+				return -1;
 			}
+			for (int i = 0; i < 6; i++)
+				app_conf->mac_addr[i] = (uint8_t)ethaddr[i];
+			break;
+		case 'p':
+			app_conf->srv_port = atoi(optarg);
+			break;
+		case 'P':
+			app_conf->bkd_port = atoi(optarg);
+			break;
+		default:
+			printf("Usage: %s -h\n", argv[-shift]);
+			return -1;
 		}
-	}
-	return NULL;
+	return 0;
 }
 
 static void configure(struct maglev *mag, int num_bkds)
@@ -183,23 +201,49 @@ struct backend_entry {
 	struct backend_info value;
 };
 
-static void load_services(void)
+static int load_services(void)
 {
-	send_cmd(cfg->uds_sockfd, FLASH__GET_IP_ADDR);
-	recv_data(cfg->uds_sockfd, srv_addr, INET_ADDRSTRLEN);
+	int ret;
+	ret = flash__send_cmd(cfg->uds_sockfd, FLASH__GET_IP_ADDR);
+	if (ret < 0) {
+		log_error("Failed to send command to get NF IP address");
+		return -1;
+	}
+	ret = flash__recv_data(cfg->uds_sockfd, srv_addr, INET_ADDRSTRLEN);
+	if (ret < 0) {
+		log_error("Failed to receive NF IP address");
+		return -1;
+	}
 	log_info("NF IP: %s", srv_addr);
 
-	send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
-	recv_data(cfg->uds_sockfd, &nbackends, sizeof(int));
+	ret = flash__send_cmd(cfg->uds_sockfd, FLASH__GET_DST_IP_ADDR);
+	if (ret < 0) {
+		log_error("Failed to send command to get Backend IP addresses");
+		return -1;
+	}
+	ret = flash__recv_data(cfg->uds_sockfd, &nbackends, sizeof(int));
+	if (ret < 0) {
+		log_error("Failed to receive number of backends");
+		return -1;
+	}
 	log_info("Number of Backends: %d", nbackends);
+	if (nbackends <= 0 || nbackends > MAX_BACKENDS) {
+		log_error("Invalid number of backends: %d", nbackends);
+		return -1;
+	}
 	for (int i = 0; i < nbackends; i++) {
-		recv_data(cfg->uds_sockfd, bkd_addr[i], INET_ADDRSTRLEN);
+		log_info("Receiving Backend %d IP address", i);
+		ret = flash__recv_data(cfg->uds_sockfd, bkd_addr[i], INET_ADDRSTRLEN);
+		if (ret < 0) {
+			log_error("Failed to receive Backend IP address %d", i);
+			return -1;
+		}
 		log_info("Backend %d IP: %s", i, bkd_addr[i]);
 	}
 
 	char proto[PROTO_STRLEN];
 	unsigned srv_port, bkd_port;
-	uint8_t mac_addr[6];
+	uint8_t *mac_addr;
 	struct service_info *srv_info;
 	struct backend_entry *bkd_entry;
 	struct in_addr addr;
@@ -209,25 +253,40 @@ static void load_services(void)
 	struct backend_entry *backend_entries;
 	struct hashmap srv_to_index;
 
-	hashmap_init(&services, sizeof(struct service_id), sizeof(struct service_info), MAX_SERVICES);
-	hashmap_init(&backends, sizeof(struct backend_id), sizeof(struct backend_info), MAX_BACKENDS);
-	hashmap_init(&maglev_tables, sizeof(struct service_id), sizeof(struct maglev), MAX_SERVICES);
+	if (hashmap_init(&services, sizeof(struct service_id), sizeof(struct service_info), MAX_SERVICES) != 1) {
+		log_error("ERROR: unable to initialize services hashmap");
+		return -1;
+	}
+	if (hashmap_init(&backends, sizeof(struct backend_id), sizeof(struct backend_info), MAX_BACKENDS) != 1) {
+		log_error("ERROR: unable to initialize backends hashmap");
+		goto out_1;
+	}
+	if (hashmap_init(&maglev_tables, sizeof(struct service_id), sizeof(struct maglev), MAX_SERVICES) != 1) {
+		log_error("ERROR: unable to initialize maglev tables hashmap");
+		goto out_2;
+	}
 
 	service_entries = malloc(sizeof(struct service_entry) * nservices);
+	if (!service_entries) {
+		log_error("ERROR: unable to allocate memory for service entries");
+		goto out_3;
+	}
 	backend_entries = malloc(sizeof(struct backend_entry) * nbackends);
-	hashmap_init(&srv_to_index, sizeof(struct service_id), sizeof(int), nservices);
+	if (!backend_entries) {
+		log_error("ERROR: unable to allocate memory for backend entries");
+		goto out_4;
+	}
+	if (hashmap_init(&srv_to_index, sizeof(struct service_id), sizeof(int), nservices) != 1) {
+		log_error("ERROR: unable to initialize service to index hashmap");
+		goto out_5;
+	}
 
-	mac_addr[0] = 0x11;
-	mac_addr[1] = 0x22;
-	mac_addr[2] = 0x33;
-	mac_addr[3] = 0x44;
-	mac_addr[4] = 0x55;
-	mac_addr[5] = 0x66;
+	mac_addr = app_conf.mac_addr;
 	// Manually add services and backends
 	// Service 1: UDP from 192.168.1.1:80 to backend 192.168.1.2:8080
 	// strcpy(srv_addr, "192.168.1.1"); Stored from main fn itself
-	srv_port = 80;
-	bkd_port = 8080;
+	srv_port = app_conf.srv_port;
+	bkd_port = app_conf.bkd_port;
 	strcpy(proto, "UDP");
 	for (int index = 0; index < nbackends; index++) {
 		bkd_entry = &backend_entries[index];
@@ -239,7 +298,7 @@ static void load_services(void)
 		inet_aton(bkd_addr[index], &addr);
 		bkd_entry->value.addr = addr.s_addr;
 		bkd_entry->value.port = htons(bkd_port);
-		__builtin_memcpy(&bkd_entry->value.mac_addr, mac_addr, sizeof(mac_addr));
+		__builtin_memcpy(&bkd_entry->value.mac_addr, mac_addr, sizeof(app_conf.mac_addr));
 
 		srvindex = hashmap_lookup_elem(&srv_to_index, &bkd_entry->key.service);
 		if (!srvindex) {
@@ -249,8 +308,8 @@ static void load_services(void)
 			srv_info = &srv_entry->value;
 
 			if (hashmap_insert_elem(&srv_to_index, &srv_entry->key, &service_first_free) != 1) {
-				fprintf(stderr, "ERROR: unable to add service index to hash map\n");
-				exit(EXIT_FAILURE);
+				log_error("ERROR: unable to add service to service to index hashmap");
+				goto out_6;
 			}
 
 			service_first_free++;
@@ -263,17 +322,18 @@ static void load_services(void)
 	}
 
 	for (int i = 0; i < nservices; i++) {
-		// printf("%u, %u\n", service_entries[i].key.vaddr, (__u32)(service_entries[i].key.vport));
+		log_info("Adding service %u:%u proto %u with %u backends", ntohl(service_entries[i].key.vaddr),
+			 ntohs(service_entries[i].key.vport), service_entries[i].key.proto, service_entries[i].value.backends);
 		if (hashmap_insert_elem(&services, &service_entries[i].key, &service_entries[i].value) != 1) {
-			fprintf(stderr, "ERROR: unable to add service to hash map\n");
-			exit(EXIT_FAILURE);
+			log_error("ERROR: unable to add service to hashmap");
+			goto out_6;
 		}
 	}
 
 	for (int i = 0; i < nbackends; i++) {
 		if (hashmap_insert_elem(&backends, &backend_entries[i].key, &backend_entries[i].value) != 1) {
-			fprintf(stderr, "ERROR: unable to add backend to hash map\n");
-			exit(EXIT_FAILURE);
+			log_error("ERROR: unable to add backend to hashmap\n");
+			goto out_6;
 		}
 	}
 
@@ -283,69 +343,115 @@ static void load_services(void)
 		uint32_t num_bkds = service_entries[i].value.backends;
 		configure(lookup, num_bkds);
 		if (hashmap_insert_elem(&maglev_tables, &service_entries[i].key, lookup) != 1) {
-			fprintf(stderr, "ERROR: unable to add maglev table to hash map\n");
-			exit(EXIT_FAILURE);
+			log_error("ERROR: unable to add maglev table to hashmap\n");
+			goto out_6;
 		}
 	}
 
-	printf("Added %u services and %u backends\n", nservices, nbackends);
+	log_info("Added %d services and %d backends", nservices, nbackends);
 
 	free(service_entries);
 	free(backend_entries);
 	hashmap_free(&srv_to_index);
 
-	return;
+	return 0;
+
+out_6:
+	hashmap_free(&srv_to_index);
+out_5:
+	free(backend_entries);
+out_4:
+	free(service_entries);
+out_3:
+	hashmap_free(&maglev_tables);
+out_2:
+	hashmap_free(&backends);
+out_1:
+	hashmap_free(&services);
+	return -1;
 }
+
+struct sock_args {
+	int socket_id;
+	int next_size;
+};
 
 static void *socket_routine(void *arg)
 {
-	struct Args *a = (struct Args *)arg;
-	int socket_id = a->socket_id;
-	int i, ret, nfds = 1, nrecv;
+	int ret;
+	nfds_t nfds = 1;
+	struct socket *xsk;
+	struct xskvec *xskvecs, *dropvecs, *sendvecs;
 	struct pollfd fds[1] = {};
-	struct xskmsghdr msg = {};
+	uint32_t i, nrecv, nsend, ndrop, wsend, wdrop;
+	struct sock_args *a = (struct sock_args *)arg;
 
-	msg.msg_iov = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
+	log_debug("Socket ID: %d", a->socket_id);
+	xsk = nf->thread[a->socket_id]->socket;
 
-	fds[0].fd = nf->thread[socket_id]->socket->fd;
+	xskvecs = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
+	if (!xskvecs) {
+		log_error("Failed to allocate xskvecs array");
+		return NULL;
+	}
+	dropvecs = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
+	if (!dropvecs) {
+		log_error("Failed to allocate dropvecs array");
+		free(xskvecs);
+		return NULL;
+	}
+	sendvecs = calloc(cfg->xsk->batch_size, sizeof(struct xskvec));
+	if (!sendvecs) {
+		log_error("Failed to allocate sendvecs array");
+		free(xskvecs);
+		free(dropvecs);
+		return NULL;
+	}
+
+	fds[0].fd = xsk->fd;
 	fds[0].events = POLLIN;
 
 	struct hashmap active_sessions;
-	hashmap_init(&active_sessions, sizeof(struct session_id), sizeof(struct replace_info), MAX_SESSIONS);
+	ret = hashmap_init(&active_sessions, sizeof(struct session_id), sizeof(struct replace_info), MAX_SESSIONS);
+	if (ret != 1) {
+		log_error("ERROR: unable to initialize active sessions hashmap");
+		free(xskvecs);
+		free(dropvecs);
+		free(sendvecs);
+		return NULL;
+	}
 	for (;;) {
-		if (cfg->xsk->mode & FLASH__POLL) {
-			ret = flash__poll(nf->thread[socket_id]->socket, fds, nfds, cfg->xsk->poll_timeout);
-			if (ret <= 0 || ret > 1)
-				continue;
-		}
-		nrecv = flash__recvmsg(cfg, nf->thread[socket_id]->socket, &msg);
+		ret = flash__poll(cfg, xsk, fds, nfds);
+		if (!(ret == 1 || ret == -2))
+			continue;
+		nrecv = flash__recvmsg(cfg, xsk, xskvecs, cfg->xsk->batch_size);
 
-		struct xskvec *drop[nrecv];
-		unsigned int tot_pkt_drop = 0;
-		struct xskvec *send[nrecv];
-		unsigned int tot_pkt_send = 0;
+		wdrop = 0;
+		wsend = 0;
 
 		for (i = 0; i < nrecv; i++) {
-			struct xskvec *xv = &msg.msg_iov[i];
+			struct xskvec *xv = &xskvecs[i];
+
 			void *pkt = xv->data;
 			void *pkt_end = pkt + xv->len;
+
 			struct ethhdr *eth = pkt;
 			if ((void *)(eth + 1) > pkt_end) {
-				drop[tot_pkt_drop++] = &msg.msg_iov[i];
-				log_info("INVALID PACKET Dropping packet: %d", tot_pkt_drop);
+				dropvecs[wdrop++] = xskvecs[i];
+				log_error("ERROR: invalid Ethernet frame");
 				continue;
 			}
 
 			if (eth->h_proto != htons(ETH_P_IP)) {
-				drop[tot_pkt_drop++] = &msg.msg_iov[i];
-				log_info("INVALID ETH PROTO Dropping packet: %d", tot_pkt_drop);
+				dropvecs[wdrop++] = xskvecs[i];
+				log_error("ERROR: not an IP packet");
 				continue;
 			}
 
 			struct iphdr *iph = (void *)(eth + 1);
 			if ((void *)(iph + 1) > pkt_end) {
-				drop[tot_pkt_drop++] = &msg.msg_iov[i];
-				log_info("INVALID IPHDR Dropping packet: %d", tot_pkt_drop);
+				dropvecs[wdrop++] = xskvecs[i];
+				log_error("ERROR: invalid IP header");
 				continue;
 			}
 
@@ -357,8 +463,8 @@ static void *socket_routine(void *arg)
 			case IPPROTO_TCP:;
 				struct tcphdr *tcph = next;
 				if ((void *)(tcph + 1) > pkt_end) {
-					drop[tot_pkt_drop++] = &msg.msg_iov[i];
-					log_info("INVALID TCPHDR Dropping packet: %d", tot_pkt_drop);
+					log_error("ERROR: invalid TCP header");
+					dropvecs[wdrop++] = xskvecs[i];
 					continue;
 				}
 
@@ -371,8 +477,8 @@ static void *socket_routine(void *arg)
 			case IPPROTO_UDP:;
 				struct udphdr *udph = next;
 				if ((void *)(udph + 1) > pkt_end) {
-					drop[tot_pkt_drop++] = &msg.msg_iov[i];
-					log_info("INVALID UDPHDR Dropping packet: %d", tot_pkt_drop);
+					dropvecs[wdrop++] = xskvecs[i];
+					log_error("ERROR: invalid UDP header");
 					continue;
 				}
 
@@ -383,8 +489,8 @@ static void *socket_routine(void *arg)
 				break;
 
 			default:
-				drop[tot_pkt_drop++] = &msg.msg_iov[i];
-				log_info("DEFAULT Dropping packet: %d", tot_pkt_drop);
+				dropvecs[wdrop++] = xskvecs[i];
+				log_error("ERROR: not a TCP/UDP packet");
 				continue;
 			}
 
@@ -407,11 +513,11 @@ static void *socket_routine(void *arg)
 
 			/* New session, apply load balancing logic */
 			struct service_id srvid = { .vaddr = iph->daddr, .vport = *dport, .proto = iph->protocol };
-			printf("%u, %u, %u\n", srvid.vaddr, (__u32)(srvid.vport), (__u32)(srvid.proto));
 			struct service_info *srvinfo = hashmap_lookup_elem(&services, &srvid);
 			if (!srvinfo) {
-				drop[tot_pkt_drop++] = &msg.msg_iov[i];
-				log_info("ERROR: missing service --> DROPPING\n");
+				dropvecs[wdrop++] = xskvecs[i];
+				log_error("ERROR: service not found for %u:%u proto %u --> DROPPING", ntohl(srvid.vaddr),
+					  ntohs(srvid.vport), srvid.proto);
 				continue;
 			}
 
@@ -422,8 +528,9 @@ static void *socket_routine(void *arg)
 			};
 			struct backend_info *bkdinfo = hashmap_lookup_elem(&backends, &bkdid);
 			if (!bkdinfo) {
-				drop[tot_pkt_drop++] = &msg.msg_iov[i];
-				log_info("ERROR: missing backend --> DROPPING\n");
+				dropvecs[wdrop++] = xskvecs[i];
+				log_error("ERROR: backend not found for service %u:%u proto %u and index %u --> DROPPING",
+					  ntohl(srvid.vaddr), ntohs(srvid.vport), srvid.proto, bkdid.index);
 				continue;
 			}
 
@@ -436,7 +543,7 @@ static void *socket_routine(void *arg)
 			__builtin_memcpy(fwd_rep.mac_addr, &bkdinfo->mac_addr, sizeof(fwd_rep.mac_addr));
 			rep = &fwd_rep;
 			if (hashmap_insert_elem(&active_sessions, &sid, &fwd_rep) != 1) {
-				fprintf(stderr, "ERROR: unable to add forward session to map\n");
+				log_error("ERROR: unable to add forward session to map\n");
 				goto insert;
 			}
 
@@ -451,7 +558,7 @@ static void *socket_routine(void *arg)
 			sid.saddr = bkdinfo->addr;
 			sid.sport = bkdinfo->port;
 			if (hashmap_insert_elem(&active_sessions, &sid, &bwd_rep) != 1) {
-				fprintf(stderr, "ERROR: unable to add backward session to map\n");
+				log_error("ERROR: unable to add backward session to map\n");
 				goto insert;
 			}
 
@@ -487,44 +594,66 @@ insert:
 			*l4check = csum_fold(csum);
 
 			xv->options = (rep->bkdindex << 16) | (xv->options & 0xFFFF);
-			send[tot_pkt_send++] = &msg.msg_iov[i];
+			sendvecs[wsend++] = xskvecs[i];
 		}
 
 		if (nrecv) {
-			size_t ret_send = flash__sendmsg(cfg, nf->thread[socket_id]->socket, send, tot_pkt_send);
-			size_t ret_drop = flash__dropmsg(cfg, nf->thread[socket_id]->socket, drop, tot_pkt_drop);
-
-			if (ret_send != tot_pkt_send || ret_drop != tot_pkt_drop) {
+			ndrop = flash__dropmsg(cfg, xsk, dropvecs, wdrop);
+			nsend = flash__sendmsg(cfg, xsk, sendvecs, wsend);
+			if (ndrop != wdrop || nsend != wsend) {
 				log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
-				exit(EXIT_FAILURE);
+				break;
 			}
 		}
 
 		if (done)
 			break;
 	}
-	free(msg.msg_iov);
+	free(xskvecs);
+	free(dropvecs);
+	free(sendvecs);
 	hashmap_free(&active_sessions);
 	return NULL;
 }
 
 int main(int argc, char **argv)
 {
+	int shift;
+	struct sock_args *args;
+	struct stats_conf stats_cfg = { NULL };
 	cpu_set_t cpuset;
+	pthread_t socket_thread, stats_thread;
+
 	cfg = calloc(1, sizeof(struct config));
 	if (!cfg) {
 		log_error("ERROR: Memory allocation failed\n");
 		exit(EXIT_FAILURE);
 	}
 
-	int n = flash__parse_cmdline_args(argc, argv, cfg);
-	parse_app_args(argc, argv, &app_conf, n);
-	flash__configure_nf(&nf, cfg);
-	flash__populate_fill_ring(nf->thread, cfg->umem->frame_size, cfg->total_sockets, cfg->umem_offset, cfg->umem_scale);
+	cfg->app_name = "maglev";
+	cfg->app_options = maglev_options;
+	cfg->done = &done;
+
+	shift = flash__parse_cmdline_args(argc, argv, cfg);
+	if (shift < 0) {
+		log_error("ERROR: Failed to parse command line arguments");
+		goto out_cfg;
+	}
+	if (parse_app_args(argc, argv, &app_conf, shift) < 0) {
+		log_error("ERROR: Failed to parse application arguments");
+		goto out_cfg;
+	}
+	if (flash__configure_nf(&nf, cfg) < 0) {
+		log_error("ERROR: Failed to configure NF");
+		goto out_cfg;
+	}
 
 	log_info("Control Plane Setup Done");
 
-	load_services();
+	if (load_services() < 0) {
+		log_error("ERROR: Failed to load services");
+		goto out_cfg_close;
+	}
 
 	signal(SIGINT, int_exit);
 	signal(SIGTERM, int_exit);
@@ -532,50 +661,65 @@ int main(int argc, char **argv)
 
 	log_info("STARTING Data Path");
 
+	args = calloc(cfg->total_sockets, sizeof(struct sock_args));
+	if (!args) {
+		log_error("ERROR: Memory allocation failed for socket args");
+		goto out_cfg_close;
+	}
 	for (int i = 0; i < cfg->total_sockets; i++) {
-		struct Args *args = calloc(1, sizeof(struct Args));
-		args->socket_id = i;
-		args->next = nf->next;
-		args->next_size = nf->next_size;
+		args[i].socket_id = i;
+		args[i].next_size = nf->next_size;
 
-		log_info("2_NEXT_SIZE: %d", args->next_size);
+		log_info("2_NEXT_SIZE: %d", args[i].next_size);
 
-		for (int i = 0; i < args->next_size; i++) {
-			log_info("2_NEXT_ITEM_%d %d", i, nf->next[i]);
-		}
-
-		pthread_t socket_thread;
-		if (pthread_create(&socket_thread, NULL, socket_routine, args)) {
+		if (pthread_create(&socket_thread, NULL, socket_routine, &args[i])) {
 			log_error("Error creating socket thread");
-			exit(EXIT_FAILURE);
+			goto out_args;
 		}
 		CPU_ZERO(&cpuset);
 		CPU_SET((i % (app_conf.cpu_end - app_conf.cpu_start + 1)) + app_conf.cpu_start, &cpuset);
 		if (pthread_setaffinity_np(socket_thread, sizeof(cpu_set_t), &cpuset) != 0) {
 			log_error("ERROR: Unable to set thread affinity: %s\n", strerror(errno));
-			exit(EXIT_FAILURE);
+			goto out_args;
 		}
 
-		pthread_detach(socket_thread);
+		if (pthread_detach(socket_thread) != 0) {
+			log_error("ERROR: Unable to detach thread: %s\n", strerror(errno));
+			goto out_args;
+		}
 	}
 
-	pthread_t stats_thread;
-	if (pthread_create(&stats_thread, NULL, worker__stats, NULL)) {
+	stats_cfg.nf = nf;
+	stats_cfg.cfg = cfg;
+
+	if (pthread_create(&stats_thread, NULL, flash__stats_thread, &stats_cfg)) {
 		log_error("Error creating statistics thread");
-		exit(EXIT_FAILURE);
+		goto out_args;
 	}
 	CPU_ZERO(&cpuset);
 	CPU_SET(app_conf.stats_cpu, &cpuset);
 	if (pthread_setaffinity_np(stats_thread, sizeof(cpu_set_t), &cpuset) != 0) {
 		log_error("ERROR: Unable to set thread affinity: %s\n", strerror(errno));
-		exit(EXIT_FAILURE);
+		goto out_args;
 	}
 
-	pthread_detach(stats_thread);
+	if (pthread_detach(stats_thread) != 0) {
+		log_error("ERROR: Unable to detach thread: %s\n", strerror(errno));
+		goto out_args;
+	}
 
-	wait_for_cmd(cfg);
-
+	flash__wait(cfg);
 	flash__xsk_close(cfg, nf);
 
-	return EXIT_SUCCESS;
+	exit(EXIT_SUCCESS);
+
+out_args:
+	done = true;
+	free(args);
+out_cfg_close:
+	sleep(1);
+	flash__xsk_close(cfg, nf);
+out_cfg:
+	free(cfg);
+	exit(EXIT_FAILURE);
 }

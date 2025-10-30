@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Read, Write as _},
+    io::{self, Read as _, Write as _},
     os::unix::net::UnixStream,
     path::Path,
 };
@@ -33,6 +33,14 @@ impl UdsConn {
         self.0.read_exact(&mut buf)?;
 
         Ok(i32::from_ne_bytes(buf))
+    }
+
+    #[inline]
+    pub(super) fn recv_u32(&mut self) -> io::Result<u32> {
+        let mut buf = [0; 4];
+        self.0.read_exact(&mut buf)?;
+
+        Ok(u32::from_ne_bytes(buf))
     }
 
     #[inline]

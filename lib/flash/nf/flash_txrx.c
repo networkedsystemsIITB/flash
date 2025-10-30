@@ -6,6 +6,8 @@
 #include <log.h>
 #include <unistd.h>
 
+#include <flash_pool.h>
+
 #include "flash_nf.h"
 
 static uint64_t __hz;
@@ -55,7 +57,7 @@ static inline uint64_t rdtsc_precise(void)
 	return rdtsc();
 }
 
-static uint64_t get_tsc_freq(struct config *cfg)
+static inline uint64_t get_tsc_freq(struct config *cfg)
 {
 #define NS_PER_SEC 1E9
 
@@ -80,7 +82,7 @@ static uint64_t get_tsc_freq(struct config *cfg)
 }
 #endif
 
-static uint64_t get_timer_hz(struct config *cfg)
+static inline uint64_t get_timer_hz(struct config *cfg)
 {
 	if (__hz == 0)
 		__hz = get_tsc_freq(cfg);
@@ -88,7 +90,7 @@ static uint64_t get_timer_hz(struct config *cfg)
 	return __hz;
 }
 
-int flash__poll(struct socket *xsk, struct pollfd *fds, nfds_t nfds, int timeout)
+static inline int __poll(struct socket *xsk, struct pollfd *fds, nfds_t nfds, int timeout)
 {
 #ifdef STATS
 	xsk->app_stats.opt_polls++;
@@ -96,7 +98,18 @@ int flash__poll(struct socket *xsk, struct pollfd *fds, nfds_t nfds, int timeout
 	return poll(fds, nfds, timeout);
 }
 
-static void __kick_tx(struct socket *xsk)
+int flash__poll(struct config *cfg, struct socket *xsk, struct pollfd *fds, nfds_t nfds)
+{
+	if (!(cfg->xsk->mode & FLASH__POLL))
+		return -2;
+
+#ifdef STATS
+	xsk->app_stats.opt_polls++;
+#endif
+	return poll(fds, nfds, cfg->xsk->poll_timeout);
+}
+
+static inline void __kick_tx(struct socket *xsk)
 {
 	int ret;
 	ret = sendto(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL, 0);
@@ -107,10 +120,49 @@ static void __kick_tx(struct socket *xsk)
 	exit(EXIT_FAILURE);
 }
 
-static inline void __complete_tx_rx_first(struct config *cfg, struct socket *xsk)
+static inline void __kick_rx(struct socket *xsk)
+{
+	int ret;
+	ret = recvfrom(xsk->fd, NULL, 0, MSG_MORE, NULL, 0);
+
+	if (ret >= 0 || errno == EAGAIN || errno == EBUSY || errno == ENETDOWN)
+		return;
+	log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
+	exit(EXIT_FAILURE);
+}
+
+static inline uint32_t fill_ring_nb_entries(struct socket *xsk)
+{
+	return xsk->fill.size + (xsk->fill.cached_prod - xsk->fill.cached_cons);
+}
+
+static inline uint32_t rx_ring_free_entries(struct socket *xsk)
+{
+	return xsk->rx.size - (xsk->rx.cached_prod - xsk->rx.cached_cons);
+}
+
+static inline void __try_kick_rx(struct config *cfg, struct socket *xsk)
+{
+	if (!cfg->smart_poll)
+		return;
+	bool any = false;
+	for (int i = 0; i < cfg->prev_size; i++) {
+		if (cfg->nf_pollout_status[cfg->prev[i]] == 1) {
+			any = true;
+			break;
+		}
+	}
+	if (fill_ring_nb_entries(xsk) >= xsk->fill.size / 2 && rx_ring_free_entries(xsk) > xsk->rx.size / 2 && any) {
+		__kick_rx(xsk);
+	}
+}
+
+static inline void __complete_tx_completions(struct config *cfg, struct socket *xsk)
 {
 	uint32_t idx_cq = 0, idx_fq = 0;
-	uint32_t completed, num_outstanding;
+	uint32_t completed, num_outstanding, i, ret;
+	uint64_t addr;
+	int temp;
 
 	if (!xsk->outstanding_tx)
 		return;
@@ -132,9 +184,10 @@ static inline void __complete_tx_rx_first(struct config *cfg, struct socket *xsk
 
 	/* Re-add completed TX buffers */
 	completed = xsk_ring_cons__peek(&xsk->comp, num_outstanding, &idx_cq);
-	if (completed > 0) {
-		uint32_t i, ret;
+	if (!completed)
+		return;
 
+	if (cfg->rx_first) {
 		ret = xsk_ring_prod__reserve(&xsk->fill, completed, &idx_fq);
 		while (ret != completed) {
 			if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
@@ -146,13 +199,49 @@ static inline void __complete_tx_rx_first(struct config *cfg, struct socket *xsk
 			ret = xsk_ring_prod__reserve(&xsk->fill, completed, &idx_fq);
 		}
 
-		for (i = 0; i < completed; i++)
-			*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) = *xsk_ring_cons__comp_addr(&xsk->comp, idx_cq++);
+		for (i = 0; i < completed; i++) {
+			addr = *xsk_ring_cons__comp_addr(&xsk->comp, idx_cq++);
+			if (cfg->track_tx_budget && cfg->next_size != 0) {
+				uint8_t *data_ptr = (uint8_t *)(cfg->umem->buffer + addr); // edge_id
+				xsk->per_edge_outstanding[*data_ptr]--;
+				temp = xsk->completed_tx_descs[xsk->completed_idx];
+				if (temp != -1) {
+					xsk->per_edge_max_outstanding_tx[temp]--;
+				}
+				xsk->per_edge_max_outstanding_tx[*data_ptr]++;
+				xsk->completed_tx_descs[xsk->completed_idx] = *data_ptr;
+				xsk->completed_idx = (xsk->completed_idx + 1) & (cfg->max_outstanding_tx - 1);
+
+				*data_ptr = 0;
+			}
+			*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) = addr;
+		}
 
 		xsk_ring_prod__submit(&xsk->fill, completed);
-		xsk_ring_cons__release(&xsk->comp, completed);
-		xsk->outstanding_tx -= completed;
+		__try_kick_rx(cfg, xsk);
+	} else {
+		for (i = 0; i < completed; i++) {
+			addr = *xsk_ring_cons__comp_addr(&xsk->comp, idx_cq++);
+			if (cfg->track_tx_budget && cfg->next_size != 0) {
+				uint8_t *data_ptr = (uint8_t *)(cfg->umem->buffer + addr); // edge_id
+				xsk->per_edge_outstanding[*data_ptr]--;
+
+				temp = xsk->completed_tx_descs[xsk->completed_idx];
+				if (temp != -1) {
+					xsk->per_edge_max_outstanding_tx[temp]--;
+				}
+				xsk->per_edge_max_outstanding_tx[*data_ptr]++;
+				xsk->completed_tx_descs[xsk->completed_idx] = *data_ptr;
+				xsk->completed_idx = (xsk->completed_idx + 1) & (cfg->max_outstanding_tx - 1);
+
+				*data_ptr = 0;
+			}
+			flash_pool__put(xsk->flash_pool, addr);
+		}
 	}
+
+	xsk_ring_cons__release(&xsk->comp, completed);
+	xsk->outstanding_tx -= completed;
 }
 
 static inline uint32_t __reserve_fq(struct config *cfg, struct socket *xsk, uint32_t num)
@@ -175,12 +264,43 @@ static inline uint32_t __reserve_fq(struct config *cfg, struct socket *xsk, uint
 
 static inline uint32_t __reserve_tx(struct config *cfg, struct socket *xsk, uint32_t num)
 {
-	uint32_t idx_tx = 0;
-	uint32_t ret;
+	if (cfg->xsk->mode & FLASH__BUSY_POLL && xsk->outstanding_tx > cfg->xsk->bp_thres / 2) {
+#ifdef STATS
+		xsk->app_stats.tx_wakeup_sendtos++;
+#endif
+		__complete_tx_completions(cfg, xsk);
+		__kick_tx(xsk);
+	}
 
+	uint32_t idx_tx = 0;
+	uint32_t ret = 0;
+
+	while ((cfg->smart_poll || cfg->sleep_poll) && xsk->outstanding_tx + num > cfg->xsk->bp_thres && cfg->next_size != 0) {
+		__complete_tx_completions(cfg, xsk);
+		if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->tx)) {
+#ifdef STATS
+			xsk->app_stats.tx_wakeup_sendtos++;
+#endif
+			__kick_tx(xsk);
+		}
+		if (cfg->smart_poll) {
+			cfg->nf_pollout_status[cfg->nf_id] = 1;
+			ret = __poll(xsk, &xsk->backpressure_fd, 1, 1000);
+			cfg->nf_pollout_status[cfg->nf_id] = 0;
+			// will wake up when any of the next_nf->fill_ring->buffers > next_nf->fill_ring->size / 2
+			// and next_nf->rx_ring_free > next_nf->rx_ring_size / 2
+			// and current_nf->outstanding_tx < current_nf->xsk->tx->size / 2
+		} else if (cfg->sleep_poll) {
+			usleep(cfg->xsk->bp_timeout);
+		}
+		xsk->idle_timestamp = 0;
+#ifdef STATS
+		xsk->app_stats.backpressure++;
+#endif
+	}
 	ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
 	while (ret != num) {
-		__complete_tx_rx_first(cfg, xsk);
+		__complete_tx_completions(cfg, xsk);
 		if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->tx)) {
 #ifdef STATS
 			xsk->app_stats.tx_wakeup_sendtos++;
@@ -188,13 +308,6 @@ static inline uint32_t __reserve_tx(struct config *cfg, struct socket *xsk, uint
 			__kick_tx(xsk);
 		}
 		ret = xsk_ring_prod__reserve(&xsk->tx, num, &idx_tx);
-
-		if (cfg->smart_poll && ret != num && xsk->outstanding_tx >= cfg->xsk->bp_thres) {
-			usleep(cfg->xsk->bp_timeout);
-#ifdef STATS
-			xsk->app_stats.backpressure++;
-#endif
-		}
 	}
 	return idx_tx;
 }
@@ -234,27 +347,60 @@ static void __hex_dump(void *pkt, size_t length, uint64_t addr)
 	printf("\n");
 }
 
-size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg)
+static inline void __replenish_fill_ring(struct config *cfg, struct socket *xsk, uint32_t num)
+{
+	uint32_t ret, idx_fq = 0;
+	uint64_t addr = 0;
+
+	ret = xsk_ring_prod__reserve(&xsk->fill, num, &idx_fq);
+	while (ret != num) {
+		if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
+#ifdef STATS
+			xsk->app_stats.fill_fail_polls++;
+#endif
+			recvfrom(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL, NULL);
+		}
+		ret = xsk_ring_prod__reserve(&xsk->fill, num, &idx_fq);
+	}
+
+	for (uint32_t i = 0; i < num; i++) {
+		while (!flash_pool__get(xsk->flash_pool, &addr)) {
+			__complete_tx_completions(cfg, xsk);
+			if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->tx)) {
+#ifdef STATS
+				xsk->app_stats.tx_wakeup_sendtos++;
+#endif
+				__kick_tx(xsk);
+			}
+		}
+		*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) = addr;
+	}
+
+	xsk_ring_prod__submit(&xsk->fill, num);
+}
+
+size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t nrecv)
 {
 	int ret;
-	uint32_t idx_rx = 0;
-	uint32_t rcvd, i, eop_cnt = 0;
+	uint64_t *pkt;
+	uint64_t addr, orig;
+	const struct xdp_desc *desc;
+	uint32_t rcvd, nb, i, len, eop_cnt = 0, idx_rx = 0;
 
-	/* Only Tx currently is not supported 
-	  * in that scenario we need to call the following 
-	  * function somewhere else in the code
-	  */
-	__complete_tx_rx_first(cfg, xsk);
+	/* Ensures that rx can happen during tx pressure */
+	__complete_tx_completions(cfg, xsk);
 
-	if (cfg->smart_poll && cfg->xsk->idle_timeout && xsk->idle_timestamp && rdtsc() > xsk->idle_timestamp) {
-		ret = flash__poll(xsk, &xsk->idle_fd, 1, cfg->xsk->poll_timeout);
+	if ((cfg->smart_poll || cfg->sleep_poll) && cfg->xsk->idle_timeout && xsk->idle_timestamp && rdtsc() > xsk->idle_timestamp) {
+		ret = __poll(xsk, &xsk->idle_fd, 1, -1);
 		if (ret <= 0) {
 			xsk->idle_timestamp = rdtsc() + ((get_timer_hz(cfg) / MS_PER_S) * cfg->xsk->idle_timeout);
 			return 0;
 		}
 	}
 
-	rcvd = xsk_ring_cons__peek(&xsk->rx, cfg->xsk->batch_size, &idx_rx);
+	nb = nrecv > cfg->xsk->batch_size ? cfg->xsk->batch_size : nrecv;
+
+	rcvd = xsk_ring_cons__peek(&xsk->rx, nb, &idx_rx);
 	if (!rcvd) {
 		if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->fill)) {
 #ifdef STATS
@@ -263,41 +409,43 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *
 			recvfrom(xsk->fd, NULL, 0, MSG_DONTWAIT, NULL, NULL);
 		}
 
-		if (cfg->smart_poll && cfg->xsk->idle_timeout && !xsk->idle_timestamp)
+		if ((cfg->smart_poll || cfg->sleep_poll) && cfg->xsk->idle_timeout && !xsk->idle_timestamp)
 			xsk->idle_timestamp = rdtsc() + ((get_timer_hz(cfg) / MS_PER_S) * cfg->xsk->idle_timeout);
 
 		return 0;
 	}
 
-	if (cfg->smart_poll && rcvd >= cfg->xsk->idle_thres)
+	if ((cfg->smart_poll || cfg->sleep_poll) && (rcvd >= cfg->xsk->idle_thres || xsk->outstanding_tx))
 		xsk->idle_timestamp = 0;
 
-	if (rcvd > cfg->xsk->batch_size) {
-		log_error("errno: %d/\"%s\"\n", errno, strerror(errno));
-		exit(EXIT_FAILURE);
-	}
+	if (rcvd > cfg->xsk->batch_size)
+		log_warn("errno: %d/\"%s\"", errno, strerror(errno));
 
 	for (i = 0; i < rcvd; i++) {
-		const struct xdp_desc *desc = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++);
+		desc = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++);
 		eop_cnt += IS_EOP_DESC(desc->options);
-		uint64_t addr = desc->addr;
-		uint32_t len = desc->len;
-		uint64_t orig = addr;
+		addr = desc->addr;
+		len = desc->len;
+		orig = addr;
 
 		addr = xsk_umem__add_offset_to_addr(addr);
-		uint64_t *pkt = xsk_umem__get_data(cfg->umem->buffer, addr);
+		pkt = xsk_umem__get_data(cfg->umem->buffer, addr);
 
-		// Put it in the message vector
-		msg->msg_iov[i].data = pkt;
-		msg->msg_iov[i].len = len;
-		msg->msg_iov[i].addr = orig;
-		msg->msg_iov[i].options = desc->options;
+		xskvecs[i].data = pkt;
+		xskvecs[i].len = len;
+		xskvecs[i].addr = orig;
+		xskvecs[i].options = desc->options;
 
 		__hex_dump(pkt, len, addr);
 	}
-	msg->msg_len = rcvd;
+
+	if (!cfg->rx_first)
+		__replenish_fill_ring(cfg, xsk, rcvd);
 
 	xsk_ring_cons__release(&xsk->rx, rcvd);
+
+	__try_kick_rx(cfg, xsk);
+
 #ifdef STATS
 	xsk->ring_stats.rx_npkts += eop_cnt;
 	xsk->ring_stats.rx_frags += rcvd;
@@ -305,33 +453,34 @@ size_t flash__recvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *
 	return rcvd;
 }
 
-size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t nsend)
+size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t nsend)
 {
-	uint32_t i;
-	uint32_t frags_done = 0, eop_cnt = 0;
-	uint32_t nb_frags = 0;
+	bool eop;
+	uint64_t addr;
+	struct xskvec *xv;
+	struct xdp_desc *tx_desc;
+	uint32_t i, idx_tx, len, frags_done = 0, eop_cnt = 0, nb_frags = 0;
 
 	if (!nsend)
 		return 0;
 
-	uint32_t idx_tx = __reserve_tx(cfg, xsk, nsend);
+	idx_tx = __reserve_tx(cfg, xsk, nsend);
 
 	for (i = 0; i < nsend; i++) {
-		struct xskvec *xv = msgiov[i];
-		bool eop = IS_EOP_DESC(xv->options);
-		uint64_t addr = xv->addr;
-
-		uint32_t len = xv->len;
+		xv = &xskvecs[i];
+		eop = IS_EOP_DESC(xv->options);
+		addr = xv->addr;
+		len = xv->len;
 		nb_frags++;
 
-		struct xdp_desc *tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, idx_tx++);
+		tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, idx_tx++);
 
 		tx_desc->options = eop ? 0 : XDP_PKT_CONTD;
 		tx_desc->options |= (xv->options & 0xFFFF0000);
 		tx_desc->addr = addr;
 		tx_desc->len = len;
 
-		__hex_dump(xv->data, xv->len, addr);
+		__hex_dump(xv->data, len, addr);
 
 		if (eop) {
 			frags_done += nb_frags;
@@ -341,6 +490,9 @@ size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec **ms
 	}
 	xsk_ring_prod__submit(&xsk->tx, frags_done);
 	xsk->outstanding_tx += frags_done;
+
+	if (!cfg->rx_first)
+		__complete_tx_completions(cfg, xsk);
 #ifdef STATS
 	xsk->ring_stats.tx_npkts += eop_cnt;
 	xsk->ring_stats.tx_frags += nsend;
@@ -348,28 +500,88 @@ size_t flash__sendmsg(struct config *cfg, struct socket *xsk, struct xskvec **ms
 	return nsend;
 }
 
-size_t flash__dropmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t ndrop)
+void flash__track_tx_and_drop(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t nrecv, struct xskvec *sendvecs,
+			      uint32_t *nsend, struct xskvec *dropvecs, uint32_t *ndrop)
 {
-	uint32_t i;
-	uint32_t eop_cnt = 0;
+	uint32_t i, next_size = cfg->next_size, wsend = 0, wdrop = 0, edge;
+	for (i = 0; i < nrecv; i++) {
+		if (next_size == 0 || !cfg->track_tx_budget) {
+			sendvecs[wsend++] = xskvecs[i];
+			continue;
+		}
+
+		edge = (xskvecs[i].options >> 16) & 0xFFFF;
+		if (xsk->per_edge_max_outstanding_tx[edge] > xsk->per_edge_outstanding[edge]) {
+			xsk->per_edge_outstanding[edge]++;
+			sendvecs[wsend++] = xskvecs[i];
+		} else {
+			dropvecs[wdrop++] = xskvecs[i];
+		}
+	}
+	*nsend = wsend;
+	*ndrop = wdrop;
+}
+
+size_t flash__dropmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t ndrop)
+{
+	uint32_t i, idx_fq;
+	uint64_t addr;
 
 	if (!ndrop)
 		return 0;
 
-	uint32_t idx_fq = __reserve_fq(cfg, xsk, ndrop);
+	if (cfg->rx_first) {
+		idx_fq = __reserve_fq(cfg, xsk, ndrop);
 
-	for (i = 0; i < ndrop; i++) {
-		struct xskvec *xv = msgiov[i];
-		uint64_t addr = xv->addr;
+		for (i = 0; i < ndrop; i++) {
+			addr = xsk_umem__extract_addr(xskvecs[i].addr);
+			*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) = addr;
+		}
 
-		uint64_t orig = xsk_umem__extract_addr(addr);
-		eop_cnt += IS_EOP_DESC(xv->options);
-		*xsk_ring_prod__fill_addr(&xsk->fill, idx_fq++) = orig;
+		xsk_ring_prod__submit(&xsk->fill, ndrop);
+	} else {
+		for (i = 0; i < ndrop; i++) {
+			addr = xsk_umem__extract_addr(xskvecs[i].addr);
+			flash_pool__put(xsk->flash_pool, addr);
+		}
 	}
+	__try_kick_rx(cfg, xsk);
 
-	xsk_ring_prod__submit(&xsk->fill, ndrop);
 #ifdef STATS
 	xsk->ring_stats.drop_npkts += ndrop;
 #endif
 	return ndrop;
+}
+
+size_t flash__allocmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t nalloc)
+{
+	uint32_t i;
+	uint64_t addr;
+
+	if (!nalloc || !xsk || !xskvecs || !cfg || !xsk->flash_pool)
+		return 0;
+
+	if (cfg->rx_first) {
+		log_error("Cannot allocate xskvecs in rx_first mode");
+		return 0;
+	} else {
+		for (i = 0; i < nalloc; i++) {
+			while (!flash_pool__get(xsk->flash_pool, &addr)) {
+				__complete_tx_completions(cfg, xsk);
+				if (cfg->xsk->mode & FLASH__BUSY_POLL || xsk_ring_prod__needs_wakeup(&xsk->tx)) {
+#ifdef STATS
+					xsk->app_stats.tx_wakeup_sendtos++;
+#endif
+					__kick_tx(xsk);
+				}
+			}
+
+			xskvecs[i].data = xsk_umem__get_data(cfg->umem->buffer, addr);
+			xskvecs[i].addr = addr;
+			xskvecs[i].len = cfg->umem->frame_size;
+			xskvecs[i].options = 0;
+		}
+	}
+
+	return nalloc;
 }

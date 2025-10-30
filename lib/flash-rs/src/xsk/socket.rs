@@ -1,113 +1,107 @@
-use std::{io, sync::Arc, thread};
+use std::{sync::Arc, thread};
 
-use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS};
-use libxdp_sys::{
-    XSK_RING_PROD__DEFAULT_NUM_DESCS, XSK_UMEM__DEFAULT_FRAME_SIZE, xsk_umem__add_offset_to_addr,
-    xsk_umem__extract_addr,
-};
 use quanta::{Clock, Instant};
 
 use crate::{
-    config::{BindFlags, Mode},
-    mem::Umem,
-    util,
+    config::{BindFlags, Mode, PollMode, SocketConfig},
+    fd::SocketFd,
+    mem::{CompRing, Cons as _, Desc, FillRing, Prod as _, RxRing, TxRing, Umem},
 };
 
-use super::{
-    desc::Desc,
-    error::SocketError,
-    error::SocketResult,
-    fd::Fd,
-    ring::{CompRing, Cons as _, FillRing, Prod as _, RxRing, TxRing},
-    shared::SocketShared,
-};
+#[cfg(feature = "pool")]
+use crate::mem::Pool;
 
 #[cfg(feature = "stats")]
-use super::stats::Stats;
+use crate::stats::Stats;
 
-const FRAME_SIZE: u64 = XSK_UMEM__DEFAULT_FRAME_SIZE as u64;
+use super::error::{SocketError, SocketResult};
 
 #[derive(Debug)]
 pub struct Socket {
-    fd: Fd,
-    rx: RxRing,
-    tx: TxRing,
+    fd: SocketFd,
+    umem: Umem,
     fill: FillRing,
     comp: CompRing,
+    rx: RxRing,
+    tx: TxRing,
+
+    #[cfg(feature = "pool")]
+    pool: Pool,
+
     outstanding_tx: u32,
     clock: Clock,
     idle_timestamp: Option<Instant>,
-    umem: Umem,
+    config: Arc<SocketConfig>,
+
     #[cfg(feature = "stats")]
     stats: Arc<Stats>,
-    shared: Arc<SocketShared>,
 }
 
 impl Socket {
     pub(crate) fn new(
-        fd: Fd,
+        fd: SocketFd,
         umem: Umem,
+        idx: usize,
+        umem_scale: u32,
+        umem_offset: u64,
         #[cfg(feature = "stats")] stats: Stats,
-        data: Arc<SocketShared>,
+        config: Arc<SocketConfig>,
     ) -> SocketResult<Self> {
         let off = fd.xdp_mmap_offsets()?;
 
+        let mut fill = FillRing::new(&fd, off.fr(), umem_scale)?;
+        let comp = CompRing::new(&fd, off.cr(), umem_scale)?;
+        let rx = RxRing::new(&fd, off.rx(), umem_scale)?;
+        let tx = TxRing::new(&fd, off.tx(), umem_scale)?;
+
+        #[cfg(not(feature = "pool"))]
+        let umem_scale = 2 * umem_scale;
+
+        fill.populate(umem_scale, idx as u64 + umem_offset)?;
+
         Ok(Self {
-            rx: RxRing::new(&fd, off.rx(), umem.scale)?,
-            tx: TxRing::new(&fd, off.tx(), umem.scale)?,
-            comp: CompRing::new(&fd, off.cr(), umem.scale)?,
-            fill: FillRing::new(&fd, off.fr(), umem.scale)?,
             fd,
+            umem,
+            rx,
+            tx,
+            comp,
+            fill,
+
+            #[cfg(feature = "pool")]
+            pool: Pool::new(umem_scale, idx as u64 + umem_offset),
+
             outstanding_tx: 0,
             clock: Clock::new(),
             idle_timestamp: None,
-            umem,
+            config,
+
             #[cfg(feature = "stats")]
             stats: Arc::new(stats),
-            shared: data,
         })
-    }
-
-    pub(crate) fn populate_fq(&mut self, idx: usize) -> SocketResult<()> {
-        let nr_frames = XSK_RING_PROD__DEFAULT_NUM_DESCS * 2 * self.umem.scale;
-        let offset = idx as u64 + self.umem.offset;
-
-        let mut idx_fq = 0;
-        if self.fill.reserve(nr_frames, &mut idx_fq) != nr_frames {
-            return Err(SocketError::FqPopulate);
-        }
-
-        for i in 0..u64::from(nr_frames) {
-            if let Some(fill_addr) = self.fill.addr(idx_fq) {
-                *fill_addr = (offset + i) * FRAME_SIZE;
-            }
-
-            idx_fq += 1;
-        }
-
-        self.fill.submit(nr_frames);
-        Ok(())
     }
 
     #[allow(clippy::missing_errors_doc)]
     #[inline]
-    pub fn poll(&mut self) -> io::Result<bool> {
-        if self.shared.xsk_config.mode.contains(Mode::FLASH_POLL) {
-            self.fd.poll()
+    pub fn poll(&mut self) -> SocketResult<bool> {
+        if self.config.xsk.mode.contains(Mode::FLASH_POLL) {
+            #[cfg(feature = "stats")]
+            unsafe {
+                (*self.stats.app.get()).opt_polls += 1;
+            }
+            Ok(self.fd.poll_idle()?)
         } else {
             Ok(true)
         }
     }
 
     #[inline]
-    fn kick_tx(&self) -> Result<(), ()> {
-        if self.fd.kick() >= 0 {
-            Ok(())
-        } else {
-            match util::get_errno() {
-                ENOBUFS | EAGAIN | EBUSY | ENETDOWN => Ok(()),
-                _ => Err(()),
-            }
+    fn try_kick_rx(&mut self) {
+        if self.config.poll.mode == PollMode::Smart
+            && self.config.pollout_status.any()
+            && self.fill.is_half_full()
+            && self.rx.is_half_empty()
+        {
+            self.fd.kick_rx();
         }
     }
 
@@ -118,52 +112,59 @@ impl Socket {
             return;
         }
 
-        if self
-            .shared
-            .xsk_config
-            .bind_flags
-            .contains(BindFlags::XDP_COPY)
-        {
+        if self.config.xsk.bind_flags.contains(BindFlags::XDP_COPY) {
             #[cfg(feature = "stats")]
             unsafe {
                 (*self.stats.app.get()).tx_copy_sendtos += 1;
             }
-            let _ = self.kick_tx();
+            self.fd.kick_tx();
         }
 
-        let num_outstanding = self.outstanding_tx.min(self.shared.xsk_config.batch_size);
+        let num_outstanding = self.outstanding_tx.min(self.config.xsk.batch_size);
         let mut idx_cq = 0;
-        let mut idx_fq = 0;
 
         let completed = self.comp.peek(num_outstanding, &mut idx_cq);
         if completed == 0 {
             return;
         }
 
-        while self.fill.reserve(completed, &mut idx_fq) != completed {
-            if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
-                || self.fill.needs_wakeup()
-            {
-                #[cfg(feature = "stats")]
-                unsafe {
-                    (*self.stats.app.get()).fill_fail_polls += 1;
-                }
-                self.fd.wakeup();
-            }
-        }
-
+        #[cfg(feature = "pool")]
         for _ in 0..completed {
-            if let Some(fill_addr) = self.fill.addr(idx_fq) {
-                if let Some(comp_addr) = self.comp.addr(idx_cq) {
-                    *fill_addr = *comp_addr;
-                }
+            if let Some(comp_addr) = self.comp.addr(idx_cq) {
+                self.pool.put(*comp_addr);
             }
-
-            idx_fq += 1;
             idx_cq += 1;
         }
 
-        self.fill.submit(completed);
+        #[cfg(not(feature = "pool"))]
+        {
+            let mut idx_fq = 0;
+            while self.fill.reserve(completed, &mut idx_fq) != completed {
+                if self.config.xsk.mode.contains(Mode::FLASH_BUSY_POLL) || self.fill.needs_wakeup()
+                {
+                    #[cfg(feature = "stats")]
+                    unsafe {
+                        (*self.stats.app.get()).fill_fail_polls += 1;
+                    }
+                    self.fd.wakeup();
+                }
+            }
+
+            for _ in 0..completed {
+                if let Some(fill_addr) = self.fill.addr(idx_fq)
+                    && let Some(comp_addr) = self.comp.addr(idx_cq)
+                {
+                    *fill_addr = *comp_addr;
+                }
+
+                idx_fq += 1;
+                idx_cq += 1;
+            }
+
+            self.fill.submit(completed);
+            self.try_kick_rx();
+        }
+
         self.comp.release(completed);
         self.outstanding_tx -= completed;
     }
@@ -171,11 +172,8 @@ impl Socket {
     #[inline]
     fn reserve_fq(&mut self, num: u32) -> u32 {
         let mut idx_fq = 0;
-
         while self.fill.reserve(num, &mut idx_fq) != num {
-            if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
-                || self.fill.needs_wakeup()
-            {
+            if self.config.xsk.mode.contains(Mode::FLASH_BUSY_POLL) || self.fill.needs_wakeup() {
                 #[cfg(feature = "stats")]
                 unsafe {
                     (*self.stats.app.get()).fill_fail_polls += 1;
@@ -189,57 +187,118 @@ impl Socket {
 
     #[inline]
     fn reserve_tx(&mut self, num: u32) -> u32 {
-        let mut idx_tx = 0;
-
-        if self.tx.reserve(num, &mut idx_tx) == num {
-            return idx_tx;
+        if self.config.xsk.mode.contains(Mode::FLASH_BUSY_POLL)
+            && self.outstanding_tx > self.config.poll.bp_threshold / 2
+        {
+            #[cfg(feature = "stats")]
+            unsafe {
+                (*self.stats.app.get()).tx_wakeup_sendtos += 1;
+            }
+            self.complete_tx_rx();
+            self.fd.kick_tx();
         }
 
-        loop {
+        if self.config.poll.mode != PollMode::None && self.config.poll.next_not_empty {
+            while self.outstanding_tx + num > self.config.poll.bp_threshold {
+                self.complete_tx_rx();
+
+                if self.config.xsk.mode.contains(Mode::FLASH_BUSY_POLL) || self.tx.needs_wakeup() {
+                    #[cfg(feature = "stats")]
+                    unsafe {
+                        (*self.stats.app.get()).tx_wakeup_sendtos += 1;
+                    }
+                    self.fd.kick_tx();
+                }
+
+                match self.config.poll.mode {
+                    PollMode::Smart => {
+                        self.config.pollout_status.set(true);
+                        let _ = self.fd.poll_backpressure();
+                        self.config.pollout_status.set(false);
+                    }
+                    PollMode::Sleep => thread::sleep(self.config.poll.bp_timeout),
+                    PollMode::None => {}
+                }
+
+                self.idle_timestamp = None;
+                #[cfg(feature = "stats")]
+                unsafe {
+                    (*self.stats.app.get()).backpressure += 1;
+                }
+            }
+        }
+
+        let mut idx_tx = 0;
+        while self.tx.reserve(num, &mut idx_tx) != num {
             self.complete_tx_rx();
 
-            if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL) || self.tx.needs_wakeup()
-            {
+            if self.config.xsk.mode.contains(Mode::FLASH_BUSY_POLL) || self.tx.needs_wakeup() {
                 #[cfg(feature = "stats")]
                 unsafe {
                     (*self.stats.app.get()).tx_wakeup_sendtos += 1;
                 }
-                let _ = self.kick_tx();
+                self.fd.kick_tx();
             }
+        }
 
-            if self.tx.reserve(num, &mut idx_tx) == num {
-                return idx_tx;
-            }
+        idx_tx
+    }
 
-            if let Some(poll_config) = &self.shared.poll_config {
-                if self.outstanding_tx >= poll_config.bp_threshold {
-                    thread::sleep(poll_config.bp_timeout);
+    #[cfg(feature = "pool")]
+    #[inline]
+    fn replenish_fq(&mut self, num: u32) {
+        let mut idx_fq = self.reserve_fq(num);
+        let mut allocated = 0;
+
+        while allocated < num {
+            if let Some(addr) = self.pool.get() {
+                if let Some(fill_addr) = self.fill.addr(idx_fq) {
+                    *fill_addr = addr;
+                    allocated += 1;
+                } else {
+                    self.pool.put(addr);
+
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!("xsk: failed to get fill descriptor");
+                }
+
+                idx_fq += 1;
+            } else {
+                self.complete_tx_rx();
+
+                if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
+                    || self.tx.needs_wakeup()
+                {
+                    #[cfg(feature = "stats")]
+                    unsafe {
+                        (*self.stats.app.get()).tx_wakeup_sendtos += 1;
+                    }
+                    let _ = self.fd.kick();
                 }
             }
         }
+
+        self.fill.submit(num);
     }
 
     #[allow(clippy::missing_errors_doc)]
     pub fn recv(&mut self) -> SocketResult<Vec<Desc>> {
         self.complete_tx_rx();
 
-        if let Some(poll_config) = &self.shared.poll_config {
-            if let Some(idle_timestamp) = self.idle_timestamp {
-                if self.clock.now() >= idle_timestamp && !self.fd.poll()? {
-                    self.idle_timestamp = self.clock.now().checked_add(poll_config.idle_timeout);
-
-                    return Ok(vec![]);
-                }
-            }
+        if self.config.poll.mode != PollMode::None
+            && let Some(idle_timestamp) = self.idle_timestamp
+            && self.clock.now() >= idle_timestamp
+            && !self.fd.poll_idle()?
+        {
+            self.idle_timestamp = self.clock.now().checked_add(self.config.poll.idle_timeout);
+            return Ok(vec![]);
         }
 
         let mut idx_rx = 0;
-        let rcvd = self.rx.peek(self.shared.xsk_config.batch_size, &mut idx_rx);
+        let rcvd = self.rx.peek(self.config.xsk.batch_size, &mut idx_rx);
 
         if rcvd == 0 {
-            if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
-                || self.fill.needs_wakeup()
-            {
+            if self.config.xsk.mode.contains(Mode::FLASH_BUSY_POLL) || self.fill.needs_wakeup() {
                 #[cfg(feature = "stats")]
                 unsafe {
                     (*self.stats.app.get()).rx_empty_polls += 1;
@@ -247,39 +306,33 @@ impl Socket {
                 self.fd.wakeup();
             }
 
-            if let Some(poll_config) = &self.shared.poll_config {
-                if self.idle_timestamp.is_none() {
-                    self.idle_timestamp = self.clock.now().checked_add(poll_config.idle_timeout);
-                }
+            if self.config.poll.mode != PollMode::None && self.idle_timestamp.is_none() {
+                self.idle_timestamp = self.clock.now().checked_add(self.config.poll.idle_timeout);
             }
 
             return Ok(vec![]);
         }
 
-        if let Some(poll_config) = &self.shared.poll_config {
-            if rcvd >= poll_config.idle_threshold {
-                self.idle_timestamp = None;
-            }
+        if self.config.poll.mode != PollMode::None
+            && (rcvd >= self.config.poll.idle_threshold || self.outstanding_tx > 0)
+        {
+            self.idle_timestamp = None;
         }
 
+        #[cfg(feature = "tracing")]
         if rcvd > self.shared.xsk_config.batch_size {
-            return Err(SocketError::BatchOverflow);
+            tracing::warn!("xsk: received more descriptors than batch size");
         }
 
         let descs = (0..rcvd)
-            .filter_map(|_| {
-                let desc = self.rx.desc(idx_rx);
-                idx_rx += 1;
-
-                desc.map(|desc| Desc {
-                    addr: unsafe { xsk_umem__add_offset_to_addr(desc.addr) },
-                    len: desc.len,
-                    options: desc.options,
-                })
-            })
+            .filter_map(|i| self.rx.desc(idx_rx + i).map(Into::into))
             .collect();
 
+        #[cfg(feature = "pool")]
+        self.replenish_fq(rcvd);
+
         self.rx.release(rcvd);
+        self.try_kick_rx();
 
         #[cfg(feature = "stats")]
         unsafe {
@@ -289,28 +342,59 @@ impl Socket {
         Ok(descs)
     }
 
+    #[cfg(feature = "pool")]
+    #[allow(clippy::missing_errors_doc)]
+    pub fn alloc(&mut self, num: usize) -> SocketResult<Vec<Desc>> {
+        if num == 0 {
+            return Ok(vec![]);
+        }
+
+        let mut descs = Vec::with_capacity(num);
+        while descs.len() < num {
+            if let Some(addr) = self.pool.get() {
+                descs.push(addr.into());
+            } else {
+                self.complete_tx_rx();
+
+                if self.shared.xsk_config.mode.contains(Mode::FLASH_BUSY_POLL)
+                    || self.tx.needs_wakeup()
+                {
+                    #[cfg(feature = "stats")]
+                    unsafe {
+                        (*self.stats.app.get()).tx_wakeup_sendtos += 1;
+                    }
+                    let _ = self.fd.kick();
+                }
+            }
+        }
+
+        Ok(descs)
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     pub fn send(&mut self, descs: Vec<Desc>) {
-        if descs.is_empty() {
+        let n = descs.len() as u32;
+        if n == 0 {
             return;
         }
 
-        let n = descs.len() as u32;
         let mut idx_tx = self.reserve_tx(n);
-
         for desc in descs {
-            let tx_desc = self.tx.desc(idx_tx);
-            idx_tx += 1;
-
-            if let Some(tx_desc) = tx_desc {
-                tx_desc.addr = desc.addr;
-                tx_desc.len = desc.len;
-                tx_desc.options = desc.options & 0xFFFF_0000;
+            if let Some(tx_desc) = self.tx.desc(idx_tx) {
+                desc.copy_to(tx_desc);
+            } else {
+                #[cfg(feature = "tracing")]
+                tracing::warn!("xsk: failed to get tx descriptor");
             }
+
+            idx_tx += 1;
         }
 
         self.tx.submit(n);
         self.outstanding_tx += n;
+
+        #[cfg(feature = "pool")]
+        self.complete_tx_rx();
 
         #[cfg(feature = "stats")]
         unsafe {
@@ -320,22 +404,32 @@ impl Socket {
 
     #[allow(clippy::cast_possible_truncation)]
     pub fn drop(&mut self, descs: Vec<Desc>) {
-        if descs.is_empty() {
+        let n = descs.len() as u32;
+        if n == 0 {
             return;
         }
 
-        let n = descs.len() as u32;
-        let mut idx_fq = self.reserve_fq(n);
+        #[cfg(feature = "pool")]
+        self.pool
+            .put_batch(descs.into_iter().map(Desc::extract_addr));
 
-        for desc in descs {
-            if let Some(fill_addr) = self.fill.addr(idx_fq) {
-                *fill_addr = unsafe { xsk_umem__extract_addr(desc.addr) };
+        #[cfg(not(feature = "pool"))]
+        {
+            let mut idx_fq = self.reserve_fq(n);
+            for desc in descs {
+                if let Some(fill_addr) = self.fill.addr(idx_fq) {
+                    *fill_addr = desc.extract_addr();
+                } else {
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!("xsk: failed to get fill descriptor");
+                }
+
+                idx_fq += 1;
             }
-
-            idx_fq += 1;
         }
 
         self.fill.submit(n);
+        self.try_kick_rx();
 
         #[cfg(feature = "stats")]
         unsafe {
@@ -346,17 +440,17 @@ impl Socket {
     #[allow(clippy::missing_errors_doc)]
     #[inline]
     pub fn read(&mut self, desc: &Desc) -> SocketResult<&mut [u8]> {
-        Ok(self.umem.get_data(desc.addr, desc.len as usize)?)
+        Ok(self.umem.get_data(desc)?)
     }
 
     #[allow(clippy::missing_errors_doc)]
     #[inline]
     pub fn read_exact<const SIZE: usize>(&mut self, desc: &Desc) -> SocketResult<&mut [u8; SIZE]> {
-        if SIZE > desc.len as usize {
+        if SIZE > desc.len() {
             Err(SocketError::SizeOverflow)
         } else {
             unsafe {
-                let data = self.umem.get_data(desc.addr, desc.len as usize)?;
+                let data = self.umem.get_data(desc)?;
                 Ok(&mut *data.as_mut_ptr().cast::<[u8; SIZE]>())
             }
         }

@@ -19,13 +19,30 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  *
- * Taken from https://github.com/rxi/log.c
+ * Taken from https://github.com/rxi/log.c and modified for flash
  */
 
 #include "log.h"
 
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
 #define MAX_CALLBACKS 32
-#define LOG_USE_COLOR
+
+struct log_Event {
+	va_list ap;
+	const char *fmt;
+	const char *file;
+	const char *caller;
+	struct tm *time;
+	void *udata;
+	int line;
+	int level;
+};
 
 typedef struct {
 	log_LogFn fn;
@@ -39,7 +56,13 @@ static struct {
 	int level;
 	bool quiet;
 	Callback callbacks[MAX_CALLBACKS];
-} L;
+} L = { .level =
+#ifdef LOG_ENABLE_DEBUG
+		LOG_TRACE, /* Debug builds: start with trace level */
+#else
+		LOG_INFO, /* Release builds: start with info level */
+#endif
+	.quiet = false };
 
 static const char *level_strings[] = { "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL" };
 
@@ -52,10 +75,10 @@ static void stdout_callback(log_Event *ev)
 	char buf[16];
 	buf[strftime(buf, sizeof(buf), "%H:%M:%S", ev->time)] = '\0';
 #ifdef LOG_USE_COLOR
-	fprintf(ev->udata, "%s %s%-5s\x1b[0m \x1b[90m%s:%d:\x1b[0m [%s()]\t", buf, level_colors[ev->level], level_strings[ev->level],
+	fprintf(ev->udata, "%s %s%-5s\x1b[0m \x1b[90m%s:%d:\x1b[0m [%s()] ", buf, level_colors[ev->level], level_strings[ev->level],
 		ev->file + 3, ev->line, ev->caller);
 #else
-	fprintf(ev->udata, "%s %-5s %s:%d: [%s()]\t", buf, level_strings[ev->level], ev->file, ev->line, ev->caller);
+	fprintf(ev->udata, "%s %-5s %s:%d: [%s()] ", buf, level_strings[ev->level], ev->file, ev->line, ev->caller);
 #endif
 	vfprintf(ev->udata, ev->fmt, ev->ap);
 	fprintf(ev->udata, "\n");
@@ -66,7 +89,7 @@ static void file_callback(log_Event *ev)
 {
 	char buf[64];
 	buf[strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", ev->time)] = '\0';
-	fprintf(ev->udata, "%s %-5s %s:%d: [%s()]\t", buf, level_strings[ev->level], ev->file, ev->line, ev->caller);
+	fprintf(ev->udata, "%s %-5s %s:%d: [%s()] ", buf, level_strings[ev->level], ev->file, ev->line, ev->caller);
 	vfprintf(ev->udata, ev->fmt, ev->ap);
 	fprintf(ev->udata, "\n");
 	fflush(ev->udata);
@@ -102,9 +125,9 @@ void log_set_level(int level)
 	L.level = level;
 }
 
-void log_set_quiet(bool enable)
+void log_set_quiet(int enable)
 {
-	L.quiet = enable;
+	L.quiet = enable != false;
 }
 
 int log_add_callback(log_LogFn fn, void *udata, int level)
@@ -118,9 +141,9 @@ int log_add_callback(log_LogFn fn, void *udata, int level)
 	return -1;
 }
 
-int log_add_fp(FILE *fp, int level)
+int log_add_fp(void *fp, int level)
 {
-	return log_add_callback(file_callback, fp, level);
+	return log_add_callback(file_callback, (FILE *)fp, level); /* Cast void* back to FILE* */
 }
 
 static void init_event(log_Event *ev, void *udata)
@@ -192,3 +215,46 @@ void log_set_level_from_env(void)
 		log_set_level(LOG_INFO);
 	}
 }
+
+#ifdef FAST_LOG_TO_FILE
+
+char fast_log_buffer[FAST_LOG_BATCH_SIZE][FAST_LOG_SIZE];
+int fast_log_index = 0;
+
+static void fast_log_dump_in_file(int nf_id, int count)
+{
+	char filename[FAST_LOG_SIZE];
+	snprintf(filename, sizeof(filename), FAST_LOG_DIR "nf-%d.log", nf_id);
+	FILE *fp = fopen(filename, "a");
+	if (fp) {
+		for (int i = 0; i < count; i++) {
+			fprintf(fp, "%s\n", fast_log_buffer[i]);
+		}
+		fclose(fp);
+	} else {
+		log_error("Error opening string log file");
+	}
+}
+
+void fast_log(int nf_id, const char *fmt, ...)
+{
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(fast_log_buffer[fast_log_index++], FAST_LOG_SIZE, fmt, args);
+	va_end(args);
+
+	if (fast_log_index >= FAST_LOG_BATCH_SIZE) {
+		fast_log_dump_in_file(nf_id, FAST_LOG_BATCH_SIZE);
+		fast_log_index = 0;
+	}
+}
+
+void fast_log_flush(int nf_id)
+{
+	if (fast_log_index > 0) {
+		fast_log_dump_in_file(nf_id, fast_log_index);
+		fast_log_index = 0;
+	}
+}
+
+#endif

@@ -1,24 +1,20 @@
 mod common;
 mod error;
 mod poll;
+mod socket;
 mod xsk;
 
-#[cfg(feature = "clap")]
-mod config_clap;
+#[cfg_attr(feature = "clap", path = "config_clap.rs")]
+#[allow(clippy::module_inception)]
+mod config;
 
-#[cfg(not(feature = "clap"))]
-mod config_noclap;
+pub(crate) use {
+    poll::{PollConfig, PollMode},
+    socket::SocketConfig,
+    xsk::{BindFlags, Mode, XskConfig},
+};
 
-pub(crate) use poll::PollConfig;
-pub(crate) use xsk::{BindFlags, Mode, XskConfig};
-
-pub use error::ConfigError;
-
-#[cfg(feature = "clap")]
-pub use config_clap::FlashConfig;
-
-#[cfg(not(feature = "clap"))]
-pub use config_noclap::FlashConfig;
+pub use {config::FlashConfig, error::ConfigError};
 
 #[cfg(feature = "stats")]
 pub use xsk::XdpFlags;

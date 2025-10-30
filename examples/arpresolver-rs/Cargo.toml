@@ -1,0 +1,21 @@
+[package]
+name = "arpresolver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.35", features = ["derive"] }
+core_affinity = "0.8.3"
+ctrlc = { version = "3.4.5", optional = true }
+flash = { path = "../../lib/flash-rs", features = ["clap"] }
+macaddr = "1.0.1"
+tracing = { version = "0.1.41", optional = true }
+tracing-subscriber = { version = "0.3.19", optional = true }
+
+[features]
+default = ["dep:ctrlc"]
+stats = ["flash/stats", "flash/tui"]
+tracing = ["dep:tracing", "dep:tracing-subscriber", "flash/tracing"]
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -18,3 +18,6 @@ executable('ring-benchmark', ring_benchmark, c_args: cflags, install: true, depe
 
 backpressure = files('backpressure.c')
 executable('backpressure', backpressure, c_args: cflags, install: true, dependencies: deps)
+
+multi_flow_tx = files('multi-flow-tx.c')
+executable('multi-flow-tx', multi_flow_tx, c_args: cflags, install: true, dependencies: deps)

@@ -119,6 +119,9 @@ struct NFGroup *parse_json(const char *filename)
 	nf_group->umem_count = cJSON_GetArraySize(umem_array);
 	nf_group->umem = (struct umem **)calloc(nf_group->umem_count, sizeof(struct umem *));
 
+	// create a 2D prev array to store previous xsk ids for each umem
+	int *prev[FLASH_MAX_XSK] = { 0 };
+	int prev_size[FLASH_MAX_XSK] = { 0 };
 	// Iterate over each "umem" entry
 	for (int i = 0; i < nf_group->umem_count; i++) {
 		cJSON *umem_obj = cJSON_GetArrayItem(umem_array, i);
@@ -287,6 +290,14 @@ struct NFGroup *parse_json(const char *filename)
 				}
 				next[l] = cJSON_GetNumberValue(item);
 				log_info("%d -> %d", nf_group->umem[i]->nf[j]->id, next[l]);
+
+				int u = nf_group->umem[i]->nf[j]->id;
+				int v = next[l];
+				if (prev[v] == NULL) {
+					prev[v] = (int *)calloc(FLASH_MAX_XSK, sizeof(int));
+					prev_size[v] = 0;
+				}
+				prev[v][prev_size[v]++] = u;
 			}
 
 			cJSON *thread_array = cJSON_GetObjectItem(nf_obj, "thread");
@@ -330,6 +341,13 @@ struct NFGroup *parse_json(const char *filename)
 		}
 
 		num_queues += total_threads;
+	}
+
+	for (int i = 0; i < nf_group->umem_count; i++) {
+		for (int j = 0; j < nf_group->umem[i]->nf_count; j++) {
+			nf_group->umem[i]->nf[j]->prev = prev[nf_group->umem[i]->nf[j]->id];
+			nf_group->umem[i]->nf[j]->prev_size = prev_size[nf_group->umem[i]->nf[j]->id];
+		}
 	}
 
 	configure_nic(ifname, num_queues, mode);

@@ -15,7 +15,16 @@ struct option_wrapper {
 	bool required;
 };
 
+/** 
+ * Parse command line arguments for the flash application.
+ * Allocates memory for umem and xsk configurations.
+ * Sets default values for various parameters.
+ *
+ * @param argc Number of command line arguments
+ * @param argv Array of command line arguments
+ * @param cfg Pointer to the configuration structure to be filled
+ * @return shift on success, -1 on failure; shift can be used to skip the parsed options
+ */
 int flash__parse_cmdline_args(int argc, char **argv, struct config *cfg);
-int get_irqs(struct config *cfg);
 
 #endif

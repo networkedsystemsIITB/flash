@@ -1,14 +1,14 @@
-use crate::{uds::error::UdsError, util};
+use crate::util;
 
 use super::{
     conn::UdsConn,
     def::{
         FLASH_CLOSE_CONN, FLASH_CREATE_SOCKET, FLASH_GET_BIND_FLAGS, FLASH_GET_DST_IP_ADDR,
         FLASH_GET_FRAGS_ENABLED, FLASH_GET_IFNAME, FLASH_GET_IP_ADDR, FLASH_GET_MODE,
-        FLASH_GET_POLL_TIMEOUT, FLASH_GET_ROUTE_INFO, FLASH_GET_UMEM, FLASH_GET_UMEM_OFFSET,
-        FLASH_GET_XDP_FLAGS,
+        FLASH_GET_POLLOUT_STATUS, FLASH_GET_PREV_NF, FLASH_GET_ROUTE_INFO, FLASH_GET_UMEM,
+        FLASH_GET_UMEM_OFFSET, FLASH_GET_XDP_FLAGS,
     },
-    error::UdsResult,
+    error::{UdsError, UdsResult},
 };
 
 const FLASH_UNIX_SOCKET_PATH: &str = "/tmp/flash/uds.sock";
@@ -26,21 +26,27 @@ impl UdsClient {
         })
     }
 
-    #[allow(clippy::similar_names)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::similar_names
+    )]
     pub(crate) fn get_umem(
         &mut self,
-        umem_id: u32,
-        nf_id: u32,
+        umem_id: usize,
+        nf_id: usize,
     ) -> UdsResult<(i32, usize, usize, u32)> {
         #[repr(C)]
         struct NfData {
-            umem_id: u32,
-            nf_id: u32,
+            umem_id: i32,
+            nf_id: i32,
         }
 
         self.conn.write_all(&FLASH_GET_UMEM)?;
-        self.conn
-            .write_all(util::as_bytes(&NfData { umem_id, nf_id }))?;
+        self.conn.write_all(util::as_bytes(&NfData {
+            umem_id: umem_id as i32,
+            nf_id: nf_id as i32,
+        }))?;
 
         let umem_fd = self.conn.recv_fd()?;
         if umem_fd < 0 {
@@ -76,7 +82,9 @@ impl UdsClient {
         let fd = self.conn.recv_fd()?;
         let ifqueue = self.conn.recv_i32()?;
 
-        if ifqueue < 0 {
+        if fd < 0 {
+            Err(UdsError::InvalidSocketFd)
+        } else if ifqueue < 0 {
             Err(UdsError::InvalidSocketIfqueue)
         } else {
             Ok((fd, ifqueue as u32))
@@ -94,56 +102,36 @@ impl UdsClient {
         }
     }
 
-    pub(crate) fn get_route_info(&mut self) -> UdsResult<Vec<i32>> {
+    pub(crate) fn get_route_info(&mut self) -> UdsResult<usize> {
         self.conn.write_all(&FLASH_GET_ROUTE_INFO)?;
         let route_size = self.conn.recv_i32()?;
 
         if route_size < 0 {
-            Err(UdsError::InvalidRouteSize)
+            Err(UdsError::InvalidNextSize)
         } else {
-            Ok((0..route_size)
-                .map(|_| self.conn.recv_i32())
-                .collect::<Result<Vec<_>, _>>()?)
+            Ok(route_size as usize)
         }
     }
 
     pub(crate) fn get_bind_flags(&mut self) -> UdsResult<u32> {
         self.conn.write_all(&FLASH_GET_BIND_FLAGS)?;
-        let bind_flags = self.conn.recv_i32()?;
-
-        if bind_flags < 0 {
-            Err(UdsError::InvalidBindFlags)
-        } else {
-            Ok(bind_flags as u32)
-        }
+        Ok(self.conn.recv_u32()?)
     }
 
     pub(crate) fn get_xdp_flags(&mut self) -> UdsResult<u32> {
         self.conn.write_all(&FLASH_GET_XDP_FLAGS)?;
-        let xdp_flags = self.conn.recv_i32()?;
-
-        if xdp_flags < 0 {
-            Err(UdsError::InvalidXdpFlags)
-        } else {
-            Ok(xdp_flags as u32)
-        }
+        Ok(self.conn.recv_u32()?)
     }
 
     pub(crate) fn get_mode(&mut self) -> UdsResult<u32> {
         self.conn.write_all(&FLASH_GET_MODE)?;
-        let mode = self.conn.recv_i32()?;
-
-        if mode < 0 {
-            Err(UdsError::InvalidMode)
-        } else {
-            Ok(mode as u32)
-        }
+        Ok(self.conn.recv_u32()?)
     }
 
-    pub(crate) fn get_poll_timeout(&mut self) -> UdsResult<i32> {
-        self.conn.write_all(&FLASH_GET_POLL_TIMEOUT)?;
-        Ok(self.conn.recv_i32()?)
-    }
+    // pub(crate) fn get_poll_timeout(&mut self) -> UdsResult<i32> {
+    //     self.conn.write_all(&FLASH_GET_POLL_TIMEOUT)?;
+    //     Ok(self.conn.recv_i32()?)
+    // }
 
     pub(crate) fn get_frags_enabled(&mut self) -> UdsResult<bool> {
         self.conn.write_all(&FLASH_GET_FRAGS_ENABLED)?;
@@ -162,15 +150,56 @@ impl UdsClient {
 
     pub(crate) fn get_dst_ip_addr(&mut self) -> UdsResult<Vec<String>> {
         self.conn.write_all(&FLASH_GET_DST_IP_ADDR)?;
-        let dst_size = self.conn.recv_i32()?;
 
+        let dst_size = self.conn.recv_i32()?;
         if dst_size < 0 {
-            Err(UdsError::InvalidDstIpSize)
-        } else {
-            Ok((0..dst_size as usize)
-                .map(|_| self.conn.recv_string::<16>())
-                .collect::<Result<Vec<_>, _>>()?)
+            return Err(UdsError::InvalidNextSize);
         }
+
+        let mut dst_ip_addr = Vec::with_capacity(dst_size as usize);
+        for _ in 0..dst_size {
+            dst_ip_addr.push(self.conn.recv_string::<16>()?);
+        }
+
+        Ok(dst_ip_addr)
+    }
+
+    pub(crate) fn get_pollout_status(&mut self) -> UdsResult<(i32, usize)> {
+        self.conn.write_all(&FLASH_GET_POLLOUT_STATUS)?;
+
+        let pollout_fd = self.conn.recv_fd()?;
+        if pollout_fd < 0 {
+            return Err(UdsError::InvalidPollOutFd);
+        }
+
+        let pollout_size = self.conn.recv_i32()?;
+        if pollout_size < 0 {
+            return Err(UdsError::InvalidPollOutSize);
+        }
+
+        Ok((pollout_fd, pollout_size as usize))
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    pub(crate) fn get_prev_nf(&mut self) -> UdsResult<Vec<usize>> {
+        self.conn.write_all(&FLASH_GET_PREV_NF)?;
+
+        let prev_size = self.conn.recv_i32()?;
+        if prev_size < 0 {
+            return Err(UdsError::InvalidPrevSize);
+        }
+
+        let mut prev_nf_ids = Vec::with_capacity(prev_size as usize);
+        for _ in 0..prev_size {
+            let prev_nf = self.conn.recv_i32()?;
+            if prev_nf < 0 {
+                return Err(UdsError::InvalidPrevNfId);
+            }
+
+            prev_nf_ids.push(prev_nf as usize);
+        }
+
+        Ok(prev_nf_ids)
     }
 
     pub(crate) fn set_nonblocking(&mut self) -> UdsResult<()> {

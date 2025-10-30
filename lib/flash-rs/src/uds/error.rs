@@ -3,21 +3,21 @@ use std::io;
 pub(super) type UdsResult<T> = Result<T, UdsError>;
 
 #[derive(Debug, thiserror::Error)]
+#[error("uds error: {0}")]
 pub enum UdsError {
-    #[error("uds error: {0}")]
     IO(#[from] io::Error),
 
     #[error("uds error: invalid bind flags")]
     InvalidBindFlags,
 
-    #[error("uds error: invalid dest ip addr size")]
-    InvalidDstIpSize,
-
     #[error("uds error: invalid mode")]
     InvalidMode,
 
-    #[error("uds error: invalid route size")]
-    InvalidRouteSize,
+    #[error("uds error: invalid next size")]
+    InvalidNextSize,
+
+    #[error("uds error: invalid socket fd")]
+    InvalidSocketFd,
 
     #[error("uds error: invalid socket ifqueue")]
     InvalidSocketIfqueue,
@@ -39,4 +39,16 @@ pub enum UdsError {
 
     #[error("uds error: invalid xdp flags")]
     InvalidXdpFlags,
+
+    #[error("uds error: invalid pollout fd")]
+    InvalidPollOutFd,
+
+    #[error("uds error: invalid pollout size")]
+    InvalidPollOutSize,
+
+    #[error("uds error: invalid prev size")]
+    InvalidPrevSize,
+
+    #[error("uds error: invalid prev nf id")]
+    InvalidPrevNfId,
 }

@@ -1,6 +1,8 @@
 use std::{io, net::AddrParseError};
 
-use crate::{config::ConfigError, uds::UdsError, xsk::SocketError};
+use crate::{config::ConfigError, fd::FdError, mem::MemError, uds::UdsError, xsk::SocketError};
+
+pub(crate) type FlashResult<T> = Result<T, FlashError>;
 
 #[derive(Debug, thiserror::Error)]
 #[error("flash error: {0}")]
@@ -9,6 +11,8 @@ pub enum FlashError {
     AddrParse(#[from] AddrParseError),
 
     Config(#[from] ConfigError),
-    UDS(#[from] UdsError),
+    Fd(#[from] FdError),
+    Mem(#[from] MemError),
     Socket(#[from] SocketError),
+    UDS(#[from] UdsError),
 }

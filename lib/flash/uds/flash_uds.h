@@ -25,14 +25,86 @@
 #define FLASH__GET_IFNAME 13
 #define FLASH__GET_IP_ADDR 14
 #define FLASH__GET_DST_IP_ADDR 15
+#define FLASH__GET_POLLOUT_STATUS 16
+#define FLASH__GET_PREV_NF 17
 
-int send_fd(int sockfd, int fd);
-int start_uds_server(void);
-int start_uds_client(void);
-int recv_fd(int sockfd, int *_fd);
-void send_cmd(int sockfd, int cmd);
-void send_data(int sockfd, void *data, int size);
-void recv_data(int sockfd, void *data, int size);
-int recv_cmd(int sockfd);
+/* UDS Control path APIs*/
+
+/**
+ * Starts a UDS server connection
+ *
+ * @return socket file descriptor on success, -1 on failure
+ */
+int flash__start_uds_server(void);
+
+/**
+ * Starts a UDS client connection to the monitor
+ * 
+ * @return socket file descriptor on success, -1 on failure
+ */
+int flash__start_uds_client(void);
+
+/* UDS Data path APIs */
+
+/**
+ * Receive a command in the monitor
+ *
+ * @param sockfd The socket file descriptor
+ *
+ * @return The command received, or -1 on error
+ */
+int flash__recv_cmd(int sockfd);
+
+/**
+ * Send a command to the monitor
+ * 
+ * @param sockfd The socket file descriptor
+ * @param cmd The command to send
+ * 
+ * @return The number of bytes sent, or -1 on error
+ */
+int flash__send_cmd(int sockfd, int cmd);
+
+/**
+ * Receive data from the monitor
+ *
+ * @param sockfd The socket file descriptor
+ * @param data Pointer to the buffer where the received data will be stored
+ * @param size Size of the data to receive in bytes
+ *
+ * @return The number of bytes received, or -1 on error
+ */
+int flash__recv_data(int sockfd, void *data, int size);
+
+/**
+ * Send data to the monitor
+ *
+ * @param sockfd The socket file descriptor
+ * @param data Pointer to the data to send
+ * @param size Size of the data in bytes
+ * 
+ * @return The number of bytes sent, or -1 on error
+ */
+int flash__send_data(int sockfd, void *data, int size);
+
+/**
+ * Receive a file descriptor from the monitor
+ *
+ * @param sockfd The socket file descriptor
+ * @param _fd Pointer to an integer where the received file descriptor will be stored
+ *
+ * @return 0 on success, -1 on error
+ */
+int flash__recv_fd(int sockfd, int *_fd);
+
+/**
+ * Send a file descriptor from the monitor
+ *
+ * @param sockfd The socket file descriptor
+ * @param fd The file descriptor to send
+ *
+ * @return 0 on success, -1 on error
+ */
+int flash__send_fd(int sockfd, int fd);
 
 #endif /* __FLASH_UDS_H */
