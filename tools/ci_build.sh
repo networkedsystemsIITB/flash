@@ -12,6 +12,8 @@ $SUDO apt update
 $SUDO apt install -y build-essential meson libbpf-dev pkg-config git gcc-multilib clang llvm lld m4 libpcap-dev libcjson-dev libncurses-dev libnuma-dev
 
 git clone https://github.com/xdp-project/xdp-tools.git
+make -j -C xdp-tools libxdp
+$SUDO make -j -C xdp-tools libxdp_install
 make PREFIX=/usr -j -C xdp-tools libxdp
 $SUDO PREFIX=/usr make -j -C xdp-tools libxdp_install
 
