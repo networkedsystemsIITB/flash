@@ -120,7 +120,7 @@ uname -r
 
 FLASH kernel exposes a sysfs interface under `/sys/kernel/flash` allowing privileged users to:
 - Inspect active AF_XDP sockets
-- CConfigure redirection rules between sockets
+- Configure redirection rules between sockets
 - Adjust per-socket parameters (e.g., TX tracking)
 
 Each AF_XDP socket is identified by a process-independent identifier called a flash-id, which enables cross-process management.
@@ -217,7 +217,7 @@ FLASH ensures that `poll()` correctly reflects packet readiness even when redire
 
 Backpressure arises when downstream sockets (receivers) cannot process packets as fast as they are being produced. The FLASH Kernel introduces natural backpressure into the AF_XDP data path via the TX and CQ rings: packets are not transmitted to downstream sockets if their RX rings are full.
 
-In this scenario, the sender must retry transmissions untill space becomes available. To avoid wasting CPU cycles through busy-waiting, applications should rely on the following readiness mechanism:
+In this scenario, the sender must retry transmissions until space becomes available. To avoid wasting CPU cycles through busy-waiting, applications should rely on the following readiness mechanism:
 
 - When congestion is detected on a sender socket, use `poll()` with the `POLLOUT` flag to sleep until the socket is ready to send again.
 - Receiver sockets should use `recvfrom()` with the `MSG_MORE` flag to implicitly signal the sender once they have freed space.
@@ -234,7 +234,7 @@ echo 0 | sudo tee /sys/kernel/flash/tx_tracking   # Disable TX tracking
 ```
 
 When enabled, FLASH tracks packet transmission status on a per-flow basis.  
-As packets are transmitted succesfully, the kernel writes back the `flash_id` of the downstream socket into the memory location specified by the packet descriptor before returning it to the completion queue. This allows user-space applications to identify which downstream path successfully transmitted each packet.
+As packets are transmitted successfully, the kernel writes back the `flash_id` of the downstream socket into the memory location specified by the packet descriptor before returning it to the completion queue. This allows user-space applications to identify which downstream path successfully transmitted each packet.
 
 Applications can use this feedback to implement:
 - Dynamic congestion control or flow rerouting,
