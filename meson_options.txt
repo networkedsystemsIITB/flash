@@ -7,5 +7,8 @@ option('log_use_color', type: 'boolean', value: true,
 option('enable_rust', type: 'boolean', value: true,
        description: 'Enable building Rust applications and libraries')
 
+option('enable_rust_stats', type: 'boolean', value: true,
+       description: 'Enable building Rust applications with stats dashboard')
+
 option('enable_mtcp', type: 'boolean', value: true,
        description: 'Enable building mtcp libraries and examples')

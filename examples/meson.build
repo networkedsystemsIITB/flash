@@ -45,6 +45,11 @@ if get_option('enable_rust') and cargo.found()
     if get_option('buildtype') == 'debug' or get_option('buildtype') == 'debugoptimized'
         cargo_build_args += ['-F', 'tracing']
     endif
+
+    if get_option('enable_rust_stats')
+        cargo_build_args += ['-F', 'stats']
+        message('Rust: Enabling stats dashboard feature')
+    endif
     
     rust_build = custom_target(
         'rust_workspace',
