@@ -4,10 +4,7 @@ mod fill;
 mod rx;
 mod tx;
 
-pub(crate) use comp::CompRing;
-pub(crate) use fill::FillRing;
-pub(crate) use rx::RxRing;
-pub(crate) use tx::TxRing;
+pub(crate) use {comp::CompRing, fill::FillRing, rx::RxRing, tx::TxRing};
 
 pub(crate) trait Prod {
     fn needs_wakeup(&self) -> bool;

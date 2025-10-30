@@ -1,6 +1,6 @@
 use libxdp_sys::{xdp_desc, xsk_umem__add_offset_to_addr, xsk_umem__extract_addr};
 
-use crate::mem::FRAME_SIZE;
+use super::FRAME_SIZE;
 
 #[derive(Debug)]
 pub struct Desc {

@@ -12,6 +12,9 @@ use clap::Parser;
 use flash::Socket;
 use macaddr::MacAddr6;
 
+#[cfg(feature = "stats")]
+use flash::tui::StatsDashboard;
+
 use crate::cli::Cli;
 
 #[forbid(clippy::indexing_slicing)]
@@ -39,12 +42,18 @@ fn socket_thread(mut socket: Socket, mac_addr: Option<MacAddr6>, run: &Arc<Atomi
             continue;
         };
 
-        let (descs_send, descs_drop) = descs.into_iter().partition(|desc| {
-            socket.read_exact(desc).is_ok_and(|pkt| {
-                mac_swap(pkt, mac_addr);
-                true
-            })
-        });
+        let mut descs_send = Vec::with_capacity(descs.len());
+        let mut descs_drop = Vec::with_capacity(descs.len());
+
+        for desc in descs {
+            let Ok(pkt) = socket.read_exact(&desc) else {
+                descs_drop.push(desc);
+                continue;
+            };
+
+            mac_swap(pkt, mac_addr);
+            descs_send.push(desc);
+        }
 
         socket.send(descs_send);
         socket.drop(descs_drop);
@@ -73,6 +82,19 @@ fn main() {
     #[cfg(feature = "tracing")]
     tracing::debug!("Sockets: {:?}", sockets);
 
+    #[cfg(feature = "stats")]
+    let mut tui = match StatsDashboard::new(
+        sockets.iter().map(Socket::stats),
+        cli.stats.fps,
+        cli.stats.layout,
+    ) {
+        Ok(t) => t,
+        Err(err) => {
+            eprintln!("error creating tui: {err}");
+            return;
+        }
+    };
+
     let cores = core_affinity::get_core_ids()
         .unwrap_or_default()
         .into_iter()
@@ -80,19 +102,32 @@ fn main() {
         .collect::<Vec<_>>();
 
     if cores.is_empty() {
-        eprintln!("No cores found in range {}-{}", cli.cpu_start, cli.cpu_end);
+        eprintln!("no cores found in range {}-{}", cli.cpu_start, cli.cpu_end);
         return;
     }
 
     #[cfg(feature = "tracing")]
     tracing::debug!("Cores: {:?}", cores);
 
+    #[cfg(feature = "stats")]
+    let Some(stats_core) = core_affinity::get_core_ids()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|core_id| core_id.id == cli.stats.cpu)
+    else {
+        eprintln!("no core found for stats thread {}", cli.stats.cpu);
+        return;
+    };
+
     let run = Arc::new(AtomicBool::new(true));
 
-    let r = run.clone();
-    if let Err(err) = ctrlc::set_handler(move || {
-        r.store(false, Ordering::SeqCst);
-    }) {
+    #[cfg(not(feature = "stats"))]
+    if let Err(err) = {
+        let r = run.clone();
+        ctrlc::set_handler(move || {
+            r.store(false, Ordering::SeqCst);
+        })
+    } {
         eprintln!("error setting Ctrl-C handler: {err}");
         return;
     }
@@ -108,6 +143,21 @@ fn main() {
             })
         })
         .collect::<Vec<_>>();
+
+    #[cfg(feature = "stats")]
+    if let Err(err) = thread::spawn(move || {
+        core_affinity::set_for_current(stats_core);
+        if let Err(err) = tui.run() {
+            eprintln!("error dumping stats: {err}");
+        }
+    })
+    .join()
+    {
+        eprintln!("error in stats thread: {err:?}");
+    }
+
+    #[cfg(feature = "stats")]
+    run.store(false, Ordering::SeqCst);
 
     for handle in handles {
         if let Err(err) = handle.join() {

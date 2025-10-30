@@ -1,6 +1,8 @@
 mod error;
-mod fd;
 mod xdp;
+
+#[allow(clippy::module_inception)]
+mod fd;
 
 pub(crate) use fd::Fd;
 

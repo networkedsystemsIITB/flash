@@ -13,7 +13,7 @@ const ARP_OPCODE_REPLY: u16 = 2;
 
 #[forbid(clippy::indexing_slicing)]
 #[inline]
-pub fn arp_resolve(pkt: &mut [u8; 42], mac_addr: MacAddr6, ip_addr: Ipv4Addr) -> bool {
+pub fn arp_resolve(pkt: &mut [u8; 42], nf_addr: MacAddr6, nf_ip: Ipv4Addr) -> bool {
     if u16::from_be_bytes([pkt[12], pkt[13]]) != ETHER_TYPE_ARP
         || u16::from_be_bytes([pkt[14], pkt[15]]) != ARP_HTYPE_ETHERNET
         || u16::from_be_bytes([pkt[16], pkt[17]]) != ARP_PTYPE_IPV4
@@ -24,18 +24,18 @@ pub fn arp_resolve(pkt: &mut [u8; 42], mac_addr: MacAddr6, ip_addr: Ipv4Addr) ->
         return false;
     }
 
-    if pkt[38..42] != ip_addr.octets() {
+    if pkt[38..42] != nf_ip.octets() {
         return false;
     }
 
     let mut tmp = [0u8; 6];
-
     tmp.copy_from_slice(&pkt[6..12]);
+
     pkt[0..6].copy_from_slice(&tmp);
     pkt[32..38].copy_from_slice(&tmp);
 
-    pkt[6..12].copy_from_slice(&mac_addr.into_array());
-    pkt[22..28].copy_from_slice(&mac_addr.into_array());
+    pkt[6..12].copy_from_slice(&nf_addr.into_array());
+    pkt[22..28].copy_from_slice(&nf_addr.into_array());
 
     pkt[20..22].copy_from_slice(&ARP_OPCODE_REPLY.to_be_bytes());
 

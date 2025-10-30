@@ -1,4 +1,4 @@
-use std::{io, sync::Arc, thread};
+use std::{sync::Arc, thread};
 
 use quanta::{Clock, Instant};
 
@@ -88,13 +88,13 @@ impl Socket {
 
     #[allow(clippy::missing_errors_doc)]
     #[inline]
-    pub fn poll(&mut self) -> io::Result<bool> {
+    pub fn poll(&mut self) -> SocketResult<bool> {
         if self.shared.xsk_config.mode.contains(Mode::FLASH_POLL) {
             #[cfg(feature = "stats")]
             unsafe {
                 (*self.stats.app.get()).opt_polls += 1;
             }
-            self.fd.poll()
+            Ok(self.fd.poll()?)
         } else {
             Ok(true)
         }
@@ -152,10 +152,10 @@ impl Socket {
             }
 
             for _ in 0..completed {
-                if let Some(fill_addr) = self.fill.addr(idx_fq) {
-                    if let Some(comp_addr) = self.comp.addr(idx_cq) {
-                        *fill_addr = *comp_addr;
-                    }
+                if let Some(fill_addr) = self.fill.addr(idx_fq)
+                    && let Some(comp_addr) = self.comp.addr(idx_cq)
+                {
+                    *fill_addr = *comp_addr;
                 }
 
                 idx_fq += 1;
@@ -211,14 +211,15 @@ impl Socket {
                 return idx_tx;
             }
 
-            if let Some(poll_config) = &self.shared.poll_config {
-                if self.outstanding_tx >= poll_config.bp_threshold {
-                    thread::sleep(poll_config.bp_timeout);
+            if let Some(poll_config) = &self.shared.poll_config
+                && self.outstanding_tx >= poll_config.bp_threshold
+            {
+                thread::sleep(poll_config.bp_timeout);
+                self.idle_timestamp = None;
 
-                    #[cfg(feature = "stats")]
-                    unsafe {
-                        (*self.stats.app.get()).backpressure += 1;
-                    }
+                #[cfg(feature = "stats")]
+                unsafe {
+                    (*self.stats.app.get()).backpressure += 1;
                 }
             }
         }
@@ -265,14 +266,13 @@ impl Socket {
     pub fn recv(&mut self) -> SocketResult<Vec<Desc>> {
         self.complete_tx_rx();
 
-        if let Some(poll_config) = &self.shared.poll_config {
-            if let Some(idle_timestamp) = self.idle_timestamp {
-                if self.clock.now() >= idle_timestamp && !self.fd.poll()? {
-                    self.idle_timestamp = self.clock.now().checked_add(poll_config.idle_timeout);
-
-                    return Ok(vec![]);
-                }
-            }
+        if let Some(poll_config) = &self.shared.poll_config
+            && let Some(idle_timestamp) = self.idle_timestamp
+            && self.clock.now() >= idle_timestamp
+            && !self.fd.poll()?
+        {
+            self.idle_timestamp = self.clock.now().checked_add(poll_config.idle_timeout);
+            return Ok(vec![]);
         }
 
         let mut idx_rx = 0;
@@ -289,19 +289,19 @@ impl Socket {
                 self.fd.wakeup();
             }
 
-            if let Some(poll_config) = &self.shared.poll_config {
-                if self.idle_timestamp.is_none() {
-                    self.idle_timestamp = self.clock.now().checked_add(poll_config.idle_timeout);
-                }
+            if let Some(poll_config) = &self.shared.poll_config
+                && self.idle_timestamp.is_none()
+            {
+                self.idle_timestamp = self.clock.now().checked_add(poll_config.idle_timeout);
             }
 
             return Ok(vec![]);
         }
 
-        if let Some(poll_config) = &self.shared.poll_config {
-            if rcvd >= poll_config.idle_threshold || self.outstanding_tx > 0 {
-                self.idle_timestamp = None;
-            }
+        if let Some(poll_config) = &self.shared.poll_config
+            && (rcvd >= poll_config.idle_threshold || self.outstanding_tx > 0)
+        {
+            self.idle_timestamp = None;
         }
 
         #[cfg(feature = "tracing")]
@@ -394,7 +394,8 @@ impl Socket {
         }
 
         #[cfg(feature = "pool")]
-        self.pool.extend(descs.into_iter().map(Desc::extract_addr));
+        self.pool
+            .put_batch(descs.into_iter().map(Desc::extract_addr));
 
         #[cfg(not(feature = "pool"))]
         {

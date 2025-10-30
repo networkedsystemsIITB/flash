@@ -8,7 +8,10 @@ mod util;
 mod xsk;
 
 #[cfg(feature = "stats")]
-mod stats;
+pub mod stats;
+
+#[cfg(feature = "tui")]
+pub mod tui;
 
 pub use crate::{
     client::{Route, connect},
@@ -16,6 +19,3 @@ pub use crate::{
     error::FlashError,
     xsk::Socket,
 };
-
-#[cfg(feature = "stats")]
-pub use stats::Stats;

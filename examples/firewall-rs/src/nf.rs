@@ -3,7 +3,6 @@
 use std::{net::Ipv4Addr, path::Path};
 
 use csv::Reader;
-use macaddr::MacAddr6;
 use serde::{Deserialize, de};
 
 const ETHER_TYPE_IPV4: u16 = 0x0800;
@@ -78,30 +77,12 @@ impl Tuple5 {
 }
 
 #[inline]
-pub fn firewall_filter(
-    pkt: &mut [u8; 54],
-    firewall: &Firewall,
-    mac_addr: Option<MacAddr6>,
-) -> bool {
-    if u16::from_be_bytes([pkt[12], pkt[13]]) != ETHER_TYPE_IPV4 {
-        return false;
+pub fn firewall_filter(firewall: &Firewall, pkt: &mut [u8; 54]) -> bool {
+    if u16::from_be_bytes([pkt[12], pkt[13]]) == ETHER_TYPE_IPV4
+        && let Some(tuple5) = Tuple5::new(pkt)
+    {
+        !firewall.blocked(&tuple5)
+    } else {
+        false
     }
-
-    let Some(tuple5) = Tuple5::new(pkt) else {
-        return false;
-    };
-
-    if firewall.blocked(&tuple5) {
-        return false;
-    }
-
-    if let Some(mac_addr) = mac_addr {
-        let mut tmp = [0; 6];
-
-        tmp.copy_from_slice(&pkt[0..6]);
-        pkt[6..12].copy_from_slice(&tmp);
-        pkt[0..6].copy_from_slice(mac_addr.as_bytes());
-    }
-
-    true
 }

@@ -4,5 +4,4 @@ mod socket;
 
 pub(crate) use shared::SocketShared;
 
-pub use error::SocketError;
-pub use socket::Socket;
+pub use {error::SocketError, socket::Socket};

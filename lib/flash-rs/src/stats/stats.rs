@@ -5,13 +5,15 @@ use crate::{
     fd::{Fd, FdError},
 };
 
+use super::sub::{AppStats, Interface, RingStats, XdpStats};
+
 #[derive(Debug)]
 pub struct Stats {
     fd: Fd,
     pub interface: Interface,
     pub xdp_flags: XdpFlags,
-    pub(super) ring: UnsafeCell<RingStats>,
-    pub(super) app: UnsafeCell<AppStats>,
+    pub(crate) ring: UnsafeCell<RingStats>,
+    pub(crate) app: UnsafeCell<AppStats>,
 }
 
 unsafe impl Send for Stats {}
@@ -31,50 +33,20 @@ impl Stats {
         }
     }
 
+    #[inline]
     pub fn get_ring_stats(&self) -> RingStats {
-        unsafe { (*self.ring.get()).clone() }
+        unsafe { *self.ring.get() }
     }
 
+    #[inline]
     pub fn get_app_stats(&self) -> AppStats {
-        unsafe { (*self.app.get()).clone() }
+        unsafe { *self.app.get() }
     }
 
+    #[inline]
     #[allow(clippy::missing_errors_doc, clippy::missing_transmute_annotations)]
     pub fn get_xdp_stats(&self) -> Result<XdpStats, FdError> {
         let xdp_stats = self.fd.xdp_statistics()?;
         Ok(unsafe { mem::transmute::<_, XdpStats>(xdp_stats) })
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct Interface {
-    pub name: String,
-    pub queue: u32,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct RingStats {
-    pub rx: u64,
-    pub tx: u64,
-    pub drop: u64,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct AppStats {
-    pub rx_empty_polls: u64,
-    pub fill_fail_polls: u64,
-    pub tx_copy_sendtos: u64,
-    pub tx_wakeup_sendtos: u64,
-    pub opt_polls: u64,
-    pub backpressure: u64,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct XdpStats {
-    pub rx_dropped: u64,
-    pub rx_invalid_descs: u64,
-    pub tx_invalid_descs: u64,
-    pub rx_ring_full: u64,
-    pub rx_fill_ring_empty_descs: u64,
-    pub tx_ring_empty_descs: u64,
 }

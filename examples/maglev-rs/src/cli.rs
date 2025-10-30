@@ -1,6 +1,14 @@
+use std::net::Ipv4Addr;
+
+#[cfg(feature = "stats")]
+use std::str::FromStr as _;
+
 use clap::Parser;
 use flash::FlashConfig;
 use macaddr::MacAddr6;
+
+#[cfg(feature = "stats")]
+use flash::tui::GridLayout;
 
 #[derive(Debug, Parser)]
 pub struct Cli {
@@ -23,6 +31,31 @@ pub struct Cli {
     )]
     pub cpu_end: usize,
 
+    #[cfg(feature = "stats")]
+    #[command(flatten)]
+    pub stats: StatsConfig,
+
+    #[arg(short = 'F', long, help = "Fallback IPv4 address")]
+    pub fallback_ip: Option<Ipv4Addr>,
+
     #[arg(short = 'm', long, help = "Dest MAC address for next NFs")]
     pub next_mac: Vec<MacAddr6>,
+}
+
+#[cfg(feature = "stats")]
+#[derive(Debug, Parser)]
+pub struct StatsConfig {
+    #[arg(
+        short = 's',
+        long,
+        default_value_t = 1,
+        help = "CPU core index for stats thread"
+    )]
+    pub cpu: usize,
+
+    #[arg(short = 'f', long, default_value_t = 1, help = "Tui frames per second")]
+    pub fps: u64,
+
+    #[arg(short = 'l', long, default_value_t = GridLayout::default(), value_parser = GridLayout::from_str, help = "Tui layout")]
+    pub layout: GridLayout,
 }

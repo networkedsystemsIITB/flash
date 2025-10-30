@@ -27,15 +27,16 @@ pub(crate) struct Fd {
     // poll_timeout: i32,
 }
 
+#[allow(clippy::missing_fields_in_debug)]
 impl fmt::Debug for Fd {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self, f)
+        f.debug_struct("Fd").field("id", &self.id).finish()
     }
 }
 
 impl Fd {
     pub(crate) fn new(id: i32) -> Self {
-        assert!(id >= 0, "Invalid file descriptor: {id}");
+        assert!(id >= 0, "fd error: invalid file descriptor: {id}");
 
         Fd {
             id,
@@ -123,7 +124,7 @@ impl Fd {
                 SOL_XDP,
                 XDP_STATISTICS,
                 (&raw mut stats).cast(),
-                &mut optlen,
+                &raw mut optlen,
             )
         } != 0
         {

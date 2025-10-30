@@ -1,24 +1,25 @@
 use std::{net::Ipv4Addr, str::FromStr, sync::Arc};
 
 use crate::{
-    FlashError, Socket,
     config::{BindFlags, FlashConfig, Mode, PollConfig, XskConfig},
+    error::FlashResult,
     fd::Fd,
     mem::Umem,
     uds::UdsClient,
-    xsk::SocketShared,
+    xsk::{Socket, SocketShared},
 };
 
 #[cfg(feature = "stats")]
 use crate::{config::XdpFlags, stats::Stats};
 
+#[derive(Debug)]
 pub struct Route {
     pub ip_addr: Ipv4Addr,
     pub next: Vec<Ipv4Addr>,
 }
 
 #[allow(clippy::missing_errors_doc, clippy::too_many_lines)]
-pub fn connect(config: &FlashConfig) -> Result<(Vec<Socket>, Route), FlashError> {
+pub fn connect(config: &FlashConfig) -> FlashResult<(Vec<Socket>, Route)> {
     let mut uds_client = UdsClient::new()?;
 
     let (umem_fd, total_sockets, umem_size, umem_scale) =
@@ -118,34 +119,23 @@ pub fn connect(config: &FlashConfig) -> Result<(Vec<Socket>, Route), FlashError>
 
     let socket_shared = Arc::new(SocketShared::new(xsk_config, poll_config, uds_client));
 
-    #[cfg(feature = "stats")]
     let sockets = socket_info
         .into_iter()
         .enumerate()
-        .map(|(i, (fd, ifqueue))| {
-            Socket::new(
-                fd.clone(),
-                Umem::new(umem_fd, umem_size)?,
-                i,
-                umem_scale,
-                umem_offset,
-                Stats::new(fd, ifname.clone(), ifqueue, xdp_flags.clone()),
-                socket_shared.clone(),
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|(i, socket_data)| {
+            #[cfg(feature = "stats")]
+            let (fd, ifqueue) = socket_data;
+            #[cfg(not(feature = "stats"))]
+            let fd = socket_data;
 
-    #[cfg(not(feature = "stats"))]
-    let sockets = socket_info
-        .into_iter()
-        .enumerate()
-        .map(|(i, fd)| {
             Socket::new(
                 fd.clone(),
                 Umem::new(umem_fd, umem_size)?,
                 i,
                 umem_scale,
                 umem_offset,
+                #[cfg(feature = "stats")]
+                Stats::new(fd, ifname.clone(), ifqueue, xdp_flags.clone()),
                 socket_shared.clone(),
             )
         })
