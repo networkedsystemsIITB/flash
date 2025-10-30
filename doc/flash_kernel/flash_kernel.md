@@ -14,6 +14,7 @@ It introduces:
 🔁 [Interrupt vs. Busy-Polling (`poll()` Usage)](#using-poll-for-interrupt-vs-busy-polling-mode)  
 🧠 [Backpressure Handling (`poll()` & `recvfrom()`)](#backpressure-handling-with-poll-and-recvfrom)  
 🚦 [TX Tracking per Flow (HOL Mitigation)](#tx-tracking-per-flow-mitigating-head-of-line-blocking)  
+🧰 [Adding Driver Support](#adding-driver-support)  
 🧹 [Uninstalling the FLASH Kernel](#uninstalling-the-flash-kernel)  
 
 
@@ -29,6 +30,12 @@ We have tested the FLASH kernel on the following Ubuntu versions:
 
 > **Note:** Ubuntu 25.10 and newer ship with **GCC 15**, which is incompatible with the FLASH kernel.  
 > Install GCC 14 before building to avoid compilation errors.
+
+The zero-copy redirection feature requires some support from NIC driver. Currently, the following the NIC drivers are supported:
+- Intel `ixgbe` driver (10GbE)
+- Intel `i40e` driver (40GbE)
+- Intel `ice` driver (100GbE and above)
+- Mellanox `mlx5` driver (10GbE and above)
 
 ## Kernel Installation
 
@@ -235,6 +242,89 @@ Applications can use this feedback to implement:
 - Custom recovery strategies to reduce the impact of HOL blocking.
 
 > Note: TX tracking adds slight overhead due to per-flow bookkeeping. It is recommended for applications that require advanced flow management or fairness across multiple redirection targets.
+
+## Adding Driver Support
+
+To enable zero-copy redirection for an AF_XDP-supported NIC, the driver must be updated slightly to support the FLASH kernel’s redirection mechanism.
+
+Packet redirection in FLASH occurs when packets are transmitted from an AF_XDP socket.  
+Depending on the driver implementation, this is typically handled using one of the following APIs:
+- `xsk_tx_peek_desc()` and `xsk_tx_release()` APIs used by most standard AF_XDP drivers
+- `xsk_tx_peek_release_desc_batch()` API used by batch-oriented drivers for higher throughput
+
+### Supporting FLASH with `xsk_tx_peek_desc()` and `xsk_tx_release()`
+
+In the standard AF_XDP transmission flow:
+1. The driver calls `xsk_tx_peek_desc()` to fetch a descriptor for transmission.
+2. The NAPI TX poll function collects all such descriptors into a batch and transmits them.
+3. The TX ring is released after the batch using `xsk_tx_release()`.
+
+If no descriptor is returned by `xsk_tx_peek_desc()`, the driver stops processing further descriptors for transmission.
+
+In the FLASH kernel, when redirection is configured, the driver must not transmit packets to the NIC, but it should continue processing all remaining descriptors.
+
+To achieve this, the driver should check a flag in the AF_XDP socket’s pool structure:
+`pool->no_tx_out` — this boolean flag is set when redirection is active.
+
+**Example: Transmission Function with FLASH Support**
+
+```c
+bool xmit(struct xsk_buff_pool *pool, unsigned int budget)
+{
+	struct xdp_desc desc;
+
+	while (budget-- > 0) {
+		// Fetch a descriptor for transmission
+		if (!xsk_tx_peek_desc(pool, &desc))
+			break;
+
+		// If redirection is configured, skip NIC transmission
+		if (pool->no_tx_out)
+			continue;
+
+		// Proceed with normal transmission
+	}
+
+	// After processing all descriptors, trigger redirection if needed
+	if (pool->no_tx_out)
+		xsk_tx_release(pool);
+
+	return !budget;
+}
+```
+
+### Supporting FLASH with `xsk_tx_peek_release_desc_batch()`
+
+Drivers that use batch-oriented transmission can integrate FLASH support similarly.
+
+In the batch transmission flow:
+1. The driver calls `xsk_tx_peek_release_desc_batch()` to fetch and release a batch of transmission descriptors.
+2. The NIC driver then transmits the corresponding packets.
+
+In the FLASH kernel, when redirection is configured, the driver should skip NIC transmission but still process all descriptors by calling `xsk_tx_peek_release_desc_batch()`.
+The same `pool->no_tx_out` flag applies in this case as well.
+
+Example: Batch Transmission Function with FLASH Support
+
+```c
+bool xmit_batch(struct xsk_buff_pool *pool, unsigned int budget)
+{
+	struct xdp_desc *descs = pool->tx_descs;
+	unsigned int nb_pkts = 0;
+
+	// Fetch a batch of descriptors for transmission
+	nb_pkts = xsk_tx_peek_release_desc_batch(pool, budget);
+	if (!nb_pkts)
+		return true;
+
+	// If redirection is configured, skip NIC transmission
+	if (pool->no_tx_out)
+		return nb_pkts < budget;
+
+	// Proceed with normal transmission
+	return nb_pkts < budget;
+}
+```
 
 ## Uninstalling the FLASH Kernel
 
