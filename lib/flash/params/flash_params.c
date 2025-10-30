@@ -49,9 +49,9 @@ const struct option_wrapper long_options[] = {
 
 	{ { "clock", required_argument, NULL, 'w' }, "Clock NAME (default MONOTONIC) -- not implemented yet", "<clock>", false },
 
-	{ { "track-outstanding-tx", no_argument, NULL, 'o' }, "Track outstanding Tx for each outgoing edge [default: false]", false },
+	{ { "track-tx", no_argument, NULL, 'o' }, "Track outstanding Tx for each outgoing edge [default: false]", false },
 
-	{ { "max-outstanding-tx", required_argument, NULL, 'O' },
+	{ { "max-tx", required_argument, NULL, 'O' },
 	  "Maximum outstanding Tx packets for this NF (default: 256 (only in powers of 2))",
 	  "<num>",
 	  false },

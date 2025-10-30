@@ -147,11 +147,6 @@ size_t flash__dropmsg(struct config *cfg, struct socket *xsk, struct xskvec *xsk
  */
 size_t flash__allocmsg(struct config *cfg, struct socket *xsk, struct xskvec *xskvecs, uint32_t nalloc);
 
-int flash__oldpoll(struct socket *xsk, struct pollfd *fds, nfds_t nfds, int timeout);
-size_t flash__oldrecvmsg(struct config *cfg, struct socket *xsk, struct xskmsghdr *msg);
-size_t flash__oldsendmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t nsend);
-size_t flash__olddropmsg(struct config *cfg, struct socket *xsk, struct xskvec **msgiov, uint32_t ndrop);
-
 /* Helper APIs */
 
 /**
