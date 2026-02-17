@@ -164,7 +164,6 @@ void afxdp_init_handle(struct mtcp_thread_context *ctxt)
 out_cfg_close:
 	flash__xsk_close(&axpc->cfg, axpc->nf);
 out_cfg:
-	free(&axpc->cfg);
 	exit(EXIT_FAILURE);
 }
 
@@ -204,7 +203,9 @@ uint8_t *afxdp_get_rptr(struct mtcp_thread_context *ctxt, int ifidx, int index, 
 	struct afxdp_private_context *axpc;
 	axpc = (struct afxdp_private_context *)ctxt->io_private_context;
 
-	printf("get_rptr: recv_index=%u\n", axpc->recv_index);
+	if (axpc->recv_index >= axpc->cfg.xsk->batch_size) {
+		return NULL;
+	}
 
 	uint8_t *pktbuf = axpc->recvvecs[axpc->recv_index].data;
 	*len = axpc->recvvecs[axpc->recv_index].len;
@@ -248,10 +249,15 @@ uint8_t *afxdp_get_wptr(struct mtcp_thread_context *ctxt, int nif, uint16_t pkts
 	struct afxdp_private_context *axpc;
 	axpc = (struct afxdp_private_context *)ctxt->io_private_context;
 
-	printf("get_wptr: send_index=%u\n", axpc->send_index);
+	if (axpc->send_index >= axpc->cfg.xsk->batch_size) {
+		return NULL;
+	}
 
 	struct xskvec tmpvec;
-	flash__allocmsg(&axpc->cfg, axpc->nf->thread[0]->socket, &tmpvec, 1);
+	size_t ret = flash__allocmsg(&axpc->cfg, axpc->nf->thread[0]->socket, &tmpvec, 1);
+	if (ret == 0) {
+		return NULL;
+	}
 
 	uint8_t *pktbuf = tmpvec.data;
 
@@ -270,7 +276,11 @@ int afxdp_send_pkts(struct mtcp_thread_context *ctxt, int nif)
 	struct afxdp_private_context *axpc;
 	axpc = (struct afxdp_private_context *)ctxt->io_private_context;
 
-	flash__sendmsg(&axpc->cfg, axpc->nf->thread[0]->socket, axpc->sendvecs, axpc->send_index);
+	if (flash__sendmsg(&axpc->cfg, axpc->nf->thread[0]->socket, axpc->sendvecs, axpc->send_index) != axpc->send_index) {
+		log_error("Failed to send messages");
+		axpc->send_index = 0;
+		return -1;
+	}
 	axpc->send_index = 0;
 
 	return 1;
@@ -295,7 +305,6 @@ void afxdp_destroy_handle(struct mtcp_thread_context *ctxt)
 	free(axpc->sendvecs);
 	free(axpc->dropvecs);
 	flash__xsk_close(&axpc->cfg, axpc->nf);
-	free(&axpc->cfg);
 	free(axpc);
 }
 

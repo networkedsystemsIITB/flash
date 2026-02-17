@@ -13,7 +13,8 @@ dirs = [
     'firewall',
     'arpresolver',
     'mica',
-    'txgen'
+    'txgen',
+    'mtcp'
 ]
 
 def_deps = [include, log, nf, params, uds]
