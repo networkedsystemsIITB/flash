@@ -221,12 +221,12 @@ void PrintOptions(const struct Options *ops, int printVal)
 	}
 }
 /*----------------------------------------------------------------------------*/
-char *GetHeaderString(const char *buf, const char *header, int hdrsize)
+const char *GetHeaderString(const char *buf, const char *header, int hdrsize)
 {
 #define SKIP_SPACE(x)                     \
 	while ((*(x)) && isspace((*(x)))) \
 		(x)++;
-	char *temp = strstr(buf, header);
+	const char *temp = strstr(buf, header);
 
 	if (temp) {
 		temp += hdrsize;
@@ -240,7 +240,7 @@ char *GetHeaderString(const char *buf, const char *header, int hdrsize)
 int GetHeaderLong(const char *buf, const char *header, int hdrsize, long int *val)
 {
 	long int temp_val;
-	char *temp;
+	const char *temp;
 
 	if ((temp = GetHeaderString(buf, header, hdrsize)) != NULL) {
 		temp_val = strtol(temp, NULL, 10);

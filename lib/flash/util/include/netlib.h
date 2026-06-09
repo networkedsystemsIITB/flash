@@ -75,7 +75,7 @@ void PrintOptions(const struct Options* ops, int printVal);
 
 
 /* HTTP header processing */
-char *GetHeaderString(const char *buf, const char* header, int hdrsize);
+const char *GetHeaderString(const char *buf, const char* header, int hdrsize);
 int GetHeaderLong(const char* buf, const char* header, int hdrsize, long int *val);
 
 #endif
