@@ -1,0 +1,42 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the following paper."
+title: "FLASH: Fast Linked AF_XDP Sockets for High Performance Network Function Chains"
+authors:
+  - family-names: "Das"
+    given-names: "Debojeet"
+  - family-names: "Baua"
+    given-names: "Kevin Prafull"
+  - family-names: "Kansara"
+    given-names: "Aditya"
+  - family-names: "Chakraborty"
+    given-names: "Arghyadip"
+  - family-names: "Kurukunda"
+    given-names: "Dheeraj"
+  - family-names: "Vutukuru"
+    given-names: "Mythili"
+  - family-names: "Kulkarni"
+    given-names: "Purushottam"
+preferred-citation:
+  type: conference-paper
+  title: "FLASH: Fast Linked AF_XDP Sockets for High Performance Network Function Chains"
+  authors:
+    - family-names: "Das"
+      given-names: "Debojeet"
+    - family-names: "Baua"
+      given-names: "Kevin Prafull"
+    - family-names: "Kansara"
+      given-names: "Aditya"
+    - family-names: "Chakraborty"
+      given-names: "Arghyadip"
+    - family-names: "Kurukunda"
+      given-names: "Dheeraj"
+    - family-names: "Vutukuru"
+      given-names: "Mythili"
+    - family-names: "Kulkarni"
+      given-names: "Purushottam"
+  collection-title: "Proceedings of the 2025 ACM Symposium on Cloud Computing"
+  year: 2026
+  start: 571
+  end: 584
+  doi: "10.1145/3772052.3772258"
+  url: "https://doi.org/10.1145/3772052.3772258"
