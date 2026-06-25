@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-clap = { version = "4.5.35", features = ["derive"] }
+clap = { version = "4.6.1", features = ["derive"] }
 flash = { path = "../../lib/flash-rs", features = ["clap"] }
-tracing = { version = "0.1.41", optional = true }
-tracing-subscriber = { version = "0.3.19", optional = true }
+tracing = { version = "0.1.44", optional = true }
+tracing-subscriber = { version = "0.3.23", optional = true }
 
 [features]
 default = []

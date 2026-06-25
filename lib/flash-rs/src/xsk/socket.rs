@@ -381,16 +381,13 @@ impl Socket {
             return;
         }
 
-        let mut idx_tx = self.reserve_tx(n);
-        for desc in descs {
+        for (idx_tx, desc) in (self.reserve_tx(n)..).zip(descs) {
             if let Some(tx_desc) = self.tx.desc(idx_tx) {
                 desc.copy_to(tx_desc);
             } else {
                 #[cfg(feature = "tracing")]
                 tracing::warn!("xsk: failed to get tx descriptor");
             }
-
-            idx_tx += 1;
         }
 
         self.tx.submit(n);
@@ -418,16 +415,13 @@ impl Socket {
 
         #[cfg(not(feature = "pool"))]
         {
-            let mut idx_fq = self.reserve_fq(n);
-            for desc in descs {
+            for (idx_fq, desc) in (self.reserve_fq(n)..).zip(descs) {
                 if let Some(fill_addr) = self.fill.addr(idx_fq) {
                     *fill_addr = desc.extract_addr();
                 } else {
                     #[cfg(feature = "tracing")]
                     tracing::warn!("xsk: failed to get fill descriptor");
                 }
-
-                idx_fq += 1;
             }
         }
 
