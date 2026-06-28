@@ -203,6 +203,11 @@ typedef struct tcp_stream {
 	uint16_t sport; /* in network order */
 	uint16_t dport; /* in network order */
 
+#ifdef MTCP_FLASH_ID_TRAILER
+	uint8_t dst_flash_id; /* destination flash id */
+			      // h -> source flash_id is already there in flash_module.c
+#endif
+
 	uint8_t state;	      /* tcp state */
 	uint8_t close_reason; /* close reason */
 	uint8_t on_hash_table;

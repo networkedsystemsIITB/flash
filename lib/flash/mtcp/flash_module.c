@@ -40,10 +40,60 @@ struct afxdp_private_context { // private context on mTCP
 	struct xskvec *recvvecs;
 	struct xskvec *sendvecs;
 	struct xskvec *dropvecs;
+	struct xskvec *allocvecs;
 	uint32_t recv_index;
 	uint32_t send_index;
+	uint32_t drop_index;
+	uint32_t alloc_index;
+	uint32_t alloc_count;
 	struct pollfd fds[1];
+
+	// stats
+	uint64_t rx_pkts;
+	uint64_t tx_pkts;
+
+	uint64_t total_rx_pkts;
+	uint64_t total_tx_pkts;
+
+	uint64_t active_seconds;
+
+	time_t last_print_time;
+	time_t window_start;
 } __attribute__((aligned(__WORDSIZE)));
+
+/*----------------------------------------------------------------------------*/
+static void check_and_print_stats(struct afxdp_private_context *axpc)
+{
+	time_t now = time(NULL);
+
+	if (now > axpc->last_print_time) {
+		if (axpc->rx_pkts > 0 || axpc->tx_pkts > 0) {
+			axpc->total_rx_pkts += axpc->rx_pkts;
+			axpc->total_tx_pkts += axpc->tx_pkts;
+			axpc->active_seconds++;
+		}
+
+		axpc->rx_pkts = 0;
+		axpc->tx_pkts = 0;
+		axpc->last_print_time = now;
+	}
+
+	// 10-second window
+	if (now - axpc->window_start >= 10) {
+		if (axpc->active_seconds > 0) {
+			double pps_rx = (double)axpc->total_rx_pkts / axpc->active_seconds;
+			double pps_tx = (double)axpc->total_tx_pkts / axpc->active_seconds;
+
+			printf("[AFXDP LAST 10s] Active: %lu s | RX: %.0f pps | TX: %.0f pps\n", axpc->active_seconds, pps_rx, pps_tx);
+		}
+
+		// reset window
+		axpc->total_rx_pkts = 0;
+		axpc->total_tx_pkts = 0;
+		axpc->active_seconds = 0;
+		axpc->window_start = now;
+	}
+}
 
 /*----------------------------------------------------------------------------*/
 void afxdp_load_module(void);
@@ -93,7 +143,11 @@ void afxdp_init_handle(struct mtcp_thread_context *ctxt)
 		argv[1] = strdup("-u");
 		argv[2] = strdup("0");
 		argv[3] = strdup("-f");
-		argv[4] = strdup("0");
+
+		char flash_nic_queue_str[8];
+		sprintf(flash_nic_queue_str, "%d", ctxt->flash_ctx.flash_nic_queue);
+		argv[4] = strdup(flash_nic_queue_str);
+
 		argv[5] = strdup("-t");
 
 		if (flash__parse_cmdline_args(6, argv, &axpc->cfg) < 0)
@@ -158,6 +212,30 @@ void afxdp_init_handle(struct mtcp_thread_context *ctxt)
 		free(axpc->recvvecs);
 		goto out_cfg_close;
 	}
+	axpc->drop_index = 0;
+
+	axpc->allocvecs = calloc(axpc->cfg.xsk->batch_size, sizeof(struct xskvec));
+	if (!axpc->allocvecs) {
+		log_error("Failed to allocate alloc xskvecs array");
+		free(axpc->sendvecs);
+		free(axpc->recvvecs);
+		free(axpc->dropvecs);
+		goto out_cfg_close;
+	}
+	axpc->alloc_index = 0;
+	axpc->alloc_count = 0;
+
+	// Initialize statistics
+	axpc->rx_pkts = 0;
+	axpc->tx_pkts = 0;
+
+	axpc->total_rx_pkts = 0;
+	axpc->total_tx_pkts = 0;
+
+	axpc->active_seconds = 0;
+
+	axpc->last_print_time = time(NULL);
+	axpc->window_start = axpc->last_print_time;
 
 	return;
 
@@ -189,7 +267,12 @@ int32_t afxdp_recv_pkts(struct mtcp_thread_context *ctxt, int ifidx)
 	if (!(ret == 1 || ret == -2))
 		return 0;
 
-	nrecv = flash__recvmsg(&axpc->cfg, xsk, axpc->recvvecs, axpc->cfg.xsk->batch_size);
+	uint32_t to_recv = axpc->cfg.xsk->batch_size;
+	nrecv = flash__recvmsg(&axpc->cfg, xsk, axpc->recvvecs, to_recv);
+
+	axpc->rx_pkts += nrecv;
+
+	check_and_print_stats(axpc);
 	return nrecv;
 }
 
@@ -210,19 +293,30 @@ uint8_t *afxdp_get_rptr(struct mtcp_thread_context *ctxt, int ifidx, int index, 
 	uint8_t *pktbuf = axpc->recvvecs[axpc->recv_index].data;
 	*len = axpc->recvvecs[axpc->recv_index].len;
 
-	axpc->dropvecs[axpc->recv_index] = axpc->recvvecs[axpc->recv_index];
+#ifdef MTCP_FLASH_ID_TRAILER
+	// flash_ids shaved off
+	// [pkt][src_flash_id][dst_flash_id]
+	// pkt's destination is me
+	// pkt's source is the other flash_id which we need to store in the context
+	ctxt->flash_ctx.dst_flash_id = *(uint8_t *)(pktbuf + *len - 2);
+
+	*len -= 2;
+#endif /* MTCP_FLASH_ID_TRAILER */
+
 	axpc->recv_index++;
 
 	return pktbuf;
 }
 
 /*----------------------------------------------------------------------------*/
+// h -> drops everything in recvvecs
+// not invoked in mtcp-zero-copy
 void afxdp_drop_pkts(struct mtcp_thread_context *ctxt)
 {
 	struct afxdp_private_context *axpc;
 	axpc = (struct afxdp_private_context *)ctxt->io_private_context;
 
-	if (flash__dropmsg(&axpc->cfg, axpc->nf->thread[0]->socket, axpc->dropvecs, axpc->recv_index) != axpc->recv_index) {
+	if (flash__dropmsg(&axpc->cfg, axpc->nf->thread[0]->socket, axpc->recvvecs, axpc->recv_index) != axpc->recv_index) {
 		log_error("Failed to drop messages");
 		axpc->recv_index = 0;
 		return;
@@ -253,18 +347,38 @@ uint8_t *afxdp_get_wptr(struct mtcp_thread_context *ctxt, int nif, uint16_t pkts
 		return NULL;
 	}
 
-	struct xskvec tmpvec;
-	size_t ret = flash__allocmsg(&axpc->cfg, axpc->nf->thread[0]->socket, &tmpvec, 1);
-	if (ret == 0) {
-		return NULL;
+	// batched allocation
+	if (axpc->alloc_index >= axpc->alloc_count) {
+		uint32_t to_alloc = axpc->cfg.xsk->batch_size;
+		axpc->alloc_count = flash__allocmsg(&axpc->cfg, axpc->nf->thread[0]->socket, axpc->allocvecs, to_alloc);
+		axpc->alloc_index = 0;
+		if (axpc->alloc_count == 0) {
+			return NULL;
+		}
 	}
 
-	uint8_t *pktbuf = tmpvec.data;
+	struct xskvec *tmpvec = &axpc->allocvecs[axpc->alloc_index++];
+
+	uint8_t *pktbuf = tmpvec->data;
+	uint32_t options = 0;
+
+#ifdef MTCP_FLASH_ID_TRAILER
+	// reserve 2 bytes at the end of the packet for flash ids (src and dst)
+	// [pkt][src_flash_id][dst_flash_id]
+	uint8_t src_flash_id = axpc->cfg.nf_id;
+	uint8_t dst_flash_id = ctxt->flash_ctx.dst_flash_id;
+	ctxt->flash_ctx.dst_flash_id = -1;
+
+	*(uint8_t *)(pktbuf + pktsize) = src_flash_id;
+	*(uint8_t *)(pktbuf + pktsize + 1) = dst_flash_id;
+	pktsize += 2;
+	options = (dst_flash_id << 16) | (options & 0xFFFF);
+#endif /* MTCP_FLASH_ID_TRAILER */
 
 	axpc->sendvecs[axpc->send_index].data = pktbuf;
 	axpc->sendvecs[axpc->send_index].len = pktsize;
-	axpc->sendvecs[axpc->send_index].addr = tmpvec.addr;
-	axpc->sendvecs[axpc->send_index++].options = 0;
+	axpc->sendvecs[axpc->send_index].addr = tmpvec->addr;
+	axpc->sendvecs[axpc->send_index++].options = options;
 
 	return pktbuf;
 }
@@ -281,8 +395,10 @@ int afxdp_send_pkts(struct mtcp_thread_context *ctxt, int nif)
 		axpc->send_index = 0;
 		return -1;
 	}
+	axpc->tx_pkts += axpc->send_index;
 	axpc->send_index = 0;
 
+	check_and_print_stats(axpc);
 	return 1;
 }
 

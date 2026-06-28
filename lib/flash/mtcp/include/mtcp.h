@@ -227,6 +227,9 @@ struct mtcp_config {
 /*----------------------------------------------------------------------------*/
 struct mtcp_context {
 	int cpu;
+
+	// flash args
+	int flash_nic_queue;
 };
 /*----------------------------------------------------------------------------*/
 struct mtcp_sender {
@@ -339,6 +342,13 @@ typedef struct mtcp_manager *mtcp_manager_t;
 /*----------------------------------------------------------------------------*/
 mtcp_manager_t GetMTCPManager(mctx_t mctx);
 /*----------------------------------------------------------------------------*/
+struct flash_context {
+	int flash_nic_queue;
+#ifdef MTCP_FLASH_ID_TRAILER
+	uint8_t dst_flash_id;
+#endif
+};
+
 struct mtcp_thread_context {
 	int cpu;
 	pthread_t thread;
@@ -350,6 +360,9 @@ struct mtcp_thread_context {
 	pthread_mutex_t smap_lock;
 	pthread_mutex_t flow_pool_lock;
 	pthread_mutex_t socket_pool_lock;
+
+	// flash vars
+	struct flash_context flash_ctx;
 
 #if LOCK_STREAM_QUEUE
 #if USE_SPIN_LOCK

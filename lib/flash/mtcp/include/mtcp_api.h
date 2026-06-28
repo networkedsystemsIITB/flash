@@ -81,7 +81,7 @@ int mtcp_setconf(const struct mtcp_conf *conf);
 
 int mtcp_core_affinitize(int cpu);
 
-mctx_t mtcp_create_context(int cpu);
+mctx_t mtcp_create_context(int cpu, int flash_nic_queue);
 
 void mtcp_destroy_context(mctx_t mctx);
 
@@ -111,7 +111,7 @@ int mtcp_accept(mctx_t mctx, int sockid, struct sockaddr *addr, socklen_t *addrl
 
 int mtcp_init_rss(mctx_t mctx, in_addr_t saddr_base, int num_addr, in_addr_t daddr, in_addr_t dport);
 
-int mtcp_connect(mctx_t mctx, int sockid, const struct sockaddr *addr, socklen_t addrlen);
+int mtcp_connect(mctx_t mctx, int sockid, const struct sockaddr *addr, socklen_t addrlen, uint8_t dst_flash_id);
 
 int mtcp_close(mctx_t mctx, int sockid);
 

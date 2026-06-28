@@ -144,6 +144,10 @@ uint8_t *IPOutput(struct mtcp_manager *mtcp, tcp_stream *stream, uint16_t tcplen
 		stream->is_external = is_external;
 	}
 
+#ifdef MTCP_FLASH_ID_TRAILER
+	mtcp->ctx->flash_ctx.dst_flash_id = stream->dst_flash_id;
+#endif
+
 	haddr = GetDestinationHWaddr(stream->daddr, stream->is_external);
 	if (!haddr) {
 #if 0

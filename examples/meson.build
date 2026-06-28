@@ -14,7 +14,8 @@ dirs = [
     'arpresolver',
     'mica',
     'txgen',
-    'mtcp'
+    'mtcp',
+    'mtcp-utils',
 ]
 
 def_deps = [include, log, nf, params, uds]

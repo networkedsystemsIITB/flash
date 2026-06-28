@@ -792,6 +792,7 @@ static void RunMainLoop(struct mtcp_thread_context *ctx)
 
 			for (i = 0; i < recv_cnt; i++) {
 				pktbuf = mtcp->iom->get_rptr(mtcp->ctx, rx_inf, i, &len);
+				// IMP: get_rptr will set flash_ctx
 				if (pktbuf != NULL) {
 					if (ProcessPacket(mtcp, rx_inf, ts, pktbuf, len) != TRUE)
 						mtcp->iom->release_pkt(mtcp->ctx, rx_inf, pktbuf, len);
@@ -1173,6 +1174,7 @@ static void *MTCPRunThread(void *arg)
 	ctx->thread = pthread_self();
 	ctx->cpu = cpu;
 	mtcp = ctx->mtcp_manager = InitializeMTCPManager(ctx);
+	ctx->flash_ctx.flash_nic_queue = mctx->flash_nic_queue;
 	if (!mtcp) {
 		TRACE_ERROR("Failed to initialize mtcp manager.\n");
 		exit(-1);
@@ -1261,7 +1263,7 @@ int MTCPDPDKRunThread(void *arg)
 }
 #endif
 /*----------------------------------------------------------------------------*/
-mctx_t mtcp_create_context(int cpu)
+mctx_t mtcp_create_context(int cpu, int flash_nic_queue)
 {
 	mctx_t mctx;
 	int ret;
@@ -1291,6 +1293,7 @@ mctx_t mtcp_create_context(int cpu)
 		return NULL;
 	}
 	mctx->cpu = cpu;
+	mctx->flash_nic_queue = flash_nic_queue;
 
 	/* initialize logger */
 	g_logctx[cpu] = (struct log_thread_context *)calloc(1, sizeof(struct log_thread_context));

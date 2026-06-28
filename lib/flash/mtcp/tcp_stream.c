@@ -262,6 +262,10 @@ tcp_stream *CreateTCPStream(mtcp_manager_t mtcp, socket_map_t socket, int type, 
 	stream->daddr = daddr;
 	stream->dport = dport;
 
+#ifdef MTCP_FLASH_ID_TRAILER
+	stream->dst_flash_id = mtcp->ctx->flash_ctx.dst_flash_id;
+#endif
+
 	ret = StreamHTInsert(mtcp->tcp_flow_table, stream);
 	if (ret < 0) {
 		TRACE_ERROR("Stream %d: "
@@ -364,10 +368,17 @@ tcp_stream *CreateTCPStream(mtcp_manager_t mtcp, socket_map_t socket, int type, 
 
 	sa = (uint8_t *)&stream->saddr;
 	da = (uint8_t *)&stream->daddr;
+#ifndef MTCP_FLASH_ID_TRAILER
 	TRACE_STREAM("CREATED NEW TCP STREAM %d: "
 		     "%u.%u.%u.%u(%d) -> %u.%u.%u.%u(%d) (ISS: %u)\n",
 		     stream->id, sa[0], sa[1], sa[2], sa[3], ntohs(stream->sport), da[0], da[1], da[2], da[3], ntohs(stream->dport),
 		     stream->sndvar->iss);
+#else
+	TRACE_STREAM("CREATED NEW TCP STREAM %d: "
+		     "%u.%u.%u.%u(%d) -> %u.%u.%u.%u(%d) (ISS: %u) (FLASH_IDS: %d)\n",
+		     stream->id, sa[0], sa[1], sa[2], sa[3], ntohs(stream->sport), da[0], da[1], da[2], da[3], ntohs(stream->dport),
+		     stream->sndvar->iss, stream->dst_flash_id);
+#endif
 
 #if RATE_LIMIT_ENABLED
 	stream->bucket = NewTokenBucket();

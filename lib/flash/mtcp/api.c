@@ -691,7 +691,7 @@ int mtcp_init_rss(mctx_t mctx, in_addr_t saddr_base, int num_addr, in_addr_t dad
 	return 0;
 }
 /*----------------------------------------------------------------------------*/
-int mtcp_connect(mctx_t mctx, int sockid, const struct sockaddr *addr, socklen_t addrlen)
+int mtcp_connect(mctx_t mctx, int sockid, const struct sockaddr *addr, socklen_t addrlen, uint8_t dst_flash_id)
 {
 	mtcp_manager_t mtcp;
 	socket_map_t socket;
@@ -706,6 +706,12 @@ int mtcp_connect(mctx_t mctx, int sockid, const struct sockaddr *addr, socklen_t
 	if (!mtcp) {
 		return -1;
 	}
+
+#ifdef MTCP_FLASH_ID_TRAILER
+	mtcp->ctx->flash_ctx.dst_flash_id = dst_flash_id;
+#else
+	UNUSED(dst_flash_id);
+#endif
 
 	if (sockid < 0 || sockid >= CONFIG.max_concurrency) {
 		TRACE_API("Socket id %d out of range.\n", sockid);

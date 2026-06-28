@@ -1185,6 +1185,10 @@ int ProcessTCPPacket(mtcp_manager_t mtcp, uint32_t cur_ts, const int ifidx, cons
 	s_stream.daddr = iph->saddr;
 	s_stream.dport = tcph->source;
 
+#ifdef MTCP_FLASH_ID_TRAILER
+	s_stream.dst_flash_id = mtcp->ctx->flash_ctx.dst_flash_id;
+#endif
+
 	if (!(cur_stream = StreamHTSearch(mtcp->tcp_flow_table, &s_stream))) {
 		/* not found in flow table */
 		cur_stream = CreateNewFlowHTEntry(mtcp, cur_ts, iph, ip_len, tcph, seq, ack_seq, payloadlen, window);
