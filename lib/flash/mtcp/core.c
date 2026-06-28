@@ -763,6 +763,25 @@ static void InterruptApplication(mtcp_manager_t mtcp)
 	}
 }
 /*----------------------------------------------------------------------------*/
+#ifdef MTCP_RX_ZERO_COPY
+// app thread produces, mtcp thread consumes
+static inline void ReclaimFreeRXBuffers(mtcp_manager_t mtcp)
+{
+	struct zc_rx_free_ring *ring = &mtcp->ctx->flash_ctx.zc_rx_ring;
+	uint32_t head = __atomic_load_n(&ring->head, __ATOMIC_RELAXED);
+	uint32_t tail = __atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE);
+
+	while (head != tail) {
+		uint64_t flash_addr = ring->flash_addrs[head & (ZC_RX_FREE_RING_SIZE - 1)];
+		mtcp->iom->release_pkt(mtcp->ctx, 0, (uint8_t *)flash_addr, 0);
+
+		head++;
+	}
+
+	__atomic_store_n(&ring->head, head, __ATOMIC_RELEASE);
+}
+#endif /* MTCP_RX_ZERO_COPY */
+/*----------------------------------------------------------------------------*/
 static void RunMainLoop(struct mtcp_thread_context *ctx)
 {
 	mtcp_manager_t mtcp = ctx->mtcp_manager;
@@ -795,14 +814,16 @@ static void RunMainLoop(struct mtcp_thread_context *ctx)
 				// IMP: get_rptr will set flash_ctx
 				if (pktbuf != NULL) {
 					if (ProcessPacket(mtcp, rx_inf, ts, pktbuf, len) != TRUE)
-						mtcp->iom->release_pkt(mtcp->ctx, rx_inf, pktbuf, len);
+#ifdef MTCP_RX_ZERO_COPY
+						mtcp->iom->release_pkt(mtcp->ctx, 0, (uint8_t *)mtcp->ctx->flash_ctx.flash_addr, len);
+#endif
 				}
 #ifdef NETSTAT
 				else
 					mtcp->nstat.rx_errors[rx_inf]++;
 #endif
 			}
-#ifndef DISABLE_AFXDP
+#ifndef MTCP_RX_ZERO_COPY
 			mtcp->iom->drop_pkts(mtcp->ctx);
 #endif
 		}
@@ -846,6 +867,10 @@ static void RunMainLoop(struct mtcp_thread_context *ctx)
 		}
 
 		WritePacketsToChunks(mtcp, ts);
+
+#ifdef MTCP_RX_ZERO_COPY
+		ReclaimFreeRXBuffers(mtcp);
+#endif
 
 		/* send packets from write buffer */
 		/* send until tx is available */

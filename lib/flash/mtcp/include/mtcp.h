@@ -342,10 +342,28 @@ typedef struct mtcp_manager *mtcp_manager_t;
 /*----------------------------------------------------------------------------*/
 mtcp_manager_t GetMTCPManager(mctx_t mctx);
 /*----------------------------------------------------------------------------*/
+
+#ifdef MTCP_RX_ZERO_COPY
+// h -> buffer so big => RBFreeBuff_zc always succeeds
+#define ZC_RX_FREE_RING_SIZE 2048
+
+struct zc_rx_free_ring {
+    uint64_t flash_addrs[ZC_RX_FREE_RING_SIZE];
+    _Atomic uint32_t head; // mtcp thread = consumer
+	_Atomic uint32_t tail; // nic thread = producer
+};
+
+#endif /* MTCP_RX_ZERO_COPY */
+
 struct flash_context {
 	int flash_nic_queue;
 #ifdef MTCP_FLASH_ID_TRAILER
 	uint8_t dst_flash_id;
+#endif
+
+#ifdef MTCP_RX_ZERO_COPY
+	uint64_t flash_addr;
+	struct zc_rx_free_ring zc_rx_ring;
 #endif
 };
 

@@ -526,7 +526,7 @@ void DestroyTCPStream(mtcp_manager_t mtcp, tcp_stream *stream)
 		stream->sndvar->sndbuf = NULL;
 	}
 	if (stream->rcvvar->rcvbuf) {
-		RBFree(mtcp->rbm_rcv, stream->rcvvar->rcvbuf);
+		RBFree(mtcp, mtcp->rbm_rcv, stream->rcvvar->rcvbuf);
 		stream->rcvvar->rcvbuf = NULL;
 	}
 

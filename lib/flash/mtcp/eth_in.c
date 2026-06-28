@@ -67,7 +67,7 @@ int ProcessPacket(mtcp_manager_t mtcp, const int ifidx, uint32_t cur_ts, unsigne
 
 	} else if (ip_proto == ETH_P_ARP) {
 		ProcessARPPacket(mtcp, cur_ts, ifidx, pkt_data, len);
-		return TRUE;
+		return FALSE; // h-> FALSE TO FREE UP THE PACKET
 
 	} else {
 		//DumpPacket(mtcp, (char *)pkt_data, len, "??", ifidx);

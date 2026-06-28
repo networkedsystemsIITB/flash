@@ -1047,7 +1047,7 @@ int mtcp_close(mctx_t mctx, int sockid)
 // 		return ERROR;
 
 // 	} else if (cur_stream->state == TCP_ST_SYN_SENT) {
-// 		/* TODO: this should notify event failure to all 
+// 		/* TODO: this should notify event failure to all
 // 		   previous read() or write() calls */
 // 		cur_stream->state = TCP_ST_CLOSED;
 // 		cur_stream->close_reason = TCP_ACTIVE_CLOSE;
@@ -1123,8 +1123,13 @@ static inline int CopyToUser(mtcp_manager_t mtcp, tcp_stream *cur_stream, char *
 
 	prev_rcv_wnd = rcvvar->rcv_wnd;
 	/* Copy data to user buffer and remove it from receiving buffer */
+#ifdef MTCP_RX_ZERO_COPY
+	RBRead_zc(mtcp->rbm_rcv, rcvvar->rcvbuf, buf, copylen);
+	RBRemove_zc(mtcp, mtcp->rbm_rcv, rcvvar->rcvbuf, copylen, AT_APP);
+#else
 	memcpy(buf, rcvvar->rcvbuf->head, copylen);
 	RBRemove(mtcp->rbm_rcv, rcvvar->rcvbuf, copylen, AT_APP);
+#endif
 	rcvvar->rcv_wnd = rcvvar->rcvbuf->size - rcvvar->rcvbuf->merged_len;
 
 	/* Advertise newly freed receive buffer */
@@ -1644,3 +1649,243 @@ int mtcp_writev(mctx_t mctx, int sockid, const struct iovec *iov, int numIOV)
 	return to_write;
 }
 /*----------------------------------------------------------------------------*/
+
+#ifdef MTCP_RX_ZERO_COPY
+/*----------------------------------------------------------------------------*/
+static inline int ZeroCopyToUser(mtcp_manager_t mtcp, tcp_stream *cur_stream, char **buf, uint64_t *flash_addr)
+{
+	struct tcp_recv_vars *rcvvar = cur_stream->rcvvar;
+	uint32_t prev_rcv_wnd;
+	prev_rcv_wnd = rcvvar->rcv_wnd;
+
+	size_t len = RBGetBuff_zc(mtcp->rbm_rcv, rcvvar->rcvbuf, (void **)buf, flash_addr);
+	if (*buf == NULL) { // or len == 0
+		errno = EAGAIN;
+		return -1;
+	}
+
+	rcvvar->rcv_wnd = rcvvar->rcvbuf->size - rcvvar->rcvbuf->merged_len;
+
+	if (cur_stream->need_wnd_adv) {
+		if (rcvvar->rcv_wnd > cur_stream->sndvar->eff_mss) {
+			if (!cur_stream->sndvar->on_ackq) {
+				SQ_LOCK(&mtcp->ctx->ackq_lock);
+				cur_stream->sndvar->on_ackq = TRUE;
+				StreamEnqueue(mtcp->ackq, cur_stream); /* this always success */
+				SQ_UNLOCK(&mtcp->ctx->ackq_lock);
+				cur_stream->need_wnd_adv = FALSE;
+				mtcp->wakeup_flag = TRUE;
+			}
+		}
+	}
+
+	UNUSED(prev_rcv_wnd);
+	return len;
+}
+/*----------------------------------------------------------------------------*/
+ssize_t mtcp_recv_zc(mctx_t mctx, int sockid, char **buf, uint64_t *flash_addr, int flags)
+{
+	mtcp_manager_t mtcp;
+	socket_map_t socket;
+	tcp_stream *cur_stream;
+	struct tcp_recv_vars *rcvvar;
+	int event_remaining;
+	int ret = 0;
+
+	mtcp = GetMTCPManager(mctx);
+	if (!mtcp) {
+		return -1;
+	}
+
+	if (sockid < 0 || sockid >= CONFIG.max_concurrency) {
+		TRACE_API("Socket id %d out of range.\n", sockid);
+		errno = EBADF;
+		return -1;
+	}
+
+	socket = &mtcp->smap[sockid];
+	if (socket->socktype == MTCP_SOCK_UNUSED) {
+		TRACE_API("Invalid socket id: %d\n", sockid);
+		errno = EBADF;
+		return -1;
+	}
+
+	// h-> pipes not supported in mtcp_recv_zc
+	// if (socket->socktype == MTCP_SOCK_PIPE) {
+	// 	return PipeRead(mctx, sockid, buf, len);
+	// }
+
+	if (socket->socktype != MTCP_SOCK_STREAM) {
+		TRACE_API("Not an end socket. id: %d\n", sockid);
+		errno = ENOTSOCK;
+		return -1;
+	}
+
+	/* stream should be in ESTABLISHED, FIN_WAIT_1, FIN_WAIT_2, CLOSE_WAIT */
+	cur_stream = socket->stream;
+	if (!cur_stream || !(cur_stream->state >= TCP_ST_ESTABLISHED && cur_stream->state <= TCP_ST_CLOSE_WAIT)) {
+		errno = ENOTCONN;
+		return -1;
+	}
+
+	rcvvar = cur_stream->rcvvar;
+
+	/* if CLOSE_WAIT, return 0 if there is no payload */
+	if (cur_stream->state == TCP_ST_CLOSE_WAIT) {
+		if (!rcvvar->rcvbuf)
+			return 0;
+
+		if (rcvvar->rcvbuf->merged_len == 0)
+			return 0;
+	}
+
+	/* return EAGAIN if no receive buffer */
+	if (socket->opts & MTCP_NONBLOCK) {
+		if (!rcvvar->rcvbuf || rcvvar->rcvbuf->merged_len == 0) {
+			errno = EAGAIN;
+			return -1;
+		}
+	}
+
+	SBUF_LOCK(&rcvvar->read_lock);
+	// h -> not sure if blocking support works with zero copy, but keeping it for now
+#if BLOCKING_SUPPORT
+	if (!(socket->opts & MTCP_NONBLOCK)) {
+		while (rcvvar->rcvbuf->merged_len == 0) {
+			if (!cur_stream || cur_stream->state != TCP_ST_ESTABLISHED) {
+				SBUF_UNLOCK(&rcvvar->read_lock);
+				errno = EINTR;
+				return -1;
+			}
+			pthread_cond_wait(&rcvvar->read_cond, &rcvvar->read_lock);
+		}
+	}
+#endif
+
+	switch (flags) {
+	case 0:
+		ret = ZeroCopyToUser(mtcp, cur_stream, buf, flash_addr);
+		break;
+	default:
+		SBUF_UNLOCK(&rcvvar->read_lock);
+		ret = -1;
+		errno = EINVAL;
+		return ret;
+	}
+
+	event_remaining = FALSE;
+	/* if there are remaining payload, generate EPOLLIN */
+	/* (may due to insufficient user buffer) */
+	if (socket->epoll & MTCP_EPOLLIN) {
+		if (!(socket->epoll & MTCP_EPOLLET) && rcvvar->rcvbuf->merged_len > 0) {
+			event_remaining = TRUE;
+		}
+	}
+	/* if waiting for close, notify it if no remaining data */
+	if (cur_stream->state == TCP_ST_CLOSE_WAIT && rcvvar->rcvbuf->merged_len == 0 && ret > 0) {
+		event_remaining = TRUE;
+	}
+
+	SBUF_UNLOCK(&rcvvar->read_lock);
+
+	if (event_remaining) {
+		if (socket->epoll) {
+			AddEpollEvent(mtcp->ep, USR_SHADOW_EVENT_QUEUE, socket, MTCP_EPOLLIN);
+#if BLOCKING_SUPPORT
+		} else if (!(socket->opts & MTCP_NONBLOCK)) {
+			if (!cur_stream->on_rcv_br_list) {
+				cur_stream->on_rcv_br_list = TRUE;
+				TAILQ_INSERT_TAIL(&mtcp->rcv_br_list, cur_stream, rcvvar->rcv_br_link);
+				mtcp->rcv_br_list_cnt++;
+			}
+#endif
+		}
+	}
+
+	TRACE_API("Stream %d: mtcp_recv() returning %d\n", cur_stream->id, ret);
+	return ret;
+}
+/*----------------------------------------------------------------------------*/
+inline ssize_t mtcp_read_zc(mctx_t mctx, int sockid, char **buf, uint64_t *flash_addr)
+{
+	return mtcp_recv_zc(mctx, sockid, buf, flash_addr, 0);
+}
+/*----------------------------------------------------------------------------*/
+ssize_t mtcp_zc_free(mctx_t mctx, uint64_t flash_addr)
+{
+	if (!flash_addr) {
+		errno = EINVAL;
+		return -1;
+	}
+	mtcp_manager_t mtcp = GetMTCPManager(mctx);
+	if (!mtcp) {
+		return -1;
+	}
+
+	RBFreeBuff_zc(mtcp, mtcp->rbm_rcv, flash_addr);
+
+	return 0;
+}
+/*----------------------------------------------------------------------------*/
+int mtcp_read_zc_batch(mctx_t mctx, int sockid, char **buf_array, uint64_t *addr_array, uint32_t *len_array, uint32_t max_pkts)
+{
+	mtcp_manager_t mtcp = GetMTCPManager(mctx);
+	if (!mtcp)
+		return -1;
+
+	socket_map_t socket = &mtcp->smap[sockid];
+	tcp_stream *cur_stream = socket->stream;
+
+	if (!cur_stream || !(cur_stream->state >= TCP_ST_ESTABLISHED && cur_stream->state <= TCP_ST_CLOSE_WAIT)) {
+		errno = ENOTCONN;
+		return -1;
+	}
+
+	struct tcp_recv_vars *rcvvar = cur_stream->rcvvar;
+	uint32_t pkts_read = 0;
+
+	SBUF_LOCK(&rcvvar->read_lock);
+
+	while (pkts_read < max_pkts) {
+		size_t len = RBGetBuff_zc(mtcp->rbm_rcv, rcvvar->rcvbuf, (void **)&buf_array[pkts_read], &addr_array[pkts_read]);
+		len_array[pkts_read] = len;
+		if (len == 0 || buf_array[pkts_read] == NULL) {
+			break; // No more packets in the queue
+		}
+
+		rcvvar->rcv_wnd = rcvvar->rcvbuf->size - rcvvar->rcvbuf->merged_len;
+		pkts_read++;
+	}
+
+	if (pkts_read > 0 && cur_stream->need_wnd_adv) {
+		if (rcvvar->rcv_wnd > cur_stream->sndvar->eff_mss) {
+			if (!cur_stream->sndvar->on_ackq) {
+				SQ_LOCK(&mtcp->ctx->ackq_lock);
+				cur_stream->sndvar->on_ackq = TRUE;
+				StreamEnqueue(mtcp->ackq, cur_stream);
+				SQ_UNLOCK(&mtcp->ctx->ackq_lock);
+				cur_stream->need_wnd_adv = FALSE;
+				mtcp->wakeup_flag = TRUE;
+			}
+		}
+	}
+
+	SBUF_UNLOCK(&rcvvar->read_lock);
+
+	if (pkts_read == 0 && (socket->opts & MTCP_NONBLOCK)) {
+		errno = EAGAIN;
+		return -1;
+	}
+
+	return pkts_read;
+}
+
+// /*----------------------------------------------------------------------------*/
+int mtcp_zc_free_batch(mctx_t mctx, uint64_t *addr_array, int num_pkts)
+{
+	mtcp_manager_t mtcp = GetMTCPManager(mctx);
+
+	return RBFreeBuff_zc_batch(mtcp, mtcp->rbm_rcv, addr_array, num_pkts); // always successful since ring very big
+}
+/*----------------------------------------------------------------------------*/
+#endif /* MTCP_RX_ZERO_COPY */

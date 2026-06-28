@@ -48,6 +48,11 @@ struct afxdp_private_context { // private context on mTCP
 	uint32_t alloc_count;
 	struct pollfd fds[1];
 
+#if defined(MTCP_RX_ZERO_COPY)
+	uint32_t descriptors_in_flight; // num of desc currently in use by the app and mtcp threads (not yet freed), i.e., not in FR, RX, TX, CR or flash__pool
+	uint32_t max_descriptors; // max desc allowed in flight, so that flash can function without running out of buffers (descriptors) in the UMEM
+#endif
+
 	// stats
 	uint64_t rx_pkts;
 	uint64_t tx_pkts;
@@ -237,6 +242,12 @@ void afxdp_init_handle(struct mtcp_thread_context *ctxt)
 	axpc->last_print_time = time(NULL);
 	axpc->window_start = axpc->last_print_time;
 
+#if defined(MTCP_RX_ZERO_COPY)
+	axpc->max_descriptors = 1024; // d-> hardcoded for now, but should be calculated based on the UMEM size and frame size
+	axpc->descriptors_in_flight = 0;
+	printf("Max Descriptors in Flight: %u\n", axpc->max_descriptors);
+#endif
+
 	return;
 
 out_cfg_close:
@@ -268,7 +279,26 @@ int32_t afxdp_recv_pkts(struct mtcp_thread_context *ctxt, int ifidx)
 		return 0;
 
 	uint32_t to_recv = axpc->cfg.xsk->batch_size;
+#if defined(MTCP_RX_ZERO_COPY)
+	// throttling, to avoid deadlocks due to lack of umem buffers
+	if (axpc->descriptors_in_flight >= axpc->max_descriptors) {
+		return 0;
+	}
+	if (axpc->descriptors_in_flight + to_recv > axpc->max_descriptors) {
+		to_recv = axpc->max_descriptors - axpc->descriptors_in_flight;
+	}
+#endif
+
 	nrecv = flash__recvmsg(&axpc->cfg, xsk, axpc->recvvecs, to_recv);
+
+#if defined(MTCP_RX_ZERO_COPY)
+	axpc->descriptors_in_flight += nrecv;
+#endif
+
+// h-> for zero copy (RB buffer library / application library is expected to free the descriptors)
+#ifdef MTCP_RX_ZERO_COPY
+	axpc->recv_index = 0;
+#endif
 
 	axpc->rx_pkts += nrecv;
 
@@ -292,6 +322,11 @@ uint8_t *afxdp_get_rptr(struct mtcp_thread_context *ctxt, int ifidx, int index, 
 
 	uint8_t *pktbuf = axpc->recvvecs[axpc->recv_index].data;
 	*len = axpc->recvvecs[axpc->recv_index].len;
+
+#ifdef MTCP_RX_ZERO_COPY
+	// h-> this flash_addr will be needed by mtcp/app thread to free up the buffer
+	ctxt->flash_ctx.flash_addr = axpc->recvvecs[axpc->recv_index].addr;
+#endif /* MTCP_RX_ZERO_COPY */
 
 #ifdef MTCP_FLASH_ID_TRAILER
 	// flash_ids shaved off
@@ -321,6 +356,13 @@ void afxdp_drop_pkts(struct mtcp_thread_context *ctxt)
 		axpc->recv_index = 0;
 		return;
 	}
+#if defined(MTCP_RX_ZERO_COPY)
+	if (axpc->descriptors_in_flight >= axpc->recv_index) {
+		axpc->descriptors_in_flight -= axpc->recv_index;
+	} else {
+		printf("Error: Attempted to drop more packets than descriptors in flight!\n");
+	}
+#endif
 	axpc->recv_index = 0;
 }
 
@@ -332,6 +374,27 @@ void afxdp_release_pkt(struct mtcp_thread_context *ctxt, int ifidx, unsigned cha
 	(void)pkt_data; // d-> unused parameter
 	(void)len;	// d-> unused parameter
 			/* not needed - drop packets is handled seperately */
+
+	// h -> added for rx zero copy path
+	struct afxdp_private_context *axpc;
+	axpc = (struct afxdp_private_context *)ctxt->io_private_context;
+
+	// batching the drops
+	axpc->dropvecs[axpc->drop_index].addr = (uint64_t)pkt_data;
+	axpc->drop_index++;
+
+	// flush if full
+	if (axpc->drop_index >= axpc->cfg.xsk->batch_size) {
+#if defined(MTCP_RX_ZERO_COPY)
+		if (axpc->descriptors_in_flight >= axpc->drop_index) {
+			axpc->descriptors_in_flight -= axpc->drop_index;
+		} else {
+			printf("Error: Attempted to release more packets than descriptors in flight!\n");
+		}
+#endif
+		flash__dropmsg(&axpc->cfg, axpc->nf->thread[0]->socket, axpc->dropvecs, axpc->drop_index);
+		axpc->drop_index = 0;
+	}
 }
 
 /*----------------------------------------------------------------------------*/
@@ -350,7 +413,22 @@ uint8_t *afxdp_get_wptr(struct mtcp_thread_context *ctxt, int nif, uint16_t pkts
 	// batched allocation
 	if (axpc->alloc_index >= axpc->alloc_count) {
 		uint32_t to_alloc = axpc->cfg.xsk->batch_size;
+#if defined(MTCP_RX_ZERO_COPY)
+		// h -> this is to avoid deadlocks due to lack of umem buffers
+		if (axpc->descriptors_in_flight >= axpc->max_descriptors) {
+			return NULL;
+		}
+		if (axpc->descriptors_in_flight + to_alloc > axpc->max_descriptors) {
+			to_alloc = axpc->max_descriptors - axpc->descriptors_in_flight;
+		}
+#endif
+
 		axpc->alloc_count = flash__allocmsg(&axpc->cfg, axpc->nf->thread[0]->socket, axpc->allocvecs, to_alloc);
+
+#if defined(MTCP_RX_ZERO_COPY)
+		axpc->descriptors_in_flight += axpc->alloc_count;
+#endif
+
 		axpc->alloc_index = 0;
 		if (axpc->alloc_count == 0) {
 			return NULL;
@@ -390,11 +468,34 @@ int afxdp_send_pkts(struct mtcp_thread_context *ctxt, int nif)
 	struct afxdp_private_context *axpc;
 	axpc = (struct afxdp_private_context *)ctxt->io_private_context;
 
+	// drop any pkts
+	if (axpc->drop_index > 0) {
+#if defined(MTCP_RX_ZERO_COPY)
+		if (axpc->descriptors_in_flight >= axpc->drop_index) {
+			axpc->descriptors_in_flight -= axpc->drop_index;
+		} else {
+			printf("Error: Attempted to release more packets than descriptors in flight!\n");
+		}
+#endif
+
+		flash__dropmsg(&axpc->cfg, axpc->nf->thread[0]->socket, axpc->dropvecs, axpc->drop_index);
+		axpc->drop_index = 0;
+	}
+
 	if (flash__sendmsg(&axpc->cfg, axpc->nf->thread[0]->socket, axpc->sendvecs, axpc->send_index) != axpc->send_index) {
 		log_error("Failed to send messages");
 		axpc->send_index = 0;
 		return -1;
 	}
+
+#if defined(MTCP_RX_ZERO_COPY)
+	if (axpc->descriptors_in_flight >= axpc->send_index) {
+		axpc->descriptors_in_flight -= axpc->send_index;
+	} else {
+		printf("Warning: Attempted to send packets when no descriptors are in flight!\n");
+	}
+#endif
+
 	axpc->tx_pkts += axpc->send_index;
 	axpc->send_index = 0;
 
@@ -420,6 +521,7 @@ void afxdp_destroy_handle(struct mtcp_thread_context *ctxt)
 	free(axpc->recvvecs);
 	free(axpc->sendvecs);
 	free(axpc->dropvecs);
+	free(axpc->allocvecs);
 	flash__xsk_close(&axpc->cfg, axpc->nf);
 	free(axpc);
 }

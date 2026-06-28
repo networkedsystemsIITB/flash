@@ -62,6 +62,13 @@ struct rb_manager {
 
 	rb_frag_queue_t free_fragq;	/* free fragment queue (for app thread) */
 	rb_frag_queue_t free_fragq_int; /* free fragment quuee (only for mtcp) */
+
+#ifdef MTCP_RX_ZERO_COPY
+	mem_pool_t frag_mp_zc;
+    rb_frag_queue_zc_t free_fragq_zc; // app thread
+    rb_frag_queue_zc_t free_fragq_zc_int; // mtcp thread
+#endif /* MTCP_RX_ZERO_COPY */
+
 #ifdef ENABLELRO
 	mtcp_manager_t mtcp;
 #endif
@@ -154,6 +161,45 @@ rb_manager_t RBManagerCreate(mtcp_manager_t mtcp, size_t chunk_size, uint32_t cn
 		return NULL;
 	}
 
+#ifdef MTCP_RX_ZERO_COPY
+	rbm->frag_mp_zc = (mem_pool_t)MPCreate(sizeof(struct fragment_ctx_zc), sizeof(struct fragment_ctx_zc) * cnum);
+	if (!rbm->frag_mp_zc) {
+		TRACE_ERROR("Failed to allocate frag_mp_zc pool.\n");
+		MPDestroy(rbm->mp);
+		MPDestroy(rbm->frag_mp);
+		DestroyRBFragQueue(rbm->free_fragq);
+		DestroyRBFragQueue(rbm->free_fragq_int);
+		free(rbm);
+		return NULL;
+	}
+
+
+	rbm->free_fragq_zc = CreateRBFragQueue_zc(cnum);
+	if (!rbm->free_fragq_zc) {
+		TRACE_ERROR("Failed to create zero-copy free fragment queue.\n");
+		MPDestroy(rbm->mp);
+		MPDestroy(rbm->frag_mp);
+		MPDestroy(rbm->frag_mp_zc);
+		DestroyRBFragQueue(rbm->free_fragq);
+		DestroyRBFragQueue(rbm->free_fragq_int);
+		free(rbm);
+		return NULL;
+	}
+
+	rbm->free_fragq_zc_int = CreateRBFragQueue_zc(cnum);
+	if (!rbm->free_fragq_zc_int) {
+		TRACE_ERROR("Failed to create internal zero-copy free fragment queue.\n");
+		MPDestroy(rbm->mp);
+		MPDestroy(rbm->frag_mp);
+		MPDestroy(rbm->frag_mp_zc);
+		DestroyRBFragQueue(rbm->free_fragq);
+		DestroyRBFragQueue(rbm->free_fragq_int);
+		DestroyRBFragQueue_zc(rbm->free_fragq_zc);
+		free(rbm);
+		return NULL;
+	}
+#endif /* MTCP_RX_ZERO_COPY */
+
 #ifdef ENABLELRO
 	rbm->mtcp = mtcp;
 #endif
@@ -182,6 +228,19 @@ static void FreeFragmentContext(rb_manager_t rbm, struct fragment_ctx *fctx)
 		FreeFragmentContextSingle(rbm, remove);
 	}
 }
+/*----------------------------------------------------------------------------*/
+#ifdef MTCP_RX_ZERO_COPY
+static void
+FreeFragmentContext_zc(rb_manager_t rbm,
+                      struct fragment_ctx_zc *frag,
+                      int option)
+{
+    if (option == AT_APP)
+        RBFragEnqueue_zc(rbm->free_fragq_zc, frag);
+    else
+        RBFragEnqueue_zc(rbm->free_fragq_zc_int, frag);
+}
+#endif /* MTCP_RX_ZERO_COPY */
 /*----------------------------------------------------------------------------*/
 static struct fragment_ctx *AllocateFragmentContext(rb_manager_t rbm)
 {
@@ -238,8 +297,9 @@ struct tcp_ring_buffer *RBInit(rb_manager_t rbm, uint32_t init_seq)
 	return buff;
 }
 /*----------------------------------------------------------------------------*/
-void RBFree(rb_manager_t rbm, struct tcp_ring_buffer *buff)
+void RBFree(mtcp_manager_t mtcp, rb_manager_t rbm, struct tcp_ring_buffer *buff)
 {
+	UNUSED(mtcp);
 	assert(buff);
 	if (buff->fctx) {
 		FreeFragmentContext(rbm, buff->fctx);
@@ -251,6 +311,16 @@ void RBFree(rb_manager_t rbm, struct tcp_ring_buffer *buff)
 	}
 
 	rbm->cur_num--;
+
+#ifdef MTCP_RX_ZERO_COPY
+	while (buff->fctx_zc) {
+ 	   struct fragment_ctx_zc *tmp = buff->fctx_zc;
+	    buff->fctx_zc = tmp->next;
+		mtcp->iom->release_pkt(mtcp->ctx, -2, (uint8_t *)tmp->flash_addr, tmp->len);
+	    FreeFragmentContext_zc(rbm, tmp, AT_MTCP); // since RBFree is only called by mtcp thread only
+	}
+#endif /* MTCP_RX_ZERO_COPY */
+
 
 	free(buff);
 }
@@ -430,3 +500,271 @@ size_t RBRemove(rb_manager_t rbm, struct tcp_ring_buffer *buff, size_t len, int 
 	return len;
 }
 /*----------------------------------------------------------------------------*/
+#ifdef MTCP_RX_ZERO_COPY
+static struct fragment_ctx_zc *
+AllocateFragmentContext_zc(rb_manager_t rbm)
+{
+    struct fragment_ctx_zc *frag;
+
+    frag = RBFragDequeue_zc(rbm->free_fragq_zc);
+    if (!frag) {
+        frag = RBFragDequeue_zc(rbm->free_fragq_zc_int);
+        if (!frag) {
+            frag = MPAllocateChunk(rbm->frag_mp_zc);
+            if (!frag) {
+                frag = calloc(1, sizeof(*frag));
+                if (!frag)
+                    exit(-1);
+            }
+        }
+    }
+
+    memset(frag, 0, sizeof(*frag));
+    return frag;
+}
+
+size_t RBAvailable_zc(struct tcp_ring_buffer *buff)
+{
+    return buff->merged_len;
+}
+
+int RBPut_zc(mtcp_manager_t mtcp, rb_manager_t rbm, struct tcp_ring_buffer *buff,
+             uint64_t flash_addr,
+             unsigned char *payload,
+             uint32_t len,
+             uint32_t cur_seq)
+{
+	struct fragment_ctx_zc *new_ctx;
+    uint32_t expect = buff->head_seq + buff->merged_len;
+    uint32_t end_seq = cur_seq + len;
+
+	// 1. reject packets that wont contribute to merged_len
+	// h-> it is okay to reject out of order packets, not much drop in performance
+	// mtcp immediately sends an ack out, telling the sender to retransmit the missing packet
+	if (len == 0 || 
+        GetMinSeq(end_seq, expect) == end_seq ||  // end_seq <= expect
+        GetMinSeq(expect, cur_seq) != cur_seq) {  // expect < cur_seq
+        mtcp->iom->release_pkt(mtcp->ctx, -1, (uint8_t *)flash_addr, len);
+        return 0;
+    }
+
+	// h-> at this point, cur_seq <= expect and expect < end_seq
+
+	// overlap adjustment
+	// h-> i am making sure that the fragments do not overlap in data,
+	// therefore i am adjusting the payload and cur_seq to ensure that the new fragment starts exactly at expect
+	uint32_t offset = expect - cur_seq;
+	if (offset >= len) {
+		mtcp->iom->release_pkt(mtcp->ctx, -1, (uint8_t *)flash_addr, len);
+		return 0;
+	}
+	payload += offset;
+	cur_seq = expect;
+	len -= offset;
+	end_seq = cur_seq + len;
+
+	new_ctx = AllocateFragmentContext_zc(rbm);
+    if (!new_ctx) {
+		mtcp->iom->release_pkt(mtcp->ctx, -1, (uint8_t *)flash_addr, len);
+        return 0;
+	}
+    new_ctx->seq = cur_seq;
+    new_ctx->len = len;
+    new_ctx->payload = payload;
+    new_ctx->payload_len = len;
+    new_ctx->flash_addr = flash_addr;
+    new_ctx->next = NULL;
+
+    // h-> now we can simply append this pkt at the tail of the list
+	if (!buff->fctx_zc) {
+		buff->fctx_zc = new_ctx;
+		buff->fctx_zc_tail = new_ctx;
+	} else {
+		buff->fctx_zc_tail->next = new_ctx;
+		buff->fctx_zc_tail = new_ctx;
+	}
+
+	// update merged_len
+	buff->merged_len += len;
+    return len;
+}
+
+size_t RBRead_zc(rb_manager_t rbm, struct tcp_ring_buffer *buff,
+                 void *dst, size_t len)
+{
+    struct fragment_ctx_zc *f;
+    size_t copied = 0;
+    unsigned char *out = dst;
+
+    (void)rbm;
+
+    if ((size_t)buff->merged_len < len)
+        len = (size_t)buff->merged_len;
+
+    if (len == 0)
+        return 0;
+
+    f = buff->fctx_zc;
+
+    // h-> RBPut_zc guarantees:
+    // 1. fctx_zc starts exactly at head_seq
+    // 2. Each fragment's seq is exactly the previous fragment's end_seq
+    // 3. There are no overlaps
+    // Therefore we can simply iterate and copy.
+
+    while (f && copied < len) {
+        uint32_t remaining_to_copy = len - copied;
+        uint32_t can_copy_from_this_frag = f->payload_len;
+
+        if (can_copy_from_this_frag > remaining_to_copy) {
+            can_copy_from_this_frag = remaining_to_copy;
+        }
+
+		// h-> fragments point to non-overlapping payloads, so we can safely copy
+        memcpy(out + copied, f->payload, can_copy_from_this_frag);
+
+        copied += can_copy_from_this_frag;
+        f = f->next;
+    }
+
+    return copied;
+}
+
+size_t RBRemove_zc(mtcp_manager_t mtcp, rb_manager_t rbm, struct tcp_ring_buffer *buff,
+                   size_t len, int option)
+{
+    /* this function should be called only in application thread */
+    (void)rbm;
+
+    if ((size_t)buff->merged_len < len)
+        len = buff->merged_len;
+
+    if (len == 0)
+        return 0;
+
+    struct fragment_ctx_zc *f;
+    size_t to_remove = len;
+
+    while (to_remove > 0 && buff->fctx_zc) {
+        f = buff->fctx_zc;
+
+        if (to_remove < f->payload_len) {
+             // Partial removal: 
+             // We don't free the fragment yet, just move the logical start.
+             // This maintains the invariant: f->seq remains equal to head_seq.
+            f->seq         += to_remove;
+            f->payload     += to_remove;
+            f->payload_len -= to_remove;
+
+            buff->head_seq += to_remove;
+            to_remove = 0; 
+        } else {
+            // Full removal
+            buff->fctx_zc = f->next;
+
+            if (buff->fctx_zc == NULL) {
+                buff->fctx_zc_tail = NULL;
+            }
+
+            uint32_t consumed = f->payload_len;
+            
+            // Release the actual packet buffer and metadata
+			if (option == AT_APP) {
+				RBFreeBuff_zc(mtcp, rbm, f->flash_addr);
+			} else {
+				mtcp->iom->release_pkt(mtcp->ctx, -2, (uint8_t *)f->flash_addr, f->len);
+			}
+            FreeFragmentContext_zc(rbm, f, option);
+
+            buff->head_seq += consumed;
+            to_remove -= consumed;
+        }
+    }
+
+    // h-> since everything was already contiguous
+    buff->merged_len -= len;
+
+    return len;
+}
+
+size_t RBGetBuff_zc(rb_manager_t rbm, struct tcp_ring_buffer *buff, void **buf, uint64_t* flash_addr)
+{
+	if (!buff) {
+		*buf = NULL;
+		*flash_addr = 0;
+		return 0;
+	}
+
+	/* this function should be called only in application thread */
+    (void)rbm;
+
+    if (!buff->fctx_zc) {
+		*buf = NULL;
+		*flash_addr = 0;
+        return 0;
+	}
+
+    struct fragment_ctx_zc *f = buff->fctx_zc;
+	buff->fctx_zc = f->next;
+	if (!buff->fctx_zc) {
+		buff->fctx_zc_tail = NULL;
+	}
+
+	*buf = f->payload;
+	*flash_addr = f->flash_addr;
+	buff->head_seq += f->payload_len;
+	buff->merged_len -= f->payload_len;
+
+	FreeFragmentContext_zc(rbm, f, AT_APP);
+
+	return f->payload_len;
+}
+
+// app thread produces
+// mtcp thread consumes
+void RBFreeBuff_zc(mtcp_manager_t mtcp, rb_manager_t rbm, uint64_t flash_addr)
+{
+	UNUSED(mtcp);
+	UNUSED(rbm);
+
+	struct zc_rx_free_ring *ring = &mtcp->ctx->flash_ctx.zc_rx_ring;
+
+	uint32_t tail = __atomic_load_n(&ring->tail, __ATOMIC_RELAXED);
+	uint32_t head = __atomic_load_n(&ring->head, __ATOMIC_ACQUIRE);
+    
+    // overflow
+    if (tail - head >= ZC_RX_FREE_RING_SIZE) {
+		printf("not possible: ring size was taken too big\n");
+		errno = EAGAIN;
+        return;
+    }
+
+    ring->flash_addrs[tail & (ZC_RX_FREE_RING_SIZE - 1)] = flash_addr;
+    
+	__atomic_store_n(&ring->tail, tail + 1, __ATOMIC_RELEASE);
+}
+
+int RBFreeBuff_zc_batch(mtcp_manager_t mtcp, rb_manager_t rbm, uint64_t *addr_array, int num_pkts)
+{
+	(void) rbm;
+	struct zc_rx_free_ring *ring = &mtcp->ctx->flash_ctx.zc_rx_ring;
+	uint32_t tail = __atomic_load_n(&ring->tail, __ATOMIC_RELAXED);
+	uint32_t head = __atomic_load_n(&ring->head, __ATOMIC_ACQUIRE);
+
+	
+	if (tail + num_pkts - head >= ZC_RX_FREE_RING_SIZE) {
+		printf("not possible: ring size was taken too big\n");
+		errno = EAGAIN;
+		return -1;
+	}
+
+	for (int i = 0; i < num_pkts; i++) {
+		ring->flash_addrs[(tail + i) & (ZC_RX_FREE_RING_SIZE - 1)] = addr_array[i];
+	}
+
+	__atomic_store_n(&ring->tail, tail + num_pkts, __ATOMIC_RELEASE);
+
+	return 0;
+}
+
+#endif /* MTCP_RX_ZERO_COPY */

@@ -129,6 +129,15 @@ inline ssize_t mtcp_read(mctx_t mctx, int sockid, char *buf, size_t len);
 
 ssize_t mtcp_recv(mctx_t mctx, int sockid, char *buf, size_t len, int flags);
 
+#ifdef MTCP_RX_ZERO_COPY
+inline ssize_t mtcp_read_zc(mctx_t mctx, int sockid, char **buf, uint64_t *flash_addr);
+ssize_t mtcp_recv_zc(mctx_t mctx, int sockid, char **buf, uint64_t *flash_addr, int flags);
+ssize_t mtcp_zc_free(mctx_t mctx, uint64_t flash_addr);
+int mtcp_read_zc_batch(mctx_t mctx, int sockid, char **buf_array, uint64_t *addr_array, uint32_t *len_array, uint32_t max_pkts);
+int mtcp_zc_free_batch(mctx_t mctx, uint64_t *addr_array, int num_pkts);
+#endif
+
+
 /* readv should work in atomic */
 int mtcp_readv(mctx_t mctx, int sockid, const struct iovec *iov, int numIOV);
 
