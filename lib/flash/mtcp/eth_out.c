@@ -83,6 +83,18 @@ uint8_t *EthernetOutput(struct mtcp_manager *mtcp, uint16_t h_proto, int nif, un
 		TRACE_INFO("No interface selected!\n");
 		return NULL;
 	}
+#ifdef MTCP_TX_ZERO_COPY
+	// if flash_ctx.data != NULL, ZC is active, give headroom for ethernet header
+    if (mtcp->ctx->flash_ctx.data != NULL) {
+        mtcp->ctx->flash_ctx.data -= ETHERNET_HEADER_LEN;
+        buf = mtcp->ctx->flash_ctx.data;
+		// enqueue the buffer now
+		// will send it later using mtcp->iom->send_pkts
+		buf = mtcp->iom->enqueue_zc_buf(mtcp->ctx, eidx, buf, mtcp->ctx->flash_ctx.flash_addr, iplen + ETHERNET_HEADER_LEN);
+		mtcp->ctx->flash_ctx.data = NULL;
+    } 
+	else
+#endif
 
 	buf = mtcp->iom->get_wptr(mtcp->ctx, eidx, iplen + ETHERNET_HEADER_LEN);
 	if (!buf) {

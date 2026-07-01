@@ -1748,7 +1748,7 @@ ssize_t mtcp_recv_zc(mctx_t mctx, int sockid, char **buf, uint64_t *flash_addr, 
 	}
 
 	SBUF_LOCK(&rcvvar->read_lock);
-	// h -> not sure if blocking support works with zero copy, but keeping it for now
+	// h-> not sure if blocking support works with zero copy, but keeping it for now
 #if BLOCKING_SUPPORT
 	if (!(socket->opts & MTCP_NONBLOCK)) {
 		while (rcvvar->rcvbuf->merged_len == 0) {
@@ -1889,3 +1889,412 @@ int mtcp_zc_free_batch(mctx_t mctx, uint64_t *addr_array, int num_pkts)
 }
 /*----------------------------------------------------------------------------*/
 #endif /* MTCP_RX_ZERO_COPY */
+
+
+#ifdef MTCP_TX_ZERO_COPY
+/*----------------------------------------------------------------------------*/
+static inline int ZeroCopyFromUser(mtcp_manager_t mtcp, tcp_stream *cur_stream, const char *buf, int len, uint64_t flash_addr)
+{
+	struct tcp_send_vars *sndvar = cur_stream->sndvar;
+	int ret;
+
+	/* allocate send buffer if not exist */
+	if (!sndvar->sndbuf) {
+		sndvar->sndbuf = SBInit(mtcp->rbm_snd, sndvar->iss + 1);
+		if (!sndvar->sndbuf) {
+			cur_stream->close_reason = TCP_NO_MEM;
+			/* notification may not required due to -1 return */
+			errno = ENOMEM;
+			return -1;
+		}
+	}
+
+	if (sndvar->sndbuf->available_zc_slots <= 0) {
+		errno = EAGAIN;
+		return -1;
+	}
+
+	ret = SBPut_zc(mtcp->rbm_snd, sndvar->sndbuf, buf, len, flash_addr);
+	assert(ret == len);
+	if (ret <= 0) {
+		TRACE_ERROR("SBPut_zc failed. reason: %d (len: %u)\n", ret, len);
+		errno = EAGAIN;
+		return -1;
+	}
+
+	if (sndvar->sndbuf->available_zc_slots <= 0) {
+		TRACE_SNDBUF("%u Sending buffer became full!! available_zc_slots: %u\n", cur_stream->id,
+			     sndvar->sndbuf->available_zc_slots);
+	}
+
+	return ret;
+}
+/*----------------------------------------------------------------------------*/
+ssize_t mtcp_get_zc_wptr(mctx_t mctx, int sockid, uint8_t **buf, uint64_t *flash_addr)
+{
+	mtcp_manager_t mtcp;
+	socket_map_t socket;
+	tcp_stream *cur_stream;
+
+	*buf = NULL;
+	*flash_addr = 0;
+
+	mtcp = GetMTCPManager(mctx);
+	if (!mtcp) {
+		return -1;
+	}
+
+	if (sockid < 0 || sockid >= CONFIG.max_concurrency) {
+		TRACE_API("Socket id %d out of range.\n", sockid);
+		errno = EBADF;
+		return -1;
+	}
+
+	socket = &mtcp->smap[sockid];
+	if (socket->socktype == MTCP_SOCK_UNUSED) {
+		TRACE_API("Invalid socket id: %d\n", sockid);
+		errno = EBADF;
+		return -1;
+	}
+
+	// h-> not supported for pipes yet
+	// if (socket->socktype == MTCP_SOCK_PIPE) {
+	// 	return PipeWrite(mctx, sockid, buf, len);
+	// }
+
+	if (socket->socktype != MTCP_SOCK_STREAM) {
+		TRACE_API("Not an end socket. id: %d\n", sockid);
+		errno = ENOTSOCK;
+		return -1;
+	}
+
+	cur_stream = socket->stream;
+	if (!cur_stream || !(cur_stream->state == TCP_ST_ESTABLISHED || cur_stream->state == TCP_ST_CLOSE_WAIT)) {
+		errno = ENOTCONN;
+		return -1;
+	}
+
+	// =============
+	struct zc_tx_free_ring *ring = &mtcp->ctx->flash_ctx.zc_tx_ring;
+	uint32_t head = __atomic_load_n(&ring->head, __ATOMIC_RELAXED);
+	uint32_t tail = __atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE);
+
+	if (head == tail) {
+		// empty ring
+		errno = EAGAIN;
+		return -1;
+	}
+
+	uint64_t addr = ring->flash_addrs[head & (ZC_TX_FREE_RING_SIZE - 1)];
+	uint8_t *data = ring->flash_data[head & (ZC_TX_FREE_RING_SIZE - 1)];
+
+	__atomic_store_n(&ring->head, head + 1, __ATOMIC_RELEASE);
+
+	// h-> for now, for simplicity, the header len is hardcoded for (TCP_OPT_TIMESTAMP_ENABLED = 1, TCP_OPT_SACK_ENABLED = 1,), where SACK flag is never set
+	uint8_t *payload_ptr = data + ETHERNET_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + (TCP_OPT_TIMESTAMP_LEN + 2);
+
+	*buf = payload_ptr;
+	*flash_addr = addr;
+	return 0;
+}
+
+ssize_t mtcp_write_zc(mctx_t mctx, int sockid, uint8_t *buf, int len, uint64_t flash_addr)
+{
+	UNUSED(mctx);
+	UNUSED(sockid);
+	UNUSED(buf);
+	UNUSED(len);
+	UNUSED(flash_addr);
+
+	mtcp_manager_t mtcp;
+	socket_map_t socket;
+	tcp_stream *cur_stream;
+	struct tcp_send_vars *sndvar;
+	int ret;
+
+	// app is the owner of pkt if ret <= 0
+	// else mtcp thread is the owner
+
+	mtcp = GetMTCPManager(mctx);
+	if (!mtcp) {
+		// should never happen
+		TRACE_ERROR("mtcp_write_zc: failed to get mtcp manager\n");
+		return -1;
+	}
+
+	if (sockid < 0 || sockid >= CONFIG.max_concurrency) {
+		TRACE_API("Socket id %d out of range.\n", sockid);
+		errno = EBADF;
+		return -1;
+	}
+
+	socket = &mtcp->smap[sockid];
+	if (socket->socktype == MTCP_SOCK_UNUSED) {
+		TRACE_API("Invalid socket id: %d\n", sockid);
+		errno = EBADF;
+		return -1;
+	}
+
+	// h-> not supported for pipes yet
+	// if (socket->socktype == MTCP_SOCK_PIPE) {
+	// 	return PipeWrite(mctx, sockid, buf, len);
+	// }
+
+	if (socket->socktype != MTCP_SOCK_STREAM) {
+		TRACE_API("Not an end socket. id: %d\n", sockid);
+		errno = ENOTSOCK;
+		return -1;
+	}
+
+	cur_stream = socket->stream;
+	if (!cur_stream || !(cur_stream->state == TCP_ST_ESTABLISHED || cur_stream->state == TCP_ST_CLOSE_WAIT)) {
+		errno = ENOTCONN;
+		return -1;
+	}
+
+	if (len <= 0) {
+		if (socket->opts & MTCP_NONBLOCK) {
+			errno = EAGAIN;
+			return -1;
+		} else {
+			return 0;
+		}
+	}
+
+	sndvar = cur_stream->sndvar;
+
+	SBUF_LOCK(&sndvar->write_lock);
+	ret = ZeroCopyFromUser(mtcp, cur_stream, buf, len, flash_addr);
+	// h-> blocking_support not implemented yet, skipping for now
+	SBUF_UNLOCK(&sndvar->write_lock);
+
+	if (ret < 0) {
+		return -1;
+	}
+
+	if (ret > 0 && !(sndvar->on_sendZCq || sndvar->on_sendZC_list)) {
+		SQ_LOCK(&mtcp->ctx->sendq_lock);
+		sndvar->on_sendZCq = TRUE;
+		StreamEnqueue(mtcp->sendZCq, cur_stream); /* this always success */
+		SQ_UNLOCK(&mtcp->ctx->sendq_lock);
+		mtcp->wakeup_flag = TRUE;
+	}
+
+	if (ret == 0 && (socket->opts & MTCP_NONBLOCK)) {
+		// should never happen
+		TRACE_ERROR("ZeroCopyFromUser failed. Should never reach here. reason: %d (len: %u)\n", ret, len);
+		assert(0);
+		ret = -1;
+		errno = EAGAIN;
+	}
+
+	/* if there are remaining sending buffer, generate write event */
+	if (sndvar->sndbuf->available_zc_slots > 0) {
+		if ((socket->epoll & MTCP_EPOLLOUT) && !(socket->epoll & MTCP_EPOLLET)) {
+			AddEpollEvent(mtcp->ep, USR_SHADOW_EVENT_QUEUE, socket, MTCP_EPOLLOUT);
+			// h-> no blocking support for now
+		}
+	}
+
+	// TRACE_API("Stream %d: mtcp_write() returning %d\n", cur_stream->id, ret);
+
+	return ret;
+}
+
+/*----------------------------------------------------------------------------*/
+static inline int ZeroCopyFromUserBatch(mtcp_manager_t mtcp, tcp_stream *cur_stream, 
+                                        uint8_t **buf_array, uint32_t *len_array, 
+                                        uint64_t *addr_array, int max_pkts)
+{
+    struct tcp_send_vars *sndvar = cur_stream->sndvar;
+    int enqueued = 0;
+
+    /* allocate send buffer if not exist */
+    if (!sndvar->sndbuf) {
+        sndvar->sndbuf = SBInit(mtcp->rbm_snd, sndvar->iss + 1);
+        if (!sndvar->sndbuf) {
+            cur_stream->close_reason = TCP_NO_MEM;
+            errno = ENOMEM;
+            return -1;
+        }
+    }
+
+    for (int i = 0; i < max_pkts; i++) {
+		assert(len_array[i] > 0);
+        if (len_array[i] <= 0) continue; // h-> there shouldn't be any empty pkts...
+
+        if (sndvar->sndbuf->available_zc_slots <= 0) {
+            if (enqueued == 0) {
+                errno = EAGAIN;
+                return -1;
+            }
+            break; // stopping on full buffer
+        }
+
+        int ret = SBPut_zc(mtcp->rbm_snd, sndvar->sndbuf, buf_array[i], len_array[i], addr_array[i]);
+        assert((uint32_t)ret == len_array[i]);
+        if (ret <= 0) {
+            if (enqueued == 0) {
+                errno = EAGAIN;
+                return -1;
+            }
+            break;
+        }
+        enqueued++;
+    }
+
+    if (sndvar->sndbuf->available_zc_slots <= 0) {
+        TRACE_SNDBUF("%u Sending buffer became full!! available_zc_slots: %u\n", 
+                     cur_stream->id, sndvar->sndbuf->available_zc_slots);
+    }
+
+    return enqueued;
+}
+
+/*----------------------------------------------------------------------------*/
+ssize_t mtcp_get_zc_wptr_batch(mctx_t mctx, int sockid, uint8_t **buf_array, uint64_t *addr_array, int max_pkts)
+{
+	mtcp_manager_t mtcp;
+	socket_map_t socket;
+	tcp_stream *cur_stream;
+
+	mtcp = GetMTCPManager(mctx);
+	if (!mtcp) {
+		return -1;
+	}
+
+	if (sockid < 0 || sockid >= CONFIG.max_concurrency) {
+		TRACE_API("Socket id %d out of range.\n", sockid);
+		errno = EBADF;
+		return -1;
+	}
+
+	socket = &mtcp->smap[sockid];
+	if (socket->socktype == MTCP_SOCK_UNUSED) {
+		TRACE_API("Invalid socket id: %d\n", sockid);
+		errno = EBADF;
+		return -1;
+	}
+
+	// h-> not supported for pipes yet
+	// if (socket->socktype == MTCP_SOCK_PIPE) {
+	// 	return PipeWrite(mctx, sockid, buf, len);
+	// }
+
+	if (socket->socktype != MTCP_SOCK_STREAM) {
+		TRACE_API("Not an end socket. id: %d\n", sockid);
+		errno = ENOTSOCK;
+		return -1;
+	}
+
+	cur_stream = socket->stream;
+	if (!cur_stream || !(cur_stream->state == TCP_ST_ESTABLISHED || cur_stream->state == TCP_ST_CLOSE_WAIT)) {
+		errno = ENOTCONN;
+		return -1;
+	}
+
+	struct zc_tx_free_ring *ring = &mtcp->ctx->flash_ctx.zc_tx_ring;
+	uint32_t head = __atomic_load_n(&ring->head, __ATOMIC_RELAXED);
+	uint32_t tail = __atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE);
+
+	if (head == tail) {
+		errno = EAGAIN;
+		return -1;
+	}
+
+	int can_take = tail - head;
+	if (can_take > max_pkts) {
+		can_take = max_pkts;
+	}
+
+	for (int i = 0; i < can_take; i++) {
+		buf_array[i] = ring->flash_data[(head + i) & (ZC_TX_FREE_RING_SIZE - 1)] + ETHERNET_HEADER_LEN + IP_HEADER_LEN + TCP_HEADER_LEN + (TCP_OPT_TIMESTAMP_LEN + 2);
+		addr_array[i] = ring->flash_addrs[(head + i) & (ZC_TX_FREE_RING_SIZE - 1)];
+	}
+
+	__atomic_store_n(&ring->head, head + can_take, __ATOMIC_RELEASE);
+
+	return can_take;
+}
+/*----------------------------------------------------------------------------*/
+int mtcp_write_zc_batch(mctx_t mctx, int sockid, uint8_t **buf_array, 
+                        uint32_t *len_array, uint64_t *addr_array, int max_pkts)
+{
+    mtcp_manager_t mtcp;
+    socket_map_t socket;
+    tcp_stream *cur_stream;
+    struct tcp_send_vars *sndvar;
+    int ret;
+
+    if (max_pkts <= 0) return 0;
+
+    mtcp = GetMTCPManager(mctx);
+    if (!mtcp) {
+        TRACE_ERROR("mtcp_write_zc_batch: failed to get mtcp manager\n");
+        return -1;
+    }
+
+    if (sockid < 0 || sockid >= CONFIG.max_concurrency) {
+        TRACE_API("Socket id %d out of range.\n", sockid);
+        errno = EBADF;
+        return -1;
+    }
+
+    socket = &mtcp->smap[sockid];
+    if (socket->socktype == MTCP_SOCK_UNUSED) {
+        TRACE_API("Invalid socket id: %d\n", sockid);
+        errno = EBADF;
+        return -1;
+    }
+
+    if (socket->socktype != MTCP_SOCK_STREAM) {
+        TRACE_API("Not an end socket. id: %d\n", sockid);
+        errno = ENOTSOCK;
+        return -1;
+    }
+
+    cur_stream = socket->stream;
+    if (!cur_stream || !(cur_stream->state == TCP_ST_ESTABLISHED || cur_stream->state == TCP_ST_CLOSE_WAIT)) {
+        errno = ENOTCONN;
+        return -1;
+    }
+
+    sndvar = cur_stream->sndvar;
+
+
+    SBUF_LOCK(&sndvar->write_lock);
+    ret = ZeroCopyFromUserBatch(mtcp, cur_stream, buf_array, len_array, addr_array, max_pkts);
+    SBUF_UNLOCK(&sndvar->write_lock);
+
+    if (ret < 0) {
+        return -1;
+    }
+
+    if (ret > 0 && !(sndvar->on_sendZCq || sndvar->on_sendZC_list)) {
+        SQ_LOCK(&mtcp->ctx->sendq_lock);
+        sndvar->on_sendZCq = TRUE;
+        StreamEnqueue(mtcp->sendZCq, cur_stream);
+        SQ_UNLOCK(&mtcp->ctx->sendq_lock);
+        mtcp->wakeup_flag = TRUE;
+    }
+
+    if (ret == 0 && (socket->opts & MTCP_NONBLOCK)) {
+        TRACE_ERROR("ZeroCopyFromUserBatch failed. Should never reach here.\n");
+        assert(0);
+        ret = -1;
+        errno = EAGAIN;
+    }
+
+    /* if there is remaining sending buffer, generate write event */
+    if (sndvar->sndbuf->available_zc_slots > 0) {
+        if ((socket->epoll & MTCP_EPOLLOUT) && !(socket->epoll & MTCP_EPOLLET)) {
+            AddEpollEvent(mtcp->ep, USR_SHADOW_EVENT_QUEUE, socket, MTCP_EPOLLOUT);
+        }
+    }
+
+    return ret; // returns the NUMBER_OF_PKTS successfully enqueued
+				// h-> app still owns the unsent packets if ret < max_pkts
+}
+
+#endif /* MTCP_TX_ZERO_COPY */
+

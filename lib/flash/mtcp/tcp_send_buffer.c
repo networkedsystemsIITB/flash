@@ -118,6 +118,11 @@ struct tcp_send_buffer *SBInit(sb_manager_t sbm, uint32_t init_seq)
 
 	buf->init_seq = buf->head_seq = init_seq;
 
+#ifdef MTCP_TX_ZERO_COPY
+	buf->q_front = buf->q_back = -1;
+	buf->available_zc_slots = MAX_TX_SLOTS;
+#endif /* MTCP_TX_ZERO_COPY */
+
 	return buf;
 }
 /*----------------------------------------------------------------------------*/
@@ -205,3 +210,111 @@ size_t SBRemove(sb_manager_t sbm, struct tcp_send_buffer *buf, size_t len)
 	return to_remove;
 }
 /*---------------------------------------------------------------------------*/
+
+#ifdef MTCP_TX_ZERO_COPY
+/*----------------------------------------------------------------------------*/
+void SBClear_zc(mtcp_manager_t mtcp, struct tcp_send_buffer *buf)
+{
+    if (!buf || buf->q_front == -1)
+        return;
+
+    int i = buf->q_front;
+    while (1) {
+        if (buf->zc_buf[i].payload != NULL) {
+            mtcp->iom->release_pkt(mtcp->ctx, 0, (void*)buf->zc_buf[i].flash_addr, buf->zc_buf[i].len);
+
+            buf->zc_buf[i].payload = NULL;
+            buf->zc_buf[i].flash_addr = 0;
+            buf->zc_buf[i].len = 0;
+            buf->zc_buf[i].acked_len = 0;
+        }
+        
+        if (i == buf->q_back) break;
+        i = (i + 1) & (MAX_TX_SLOTS - 1);
+    }
+
+    buf->q_front = buf->q_back = -1;
+    buf->available_zc_slots = MAX_TX_SLOTS;
+}
+/*----------------------------------------------------------------------------*/
+size_t SBPut_zc(sb_manager_t sbm, struct tcp_send_buffer *buf, const void *data, size_t len, uint64_t flash_addr)
+{
+	(void)sbm;
+
+	if (len <= 0) /* should not happen */
+		return 0;
+
+	/* if no space, return -2 */
+	if (buf->available_zc_slots <= 0) {
+		/* should not happen */
+		return -2;
+	}
+
+	if (buf->q_back == -1) {
+		buf->q_front = buf->q_back = 0;
+	} else {
+		buf->q_back = (buf->q_back + 1) & (MAX_TX_SLOTS - 1);
+		if (buf->q_back == buf->q_front) {
+			// should never happen since we check for available_zc_slots above
+			TRACE_ERROR("SBPut_zc: queue overflow. This should never happen. available_zc_slots: %u\n", buf->available_zc_slots);
+			assert(0);
+			return -2;
+		}
+	}
+
+	buf->zc_buf[buf->q_back].payload = (uint8_t* )(uint64_t)data;
+	buf->zc_buf[buf->q_back].len = len;
+	buf->zc_buf[buf->q_back].flash_addr = flash_addr;
+	buf->zc_buf[buf->q_back].acked_len = 0;
+
+	buf->available_zc_slots -= 1;
+	buf->len += len;
+
+	return len;
+}
+/*---------------------------------------------------------------------------*/
+size_t SBRemove_zc(mtcp_manager_t mtcp, struct tcp_send_buffer *buf, size_t acked_len) {
+    size_t original_len = acked_len;
+
+    while (acked_len > 0 && buf->q_front != -1) {
+        struct data_zc *zc = &buf->zc_buf[buf->q_front];
+        
+		// how many bytes are left to be acknowledged in this specific umem buffer?
+        size_t unacked_in_slot = zc->len - zc->acked_len;
+
+        if (acked_len >= unacked_in_slot) {
+            // umem buffer is fully acked, => we can release it
+            mtcp->iom->release_pkt(mtcp->ctx, 0, (void*)zc->flash_addr, zc->len);
+            
+            acked_len -= unacked_in_slot;
+            buf->head_seq += unacked_in_slot;
+            buf->len -= unacked_in_slot;
+            buf->available_zc_slots++;
+
+			// clean up
+            zc->payload = NULL; 
+            zc->len = 0; 
+            zc->flash_addr = 0; 
+            zc->acked_len = 0;
+
+
+            if (buf->q_front == buf->q_back) {
+                buf->q_front = buf->q_back = -1;
+                break;
+            } else {
+                buf->q_front = (buf->q_front + 1) & (MAX_TX_SLOTS - 1);
+            }
+        } else {
+			// umem buffer is partially acked, => advance seq numbers, but do not release the physical packet yet
+            zc->acked_len += acked_len;
+            buf->head_seq += acked_len;
+            buf->len -= acked_len;
+            acked_len = 0; // ack is consumed
+            break;
+        }
+    }
+
+    return original_len - acked_len; // total bytes removed from send_buffer
+}
+/*---------------------------------------------------------------------------*/
+#endif /* MTCP_TX_ZERO_COPY */

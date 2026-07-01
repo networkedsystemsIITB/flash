@@ -243,6 +243,11 @@ struct mtcp_sender {
 	int control_list_cnt;
 	int send_list_cnt;
 	int ack_list_cnt;
+
+#ifdef MTCP_TX_ZERO_COPY
+	TAILQ_HEAD(sendZC_head, tcp_stream) sendZC_list;
+	int sendZC_list_cnt;
+#endif
 };
 /*----------------------------------------------------------------------------*/
 struct mtcp_manager {
@@ -284,6 +289,9 @@ struct mtcp_manager {
 
 	stream_queue_t connectq; /* streams need to connect */
 	stream_queue_t sendq;	 /* streams need to send data */
+#ifdef MTCP_TX_ZERO_COPY
+	stream_queue_t sendZCq;	 /* streams need to send data */
+#endif
 	stream_queue_t ackq;	 /* streams need to send ack */
 
 	stream_queue_t closeq;	      /* streams need to close */
@@ -344,7 +352,7 @@ mtcp_manager_t GetMTCPManager(mctx_t mctx);
 /*----------------------------------------------------------------------------*/
 
 #ifdef MTCP_RX_ZERO_COPY
-// h -> buffer so big => RBFreeBuff_zc always succeeds
+// h-> buffer so big => RBFreeBuff_zc always succeeds
 #define ZC_RX_FREE_RING_SIZE 2048
 
 struct zc_rx_free_ring {
@@ -355,6 +363,17 @@ struct zc_rx_free_ring {
 
 #endif /* MTCP_RX_ZERO_COPY */
 
+#ifdef MTCP_TX_ZERO_COPY
+#define ZC_TX_FREE_RING_SIZE 128
+struct zc_tx_free_ring {
+	uint64_t flash_addrs[ZC_TX_FREE_RING_SIZE];
+	uint8_t* flash_data[ZC_TX_FREE_RING_SIZE];
+	_Atomic uint32_t head; /* App thread reads from here */
+	_Atomic uint32_t tail; /* TCP thread writes to here */
+};
+
+#endif
+
 struct flash_context {
 	int flash_nic_queue;
 #ifdef MTCP_FLASH_ID_TRAILER
@@ -362,8 +381,17 @@ struct flash_context {
 #endif
 
 #ifdef MTCP_RX_ZERO_COPY
-	uint64_t flash_addr;
 	struct zc_rx_free_ring zc_rx_ring;
+#endif
+
+#if defined(MTCP_RX_ZERO_COPY) || defined(MTCP_TX_ZERO_COPY)
+	uint64_t flash_addr;
+#endif
+
+#ifdef MTCP_TX_ZERO_COPY
+	int8_t tx_zc;
+	uint8_t* data;
+	struct zc_tx_free_ring zc_tx_ring;
 #endif
 };
 

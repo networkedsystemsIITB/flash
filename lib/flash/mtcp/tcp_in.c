@@ -464,6 +464,12 @@ static inline void ProcessACK(mtcp_manager_t mtcp, tcp_stream *cur_stream, uint3
 			TRACE_DBG("Exceed MAX_RTX.\n");
 		}
 
+#ifdef MTCP_TX_ZERO_COPY
+		if (sndvar->sndbuf->available_zc_slots < MAX_TX_SLOTS || sndvar->sndbuf->q_front != -1)
+			AddtoZCSendList(mtcp, cur_stream);
+		else
+#endif
+		// standard fallback
 		AddtoSendList(mtcp, cur_stream);
 
 	} else if (cur_stream->rcvvar->dup_acks > 3) {
@@ -504,6 +510,17 @@ static inline void ProcessACK(mtcp_manager_t mtcp, tcp_stream *cur_stream, uint3
 		cur_stream->snd_nxt = ack_seq;
 		TRACE_DBG("Sending again..., ack_seq=%u sndlen=%u cwnd=%u\n", ack_seq - sndvar->iss, sndvar->sndbuf->len,
 			  sndvar->cwnd / sndvar->mss);
+#ifdef MTCP_TX_ZERO_COPY
+		// this condition tells me whether to use zero copy or not. If the sndbuf is empty, we can remove it from the list. If the sndbuf is not empty, we can add it to the list.
+		if (sndvar->sndbuf->available_zc_slots < MAX_TX_SLOTS || sndvar->sndbuf->q_front != -1) {
+			if (sndvar->sndbuf->len == 0) {
+				RemoveFromZCSendList(mtcp, cur_stream);
+			} else {
+				AddtoZCSendList(mtcp, cur_stream);
+			}
+		} else
+#endif
+		// standard fallback
 		if (sndvar->sndbuf->len == 0) {
 			RemoveFromSendList(mtcp, cur_stream);
 		} else {
@@ -566,6 +583,14 @@ static inline void ProcessACK(mtcp_manager_t mtcp, tcp_stream *cur_stream, uint3
 				perror("ProcessACK: write_lock blocked\n");
 			assert(0);
 		}
+#ifdef MTCP_TX_ZERO_COPY
+		uint32_t zc_slots_prev = 0;
+		if (sndvar->sndbuf->available_zc_slots < MAX_TX_SLOTS || sndvar->sndbuf->q_front != -1) {
+			zc_slots_prev = sndvar->sndbuf->available_zc_slots;
+			ret = SBRemove_zc(mtcp, sndvar->sndbuf, rmlen);
+		} else
+#endif
+		// Standard fallback
 		ret = SBRemove(mtcp->rbm_snd, sndvar->sndbuf, rmlen);
 		sndvar->snd_una = ack_seq;
 		snd_wnd_prev = sndvar->snd_wnd;
@@ -574,7 +599,11 @@ static inline void ProcessACK(mtcp_manager_t mtcp, tcp_stream *cur_stream, uint3
 		/* If there was no available sending window */
 		/* notify the newly available window to application */
 #if SELECTIVE_WRITE_EVENT_NOTIFY
+#ifdef MTCP_TX_ZERO_COPY
+		if (snd_wnd_prev <= 0 || (zc_slots_prev == 0 && sndvar->sndbuf->available_zc_slots > 0)) {
+#else
 		if (snd_wnd_prev <= 0) {
+#endif /* MTCP_TX_ZERO_COPY */
 #endif /* SELECTIVE_WRITE_EVENT_NOTIFY */
 			RaiseWriteEvent(mtcp, cur_stream);
 #if SELECTIVE_WRITE_EVENT_NOTIFY
@@ -599,7 +628,7 @@ static inline int ProcessTCPPayload(mtcp_manager_t mtcp, tcp_stream *cur_stream,
 	struct tcp_recv_vars *rcvvar = cur_stream->rcvvar;
 	uint32_t prev_rcv_nxt;
 	
-	// h -> i am returning two bits, bit0: original return value, bit1: app_will_drop
+	// h-> i am returning two bits, bit0: original return value, bit1: app_will_drop
 	int ret = FALSE;
 	int app_will_drop = FALSE;
 

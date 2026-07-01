@@ -338,6 +338,12 @@ static int HandleRTO(mtcp_manager_t mtcp, uint32_t cur_ts, tcp_stream *cur_strea
 	cur_stream->snd_nxt = cur_stream->sndvar->snd_una;
 	if (cur_stream->state == TCP_ST_ESTABLISHED || cur_stream->state == TCP_ST_CLOSE_WAIT) {
 		/* retransmit data at ESTABLISHED state */
+#ifdef MTCP_TX_ZERO_COPY
+		if (cur_stream->sndvar->sndbuf && (cur_stream->sndvar->sndbuf->available_zc_slots < MAX_TX_SLOTS || cur_stream->sndvar->sndbuf->q_front != -1)) {
+            AddtoZCSendList(mtcp, cur_stream);
+        } else
+#endif /* MTCP_TX_ZERO_COPY */
+		// standard path
 		AddtoSendList(mtcp, cur_stream);
 
 	} else if (cur_stream->state == TCP_ST_FIN_WAIT_1 || cur_stream->state == TCP_ST_CLOSING ||
@@ -352,6 +358,11 @@ static int HandleRTO(mtcp_manager_t mtcp, uint32_t cur_ts, tcp_stream *cur_strea
 				RemoveFromControlList(mtcp, cur_stream);
 			}
 			cur_stream->control_list_waiting = TRUE;
+#ifdef MTCP_TX_ZERO_COPY
+			if (cur_stream->sndvar->sndbuf && (cur_stream->sndvar->sndbuf->available_zc_slots < MAX_TX_SLOTS || cur_stream->sndvar->sndbuf->q_front != -1)) {
+                AddtoZCSendList(mtcp, cur_stream);
+            } else
+#endif /* MTCP_TX_ZERO_COPY */
 			AddtoSendList(mtcp, cur_stream);
 
 		} else {

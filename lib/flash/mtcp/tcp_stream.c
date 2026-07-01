@@ -480,6 +480,9 @@ void DestroyTCPStream(mtcp_manager_t mtcp, tcp_stream *stream)
 
 	RemoveFromControlList(mtcp, stream);
 	RemoveFromSendList(mtcp, stream);
+#ifdef MTCP_TX_ZERO_COPY
+	RemoveFromZCSendList(mtcp, stream);
+#endif /* MTCP_TX_ZERO_COPY */
 	RemoveFromACKList(mtcp, stream);
 
 	if (stream->on_rto_idx >= 0)
@@ -522,6 +525,9 @@ void DestroyTCPStream(mtcp_manager_t mtcp, tcp_stream *stream)
 
 	/* free ring buffers */
 	if (stream->sndvar->sndbuf) {
+#ifdef MTCP_TX_ZERO_COPY
+		SBClear_zc(mtcp, stream->sndvar->sndbuf);
+#endif /* MTCP_TX_ZERO_COPY */
 		SBFree(mtcp->rbm_snd, stream->sndvar->sndbuf);
 		stream->sndvar->sndbuf = NULL;
 	}

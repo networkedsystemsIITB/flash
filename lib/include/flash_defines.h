@@ -82,6 +82,11 @@ struct config {
 	int prev_size;
 	bool track_tx_budget;
 	int max_outstanding_tx;
+
+#if defined(MTCP_TX_ZERO_COPY)
+	uint8_t *zc_tracker;
+#endif
+
 #ifdef STATS
 	clockid_t clock;
 	int verbose;

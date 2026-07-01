@@ -48,7 +48,13 @@ struct afxdp_private_context { // private context on mTCP
 	uint32_t alloc_count;
 	struct pollfd fds[1];
 
-#if defined(MTCP_RX_ZERO_COPY)
+#ifdef MTCP_TX_ZERO_COPY
+	struct xskvec *sendvecs_zc;
+	uint32_t send_index_zc;
+#endif /* MTCP_TX_ZERO_COPY */
+
+
+#if defined(MTCP_RX_ZERO_COPY) || defined(MTCP_TX_ZERO_COPY)
 	uint32_t descriptors_in_flight; // num of desc currently in use by the app and mtcp threads (not yet freed), i.e., not in FR, RX, TX, CR or flash__pool
 	uint32_t max_descriptors; // max desc allowed in flight, so that flash can function without running out of buffers (descriptors) in the UMEM
 #endif
@@ -113,6 +119,10 @@ uint8_t *afxdp_get_rptr(struct mtcp_thread_context *ctxt, int ifidx, int index, 
 int afxdp_select(struct mtcp_thread_context *ctxt);
 void afxdp_destroy_handle(struct mtcp_thread_context *ctxt);
 int afxdp_dev_ioctl(struct mtcp_thread_context *ctxt, int nif, int cmd, void *argp);
+#ifdef MTCP_TX_ZERO_COPY
+uint8_t *afxdp_get_zc_wptr(struct mtcp_thread_context *ctxt, int nif);
+uint8_t *afxdp_enqueue_zc_buf(struct mtcp_thread_context *ctx, int ifidx, void *buf, uint64_t flash_addr, uint16_t len);
+#endif /* MTCP_TX_ZERO_COPY */
 
 /*----------------------------------------------------------------------------*/
 void afxdp_load_module(void)
@@ -227,6 +237,20 @@ void afxdp_init_handle(struct mtcp_thread_context *ctxt)
 		free(axpc->dropvecs);
 		goto out_cfg_close;
 	}
+
+#ifdef MTCP_TX_ZERO_COPY
+	axpc->sendvecs_zc = calloc(axpc->cfg.xsk->batch_size, sizeof(struct xskvec));
+	if (!axpc->sendvecs_zc) {
+		log_error("Failed to allocate sendvecs_zc array");
+		free(axpc->sendvecs);
+		free(axpc->recvvecs);
+		free(axpc->dropvecs);
+		free(axpc->allocvecs);
+		goto out_cfg_close;
+	}
+	axpc->send_index_zc = 0;
+#endif /* MTCP_TX_ZERO_COPY */
+
 	axpc->alloc_index = 0;
 	axpc->alloc_count = 0;
 
@@ -242,7 +266,7 @@ void afxdp_init_handle(struct mtcp_thread_context *ctxt)
 	axpc->last_print_time = time(NULL);
 	axpc->window_start = axpc->last_print_time;
 
-#if defined(MTCP_RX_ZERO_COPY)
+#if defined(MTCP_RX_ZERO_COPY) || defined(MTCP_TX_ZERO_COPY)
 	axpc->max_descriptors = 1024; // d-> hardcoded for now, but should be calculated based on the UMEM size and frame size
 	axpc->descriptors_in_flight = 0;
 	printf("Max Descriptors in Flight: %u\n", axpc->max_descriptors);
@@ -279,7 +303,7 @@ int32_t afxdp_recv_pkts(struct mtcp_thread_context *ctxt, int ifidx)
 		return 0;
 
 	uint32_t to_recv = axpc->cfg.xsk->batch_size;
-#if defined(MTCP_RX_ZERO_COPY)
+#if defined(MTCP_RX_ZERO_COPY) || defined(MTCP_TX_ZERO_COPY)
 	// throttling, to avoid deadlocks due to lack of umem buffers
 	if (axpc->descriptors_in_flight >= axpc->max_descriptors) {
 		return 0;
@@ -291,7 +315,7 @@ int32_t afxdp_recv_pkts(struct mtcp_thread_context *ctxt, int ifidx)
 
 	nrecv = flash__recvmsg(&axpc->cfg, xsk, axpc->recvvecs, to_recv);
 
-#if defined(MTCP_RX_ZERO_COPY)
+#if defined(MTCP_RX_ZERO_COPY) || defined(MTCP_TX_ZERO_COPY)
 	axpc->descriptors_in_flight += nrecv;
 #endif
 
@@ -344,7 +368,7 @@ uint8_t *afxdp_get_rptr(struct mtcp_thread_context *ctxt, int ifidx, int index, 
 }
 
 /*----------------------------------------------------------------------------*/
-// h -> drops everything in recvvecs
+// h-> drops everything in recvvecs
 // not invoked in mtcp-zero-copy
 void afxdp_drop_pkts(struct mtcp_thread_context *ctxt)
 {
@@ -356,7 +380,7 @@ void afxdp_drop_pkts(struct mtcp_thread_context *ctxt)
 		axpc->recv_index = 0;
 		return;
 	}
-#if defined(MTCP_RX_ZERO_COPY)
+#if defined(MTCP_RX_ZERO_COPY) || defined(MTCP_TX_ZERO_COPY)
 	if (axpc->descriptors_in_flight >= axpc->recv_index) {
 		axpc->descriptors_in_flight -= axpc->recv_index;
 	} else {
@@ -375,7 +399,7 @@ void afxdp_release_pkt(struct mtcp_thread_context *ctxt, int ifidx, unsigned cha
 	(void)len;	// d-> unused parameter
 			/* not needed - drop packets is handled seperately */
 
-	// h -> added for rx zero copy path
+	// h-> added for rx zero copy path
 	struct afxdp_private_context *axpc;
 	axpc = (struct afxdp_private_context *)ctxt->io_private_context;
 
@@ -385,7 +409,14 @@ void afxdp_release_pkt(struct mtcp_thread_context *ctxt, int ifidx, unsigned cha
 
 	// flush if full
 	if (axpc->drop_index >= axpc->cfg.xsk->batch_size) {
-#if defined(MTCP_RX_ZERO_COPY)
+#if defined(MTCP_TX_ZERO_COPY)
+		for (uint32_t i = 0; i < axpc->drop_index; i++) {
+			uint32_t frame_index = axpc->dropvecs[i].addr / axpc->cfg.umem->frame_size;
+			axpc->cfg.zc_tracker[frame_index] = 0; // mark the frame as free in the zero-copy tracker
+		}
+#endif
+
+#if defined(MTCP_RX_ZERO_COPY) || defined(MTCP_TX_ZERO_COPY)
 		if (axpc->descriptors_in_flight >= axpc->drop_index) {
 			axpc->descriptors_in_flight -= axpc->drop_index;
 		} else {
@@ -413,8 +444,8 @@ uint8_t *afxdp_get_wptr(struct mtcp_thread_context *ctxt, int nif, uint16_t pkts
 	// batched allocation
 	if (axpc->alloc_index >= axpc->alloc_count) {
 		uint32_t to_alloc = axpc->cfg.xsk->batch_size;
-#if defined(MTCP_RX_ZERO_COPY)
-		// h -> this is to avoid deadlocks due to lack of umem buffers
+#if defined(MTCP_RX_ZERO_COPY) || defined(MTCP_TX_ZERO_COPY)
+		// h-> this is to avoid deadlocks due to lack of umem buffers
 		if (axpc->descriptors_in_flight >= axpc->max_descriptors) {
 			return NULL;
 		}
@@ -425,7 +456,7 @@ uint8_t *afxdp_get_wptr(struct mtcp_thread_context *ctxt, int nif, uint16_t pkts
 
 		axpc->alloc_count = flash__allocmsg(&axpc->cfg, axpc->nf->thread[0]->socket, axpc->allocvecs, to_alloc);
 
-#if defined(MTCP_RX_ZERO_COPY)
+#if defined(MTCP_RX_ZERO_COPY) || defined(MTCP_TX_ZERO_COPY)
 		axpc->descriptors_in_flight += axpc->alloc_count;
 #endif
 
@@ -470,7 +501,14 @@ int afxdp_send_pkts(struct mtcp_thread_context *ctxt, int nif)
 
 	// drop any pkts
 	if (axpc->drop_index > 0) {
-#if defined(MTCP_RX_ZERO_COPY)
+#if defined(MTCP_TX_ZERO_COPY)
+		for (uint32_t i = 0; i < axpc->drop_index; i++) {
+			uint32_t frame_index = axpc->dropvecs[i].addr / axpc->cfg.umem->frame_size;
+			axpc->cfg.zc_tracker[frame_index] = 0; 
+		}
+#endif
+
+#if defined(MTCP_RX_ZERO_COPY) || defined(MTCP_TX_ZERO_COPY)
 		if (axpc->descriptors_in_flight >= axpc->drop_index) {
 			axpc->descriptors_in_flight -= axpc->drop_index;
 		} else {
@@ -488,7 +526,7 @@ int afxdp_send_pkts(struct mtcp_thread_context *ctxt, int nif)
 		return -1;
 	}
 
-#if defined(MTCP_RX_ZERO_COPY)
+#if defined(MTCP_RX_ZERO_COPY) || defined(MTCP_TX_ZERO_COPY)
 	if (axpc->descriptors_in_flight >= axpc->send_index) {
 		axpc->descriptors_in_flight -= axpc->send_index;
 	} else {
@@ -498,6 +536,17 @@ int afxdp_send_pkts(struct mtcp_thread_context *ctxt, int nif)
 
 	axpc->tx_pkts += axpc->send_index;
 	axpc->send_index = 0;
+
+
+#ifdef MTCP_TX_ZERO_COPY
+	if (flash__sendmsg(&axpc->cfg, axpc->nf->thread[0]->socket, axpc->sendvecs_zc, axpc->send_index_zc) != axpc->send_index_zc) {
+		log_error("Failed to send zero-copy messages");
+		axpc->send_index_zc = 0;
+		return -1;
+	}
+	axpc->tx_pkts += axpc->send_index_zc;
+	axpc->send_index_zc = 0;
+#endif
 
 	check_and_print_stats(axpc);
 	return 1;
@@ -522,9 +571,91 @@ void afxdp_destroy_handle(struct mtcp_thread_context *ctxt)
 	free(axpc->sendvecs);
 	free(axpc->dropvecs);
 	free(axpc->allocvecs);
+#ifdef MTCP_TX_ZERO_COPY
+	free(axpc->sendvecs_zc);
+#endif
 	flash__xsk_close(&axpc->cfg, axpc->nf);
 	free(axpc);
 }
+
+#ifdef MTCP_TX_ZERO_COPY
+/*----------------------------------------------------------------------------*/
+uint8_t *afxdp_get_zc_wptr(struct mtcp_thread_context *ctxt, int nif)
+{
+	(void)nif; // d-> unused parameter
+	struct afxdp_private_context *axpc;
+	axpc = (struct afxdp_private_context *)ctxt->io_private_context;
+
+	// refill allocated buffers if needed
+	uint32_t to_alloc = axpc->cfg.xsk->batch_size;
+	if (axpc->alloc_index >= axpc->alloc_count) {
+#if defined(MTCP_RX_ZERO_COPY) || defined(MTCP_TX_ZERO_COPY) // h-> always true, but keeping for clarity/consistency
+		if (axpc->descriptors_in_flight >= axpc->max_descriptors) {
+			return NULL;
+		}
+		if (axpc->descriptors_in_flight + to_alloc > axpc->max_descriptors) {
+			to_alloc = axpc->max_descriptors - axpc->descriptors_in_flight;
+		}
+#endif
+
+		axpc->alloc_count = flash__allocmsg(&axpc->cfg, axpc->nf->thread[0]->socket, axpc->allocvecs, to_alloc);
+		axpc->alloc_index = 0;
+		if (axpc->alloc_count == 0) {
+			return NULL;
+		}
+#if defined(MTCP_RX_ZERO_COPY) || defined(MTCP_TX_ZERO_COPY) // h-> always true, but keeping for clarity/consistency
+		axpc->descriptors_in_flight += axpc->alloc_count;
+#endif
+	}
+
+
+	struct xskvec *tmpvec = &axpc->allocvecs[axpc->alloc_index++];
+	uint8_t *pktbuf = tmpvec->data;
+
+	// used by mtcp/app thread to free up the buffer
+	ctxt->flash_ctx.flash_addr = tmpvec->addr;
+
+	return pktbuf;
+}
+
+uint8_t *afxdp_enqueue_zc_buf(struct mtcp_thread_context *ctx, int ifidx, void *buf, uint64_t flash_addr, uint16_t len)
+{
+	UNUSED(ifidx);
+	struct afxdp_private_context *axpc;
+	axpc = (struct afxdp_private_context *)ctx->io_private_context;
+
+	if (axpc->send_index_zc >= axpc->cfg.xsk->batch_size) {
+		return NULL;
+	}
+
+	axpc->sendvecs_zc[axpc->send_index_zc].data = (uint8_t *)buf;
+	axpc->sendvecs_zc[axpc->send_index_zc].len = len;
+	axpc->sendvecs_zc[axpc->send_index_zc].addr = flash_addr;
+	axpc->sendvecs_zc[axpc->send_index_zc].options = 0;
+
+	// for chaining, we can use the options field to pass the dst_flash_id
+#ifdef MTCP_FLASH_ID_TRAILER
+	uint8_t dst_flash_id = ctx->flash_ctx.dst_flash_id;
+	ctx->flash_ctx.dst_flash_id = -1; // reset after using
+
+	uint8_t src_flash_id = axpc->cfg.nf_id;
+	assert(dst_flash_id != axpc->cfg.nf_id);
+
+	axpc->sendvecs_zc[axpc->send_index_zc].options = (dst_flash_id << 16) |
+							 (axpc->sendvecs_zc[axpc->send_index_zc].options & 0xFFFF);
+#endif
+
+#if defined(MTCP_TX_ZERO_COPY)
+	uint32_t frame_index = flash_addr / axpc->cfg.umem->frame_size;
+	axpc->cfg.zc_tracker[frame_index] = 1;
+#endif
+
+	axpc->send_index_zc++;
+
+	return (uint8_t *)buf;
+}
+
+#endif /* MTCP_TX_ZERO_COPY */
 
 /*----------------------------------------------------------------------------*/
 io_module_func afxdp_module_func = { .load_module = afxdp_load_module,
@@ -538,6 +669,10 @@ io_module_func afxdp_module_func = { .load_module = afxdp_load_module,
 				     .send_pkts = afxdp_send_pkts,
 				     .select = afxdp_select,
 				     .destroy_handle = afxdp_destroy_handle,
+#ifdef MTCP_TX_ZERO_COPY
+				     .get_zc_wptr = afxdp_get_zc_wptr,
+				     .enqueue_zc_buf = afxdp_enqueue_zc_buf,
+#endif /* MTCP_TX_ZERO_COPY */
 				     .dev_ioctl = NULL };
 /*----------------------------------------------------------------------------*/
 #endif /* !DISABLE_AFXDP */

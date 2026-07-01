@@ -143,6 +143,15 @@ int mtcp_readv(mctx_t mctx, int sockid, const struct iovec *iov, int numIOV);
 
 ssize_t mtcp_write(mctx_t mctx, int sockid, const char *buf, size_t len);
 
+
+#ifdef MTCP_TX_ZERO_COPY
+ssize_t mtcp_get_zc_wptr(mctx_t mctx, int sockid, uint8_t **buf, uint64_t *flash_addr);
+ssize_t mtcp_get_zc_wptr_batch(mctx_t mctx, int sockid, uint8_t **buf_array, uint64_t *addr_array, int max_pkts);
+ssize_t mtcp_write_zc(mctx_t mctx, int sockid, uint8_t *buf, int len, uint64_t flash_addr);
+int mtcp_write_zc_batch(mctx_t mctx, int sockid, uint8_t **buf_array, uint32_t *len_array, uint64_t *addr_array, int max_pkts);
+#endif
+
+
 /* writev should work in atomic */
 int mtcp_writev(mctx_t mctx, int sockid, const struct iovec *iov, int numIOV);
 

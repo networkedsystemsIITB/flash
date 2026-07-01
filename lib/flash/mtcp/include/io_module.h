@@ -98,6 +98,10 @@ typedef struct io_module_func {
 	int32_t (*dev_ioctl)(struct mtcp_thread_context *ctx, int nif, int cmd, void *argp);
 #ifndef DISABLE_AFXDP
 	void (*drop_pkts)(struct mtcp_thread_context *ctxt);
+#ifdef MTCP_TX_ZERO_COPY
+	uint8_t *(*get_zc_wptr)(struct mtcp_thread_context *ctxt, int nif);
+	uint8_t *(*enqueue_zc_buf)(struct mtcp_thread_context *ctx, int ifidx, void* buf, uint64_t flash_addr, uint16_t len);
+#endif
 #endif
 } io_module_func __attribute__((aligned(__WORDSIZE)));
 /*----------------------------------------------------------------------------*/

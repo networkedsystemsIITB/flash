@@ -163,6 +163,14 @@ uint8_t *IPOutput(struct mtcp_manager *mtcp, tcp_stream *stream, uint16_t tcplen
 		return NULL;
 	}
 
+
+	// if flash_ctx.data != NULL, ZC is active, give headroom for ip header
+#ifdef MTCP_TX_ZERO_COPY
+    if (mtcp->ctx->flash_ctx.data != NULL) {
+        mtcp->ctx->flash_ctx.data = mtcp->ctx->flash_ctx.data - IP_HEADER_LEN;
+    }
+#endif
+
 	iph = (struct iphdr *)EthernetOutput(mtcp, ETH_P_IP, stream->sndvar->nif_out, haddr, tcplen + IP_HEADER_LEN);
 	if (!iph) {
 		return NULL;
