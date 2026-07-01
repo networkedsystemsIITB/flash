@@ -813,10 +813,11 @@ static void RunMainLoop(struct mtcp_thread_context *ctx)
 				pktbuf = mtcp->iom->get_rptr(mtcp->ctx, rx_inf, i, &len);
 				// IMP: get_rptr will set flash_ctx
 				if (pktbuf != NULL) {
-					if (ProcessPacket(mtcp, rx_inf, ts, pktbuf, len) != TRUE)
+					if (ProcessPacket(mtcp, rx_inf, ts, pktbuf, len) != TRUE) {
 #ifdef MTCP_RX_ZERO_COPY
 						mtcp->iom->release_pkt(mtcp->ctx, 0, (uint8_t *)mtcp->ctx->flash_ctx.flash_addr, len);
 #endif
+					}
 				}
 #ifdef NETSTAT
 				else
