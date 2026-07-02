@@ -191,6 +191,12 @@ struct tcp_send_vars {
 	TAILQ_ENTRY(tcp_stream) snd_br_link;
 	pthread_cond_t write_cond;
 #endif
+
+#ifdef MTCP_TX_ZERO_COPY
+	uint8_t on_sendZC_list;
+	uint8_t on_sendZCq;
+	TAILQ_ENTRY(tcp_stream) sendZC_link;
+#endif /* MTCP_TX_ZERO_COPY */
 };
 
 typedef struct tcp_stream {
@@ -202,6 +208,11 @@ typedef struct tcp_stream {
 	uint32_t daddr; /* in network order */
 	uint16_t sport; /* in network order */
 	uint16_t dport; /* in network order */
+
+#ifdef MTCP_FLASH_ID_TRAILER
+	uint8_t dst_flash_id; /* destination flash id */
+			      // h-> source flash_id is already there in flash_module.c
+#endif
 
 	uint8_t state;	      /* tcp state */
 	uint8_t close_reason; /* close reason */

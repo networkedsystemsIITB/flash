@@ -64,4 +64,14 @@ extern inline void EnqueueACK(mtcp_manager_t mtcp, tcp_stream *cur_stream, uint3
 
 extern inline void DumpControlList(mtcp_manager_t mtcp, struct mtcp_sender *sender);
 
+#ifdef MTCP_TX_ZERO_COPY
+
+extern inline int WriteTCPZCDataList(mtcp_manager_t mtcp, struct mtcp_sender *sender, uint32_t cur_ts, int thresh);
+
+extern inline void AddtoZCSendList(mtcp_manager_t mtcp, tcp_stream *cur_stream);
+
+extern inline void RemoveFromZCSendList(mtcp_manager_t mtcp, tcp_stream *cur_stream);
+
+#endif
+
 #endif /* TCP_OUT_H */

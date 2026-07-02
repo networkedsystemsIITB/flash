@@ -82,7 +82,8 @@ inline int ProcessIPv4Packet(mtcp_manager_t mtcp, uint32_t cur_ts, const int ifi
 	case IPPROTO_TCP:
 		return ProcessTCPPacket(mtcp, cur_ts, ifidx, iph, ip_len);
 	case IPPROTO_ICMP:
-		return ProcessICMPPacket(mtcp, iph, ip_len);
+		ProcessICMPPacket(mtcp, iph, ip_len);
+		return FALSE; // false to free up the packet in core.c for RX ZC.
 	default:
 		/* currently drop other protocols */
 		return FALSE;

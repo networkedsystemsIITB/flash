@@ -37,6 +37,16 @@ struct rb_frag_queue {
 
 	struct fragment_ctx *volatile *_q;
 };
+
+#ifdef MTCP_RX_ZERO_COPY
+struct rb_frag_queue_zc {
+    index_type _capacity;
+    volatile index_type _head;
+    volatile index_type _tail;
+    struct fragment_ctx_zc *volatile *_q;
+};
+#endif /* MTCP_RX_ZERO_COPY */
+
 /*----------------------------------------------------------------------------*/
 static inline index_type NextIndex(rb_frag_queue_t rb_fragq, index_type i)
 {
@@ -121,3 +131,88 @@ struct fragment_ctx *RBFragDequeue(rb_frag_queue_t rb_fragq)
 	return NULL;
 }
 /*---------------------------------------------------------------------------*/
+
+#ifdef MTCP_RX_ZERO_COPY
+static inline index_type NextIndex_zc(rb_frag_queue_zc_t q, index_type i)
+{
+    return (i != q->_capacity ? i + 1 : 0);
+}
+/*---------------------------------------------------------------------------*/
+static inline void RBFragMemoryBarrier_zc(struct fragment_ctx_zc *volatile frag,
+                                          volatile index_type index)
+{
+    __asm__ volatile("" : : "m"(frag), "m"(index));
+}
+/*---------------------------------------------------------------------------*/
+rb_frag_queue_zc_t CreateRBFragQueue_zc(int capacity)
+{
+    rb_frag_queue_zc_t q;
+
+    q = (rb_frag_queue_zc_t)calloc(1, sizeof(struct rb_frag_queue_zc));
+    if (!q)
+        return NULL;
+
+    q->_q = (struct fragment_ctx_zc **)
+        calloc(capacity + 1, sizeof(struct fragment_ctx_zc *));
+    if (!q->_q) {
+        free(q);
+        return NULL;
+    }
+
+    q->_capacity = capacity;
+    q->_head = q->_tail = 0;
+
+    return q;
+}
+/*---------------------------------------------------------------------------*/
+void DestroyRBFragQueue_zc(rb_frag_queue_zc_t q)
+{
+    if (!q)
+        return;
+
+    if (q->_q) {
+        void *tmp = (void *)(uintptr_t)q->_q;
+        free(tmp);
+        q->_q = NULL;
+    }
+
+    free(q);
+}
+/*---------------------------------------------------------------------------*/
+int RBFragEnqueue_zc(rb_frag_queue_zc_t q, struct fragment_ctx_zc *frag)
+{
+    index_type h = q->_head;
+    index_type t = q->_tail;
+    index_type nt = NextIndex_zc(q, t);
+
+    if (nt != h) {
+        q->_q[t] = frag;
+        RBFragMemoryBarrier_zc(q->_q[t], q->_tail);
+        q->_tail = nt;
+        return 0;
+    }
+
+    return -1;
+}
+
+/*---------------------------------------------------------------------------*/
+
+struct fragment_ctx_zc *RBFragDequeue_zc(rb_frag_queue_zc_t q)
+{
+    index_type h = q->_head;
+    index_type t = q->_tail;
+
+    if (h != t) {
+        struct fragment_ctx_zc *frag = q->_q[h];
+        RBFragMemoryBarrier_zc(q->_q[h], q->_head);
+        q->_head = NextIndex_zc(q, h);
+        assert(frag);
+
+        return frag;
+    }
+
+    return NULL;
+}
+/*---------------------------------------------------------------------------*/
+#endif /* MTCP_RX_ZERO_COPY */
+

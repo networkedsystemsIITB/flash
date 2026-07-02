@@ -249,6 +249,26 @@ int SendTCPPacket(struct mtcp_manager *mtcp, tcp_stream *cur_stream, uint32_t cu
 	int rc = -1;
 
 	optlen = CalculateOptionLength(flags);
+#ifdef MTCP_TX_ZERO_COPY
+	// h-> need to check mss length for pkt? for now i am experimenting with pkt sizes upto 1024 B
+	if (mtcp->ctx->flash_ctx.tx_zc == 0 && payloadlen + optlen > cur_stream->sndvar->mss) {
+		TRACE_ERROR("Payload size exceeds MSS\n");
+		return ERROR;
+	}
+	if (mtcp->ctx->flash_ctx.tx_zc && payloadlen > 0) {
+		// data for IP and TCP header will be written in place
+		// h-> the header len is hardcoded for (TCP_OPT_TIMESTAMP_ENABLED = 1, TCP_OPT_SACK_ENABLED = 1,), where SACK flag is never set
+		assert(optlen == (TCP_OPT_TIMESTAMP_LEN + 2));
+		mtcp->ctx->flash_ctx.data = payload - (TCP_HEADER_LEN + optlen);
+	} else {
+		mtcp->ctx->flash_ctx.data = NULL;
+	}
+#else
+	if (payloadlen + optlen > cur_stream->sndvar->mss) {
+		TRACE_ERROR("Payload size exceeds MSS\n");
+		return ERROR;
+	}
+#endif /* MTCP_TX_ZERO_COPY */
 	if (payloadlen + optlen > cur_stream->sndvar->mss) {
 		TRACE_ERROR("Payload size exceeds MSS\n");
 		return ERROR;
@@ -327,7 +347,10 @@ int SendTCPPacket(struct mtcp_manager *mtcp, tcp_stream *cur_stream, uint32_t cu
 	tcph->doff = (TCP_HEADER_LEN + optlen) >> 2;
 	// copy payload if exist
 	if (payloadlen > 0) {
+#ifdef MTCP_TX_ZERO_COPY
+#else
 		memcpy((uint8_t *)tcph + TCP_HEADER_LEN + optlen, payload, payloadlen);
+#endif /* MTCP_TX_ZERO_COPY */
 #if defined(NETSTAT) && defined(ENABLELRO)
 		mtcp->nstat.tx_gdptbytes += payloadlen;
 #endif /* NETSTAT */
@@ -1070,3 +1093,255 @@ inline void DumpControlList(mtcp_manager_t mtcp, struct mtcp_sender *sender)
 		TRACE_DBG("Stream id: %u in control list\n", stream->id);
 	}
 }
+
+#ifdef MTCP_TX_ZERO_COPY
+/*----------------------------------------------------------------------------*/
+static int FlushTCPSendingBufferZC(mtcp_manager_t mtcp, tcp_stream *cur_stream, uint32_t cur_ts)
+{
+	struct tcp_send_vars *sndvar = cur_stream->sndvar;
+	struct tcp_send_buffer *sndbuf;
+	uint8_t *data;
+	uint32_t total_len_left;
+	uint32_t seq = 0;
+	int remaining_window;
+	int sndlen;
+	int packets = 0;
+	uint8_t wack_sent = 0;
+
+	if (!sndvar->sndbuf) {
+		TRACE_ERROR("Stream %d: No send buffer available.\n", cur_stream->id);
+		assert(0);
+		return 0;
+	}
+
+	SBUF_LOCK(&sndvar->write_lock);
+	sndbuf = sndvar->sndbuf;
+
+	/* empty queue */
+	if (sndbuf->q_front == -1) {
+		goto out;
+	}
+
+	while (1) {
+		seq = cur_stream->snd_nxt;
+
+		// len that is left to send in the buffer
+		total_len_left = sndbuf->len - (seq - sndbuf->head_seq);
+
+		/* sanity check */
+		if (TCP_SEQ_LT(seq, sndvar->sndbuf->head_seq)) {
+			TRACE_ERROR("Stream %d: Invalid sequence to send. "
+				    "state: %s, seq: %u, head_seq: %u.\n",
+				    cur_stream->id, TCPStateToString(cur_stream), seq, sndvar->sndbuf->head_seq);
+			assert(0);
+			break;
+		}
+		if (TCP_SEQ_LT(seq, sndvar->snd_una)) {
+			TRACE_ERROR("Stream %d: Invalid sequence to send. "
+				    "state: %s, seq: %u, snd_una: %u.\n",
+				    cur_stream->id, TCPStateToString(cur_stream), seq, sndvar->snd_una);
+			assert(0);
+			break;
+		}
+
+		if (sndbuf->len < (seq - sndbuf->head_seq)) {
+			TRACE_ERROR("Stream %d: len < 0\n", cur_stream->id);
+			assert(0);
+			break;
+		}
+
+		if (total_len_left == 0) {
+			TRACE_DBG("Stream %d: No more data to send. seq: %u, head_seq: %u, len: %u\n", cur_stream->id, seq,
+				    sndbuf->head_seq, sndbuf->len);
+			break;
+		}
+
+		// locate the correct zero-copy slot for the current 'seq'
+        int send_index = sndbuf->q_front;
+        uint32_t curr_seq = sndbuf->head_seq - sndbuf->zc_buf[send_index].acked_len;
+
+        // traverse until we find the slot where 'seq' belongs
+        while (TCP_SEQ_LEQ(curr_seq + sndbuf->zc_buf[send_index].len, seq)) {
+            curr_seq += sndbuf->zc_buf[send_index].len;
+            
+            if (send_index == sndbuf->q_back) {
+                // reached the end of valid queued data without encompassing 'seq'
+                break;
+            }
+            send_index = (send_index + 1) & (MAX_TX_SLOTS - 1);
+        }
+
+#if TCP_OPT_SACK_ENABLED
+		if (SeqIsSacked(cur_stream, seq)) {
+			/*
+			 * already sacked,
+			 * skip sending again
+			 * h-> the buffer will be freed when the ACK is processed in tcp_in.c.
+			*/
+			TRACE_DBG("!! SKIPPING %u\n", seq - sndvar->iss);
+			// skip this umem buffer, move to the next one
+            cur_stream->snd_nxt += (sndbuf->zc_buf[send_index].len - (seq - curr_seq));
+			continue;
+		}
+#endif
+
+		remaining_window = MIN(sndvar->cwnd, sndvar->peer_wnd) - (seq - sndvar->snd_una);
+		/* if there is no space in the window */
+		if (remaining_window <= 0 || (remaining_window < sndvar->mss && seq - sndvar->snd_una > 0)) {
+			/* if peer window is full, send ACK and let its peer advertises new one */
+			if (sndvar->peer_wnd <= sndvar->cwnd) {
+				if (!wack_sent && TS_TO_MSEC(cur_ts - sndvar->ts_lastack_sent) > 500)
+					EnqueueACK(mtcp, cur_stream, cur_ts, ACK_OPT_WACK);
+				else
+					wack_sent = 1;
+			}
+			packets = -3;
+			goto out;
+		}
+
+		// ATOMIC ZERO COPY SEND
+        // h-> we have a constraint here, we cannot offset 'data' because prepending headers overwrites payload.
+        // therefore, if 'seq' is partially inside this slot, we MUST rewind and send the whole slot.
+		// h-> TODO: need to check mss before allocating and giving buffer to app
+        if (seq > curr_seq) {
+            TRACE_DBG("Partial ACK detected. Rewinding snd_nxt to %u to preserve ZC atomic slot.\n", curr_seq);
+            cur_stream->snd_nxt = curr_seq; 
+            seq = curr_seq;
+        }
+
+        data = sndbuf->zc_buf[send_index].payload;
+        uint32_t slot_send_len = sndbuf->zc_buf[send_index].len;
+
+		// tell the lower layers about the buf
+		mtcp->ctx->flash_ctx.flash_addr = sndbuf->zc_buf[send_index].flash_addr;
+        // Send the entire pkt buffer
+        if ((sndlen = SendTCPPacket(mtcp, cur_stream, cur_ts, TCP_FLAG_ACK, data, slot_send_len)) < 0) {
+            /* no available tx buffers */
+            packets = -3;
+            goto out;
+        }
+
+        packets++;
+	}
+
+out:
+	SBUF_UNLOCK(&sndvar->write_lock);
+	return packets;
+}
+
+/*----------------------------------------------------------------------------*/
+inline int WriteTCPZCDataList(mtcp_manager_t mtcp, struct mtcp_sender *sender, uint32_t cur_ts, int thresh)
+{
+	tcp_stream *cur_stream;
+	tcp_stream *next, *last;
+	int cnt = 0;
+	int ret;
+
+	/* Send data */
+	cnt = 0;
+	cur_stream = TAILQ_FIRST(&sender->sendZC_list);
+	last = TAILQ_LAST(&sender->sendZC_list, sendZC_head);
+	while (cur_stream) {
+		if (++cnt > thresh)
+			break;
+
+		TRACE_LOOP("Inside send loop. cnt: %u, stream: %d\n", cnt, cur_stream->id);
+		next = TAILQ_NEXT(cur_stream, sndvar->sendZC_link);
+
+		TAILQ_REMOVE(&sender->sendZC_list, cur_stream, sndvar->sendZC_link);
+		if (cur_stream->sndvar->on_sendZC_list) {
+			ret = 0;
+
+			/* Send data here */
+			/* Only can send data when ESTABLISHED or CLOSE_WAIT */
+			if (cur_stream->state == TCP_ST_ESTABLISHED) {
+				if (cur_stream->sndvar->on_control_list) {
+					/* delay sending data after until on_control_list becomes off */
+					//TRACE_DBG("Stream %u: delay sending data.\n", cur_stream->id);
+					ret = -1;
+				} else {
+					ret = FlushTCPSendingBufferZC(mtcp, cur_stream, cur_ts);
+				}
+			} else if (cur_stream->state == TCP_ST_CLOSE_WAIT || cur_stream->state == TCP_ST_FIN_WAIT_1 ||
+				   cur_stream->state == TCP_ST_LAST_ACK) {
+				ret = FlushTCPSendingBufferZC(mtcp, cur_stream, cur_ts);
+			} else {
+				TRACE_DBG("Stream %d: on_send_list at state %s\n", cur_stream->id, TCPStateToString(cur_stream));
+#if defined(DUMP_STREAM)
+				DumpStream(mtcp, cur_stream);
+#endif
+			}
+
+			if (ret < 0) {
+				TAILQ_INSERT_TAIL(&sender->sendZC_list, cur_stream, sndvar->sendZC_link);
+				/* since there is no available write buffer, break */
+				break;
+
+			} else {
+				cur_stream->sndvar->on_sendZC_list = FALSE;
+				sender->sendZC_list_cnt--;
+				/* the ret value is the number of packets sent. */
+				/* decrease ack_cnt for the piggybacked acks */
+#if ACK_PIGGYBACK
+				if (cur_stream->sndvar->ack_cnt > 0) {
+					if (cur_stream->sndvar->ack_cnt > ret) {
+						cur_stream->sndvar->ack_cnt -= ret;
+					} else {
+						cur_stream->sndvar->ack_cnt = 0;
+					}
+				}
+#endif
+				if (cur_stream->control_list_waiting) {
+					if (!cur_stream->sndvar->on_ack_list) {
+						cur_stream->control_list_waiting = FALSE;
+						AddtoControlList(mtcp, cur_stream, cur_ts);
+					}
+				}
+			}
+		} else {
+			TRACE_ERROR("Stream %d: not on send list.\n", cur_stream->id);
+#ifdef DUMP_STREAM
+			DumpStream(mtcp, cur_stream);
+#endif
+		}
+
+		if (cur_stream == last)
+			break;
+		cur_stream = next;
+	}
+
+	return cnt;
+}
+
+/*----------------------------------------------------------------------------*/
+inline void AddtoZCSendList(mtcp_manager_t mtcp, tcp_stream *cur_stream)
+{
+	struct mtcp_sender *sender = GetSender(mtcp, cur_stream);
+	assert(sender != NULL);
+
+	if (!cur_stream->sndvar->sndbuf) {
+		TRACE_ERROR("[%d] Stream %d: No send buffer available.\n", mtcp->ctx->cpu, cur_stream->id);
+		assert(0);
+		return;
+	}
+
+	if (!cur_stream->sndvar->on_sendZC_list) {
+		cur_stream->sndvar->on_sendZC_list = TRUE;
+		TAILQ_INSERT_TAIL(&sender->sendZC_list, cur_stream, sndvar->sendZC_link);
+		sender->sendZC_list_cnt++;
+	}
+}
+
+/*----------------------------------------------------------------------------*/
+inline void RemoveFromZCSendList(mtcp_manager_t mtcp, tcp_stream *cur_stream)
+{
+	struct mtcp_sender *sender = GetSender(mtcp, cur_stream);
+	assert(sender != NULL);
+
+	if (cur_stream->sndvar->on_sendZC_list) {
+		cur_stream->sndvar->on_sendZC_list = FALSE;
+		TAILQ_REMOVE(&sender->sendZC_list, cur_stream, sndvar->sendZC_link);
+		sender->sendZC_list_cnt--;
+	}
+}
+#endif /* MTCP_TX_ZERO_COPY */

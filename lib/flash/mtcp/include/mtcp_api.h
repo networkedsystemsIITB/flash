@@ -81,7 +81,7 @@ int mtcp_setconf(const struct mtcp_conf *conf);
 
 int mtcp_core_affinitize(int cpu);
 
-mctx_t mtcp_create_context(int cpu);
+mctx_t mtcp_create_context(int cpu, int flash_nic_queue);
 
 void mtcp_destroy_context(mctx_t mctx);
 
@@ -111,7 +111,7 @@ int mtcp_accept(mctx_t mctx, int sockid, struct sockaddr *addr, socklen_t *addrl
 
 int mtcp_init_rss(mctx_t mctx, in_addr_t saddr_base, int num_addr, in_addr_t daddr, in_addr_t dport);
 
-int mtcp_connect(mctx_t mctx, int sockid, const struct sockaddr *addr, socklen_t addrlen);
+int mtcp_connect(mctx_t mctx, int sockid, const struct sockaddr *addr, socklen_t addrlen, uint8_t dst_flash_id);
 
 int mtcp_close(mctx_t mctx, int sockid);
 
@@ -129,10 +129,28 @@ inline ssize_t mtcp_read(mctx_t mctx, int sockid, char *buf, size_t len);
 
 ssize_t mtcp_recv(mctx_t mctx, int sockid, char *buf, size_t len, int flags);
 
+#ifdef MTCP_RX_ZERO_COPY
+inline ssize_t mtcp_read_zc(mctx_t mctx, int sockid, char **buf, uint64_t *flash_addr);
+ssize_t mtcp_recv_zc(mctx_t mctx, int sockid, char **buf, uint64_t *flash_addr, int flags);
+ssize_t mtcp_zc_free(mctx_t mctx, uint64_t flash_addr);
+int mtcp_read_zc_batch(mctx_t mctx, int sockid, char **buf_array, uint64_t *addr_array, uint32_t *len_array, uint32_t max_pkts);
+int mtcp_zc_free_batch(mctx_t mctx, uint64_t *addr_array, int num_pkts);
+#endif
+
+
 /* readv should work in atomic */
 int mtcp_readv(mctx_t mctx, int sockid, const struct iovec *iov, int numIOV);
 
 ssize_t mtcp_write(mctx_t mctx, int sockid, const char *buf, size_t len);
+
+
+#ifdef MTCP_TX_ZERO_COPY
+ssize_t mtcp_get_zc_wptr(mctx_t mctx, int sockid, uint8_t **buf, uint64_t *flash_addr);
+ssize_t mtcp_get_zc_wptr_batch(mctx_t mctx, int sockid, uint8_t **buf_array, uint64_t *addr_array, int max_pkts);
+ssize_t mtcp_write_zc(mctx_t mctx, int sockid, uint8_t *buf, int len, uint64_t flash_addr);
+int mtcp_write_zc_batch(mctx_t mctx, int sockid, uint8_t **buf_array, uint32_t *len_array, uint64_t *addr_array, int max_pkts);
+#endif
+
 
 /* writev should work in atomic */
 int mtcp_writev(mctx_t mctx, int sockid, const struct iovec *iov, int numIOV);

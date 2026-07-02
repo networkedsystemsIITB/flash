@@ -144,6 +144,10 @@ uint8_t *IPOutput(struct mtcp_manager *mtcp, tcp_stream *stream, uint16_t tcplen
 		stream->is_external = is_external;
 	}
 
+#ifdef MTCP_FLASH_ID_TRAILER
+	mtcp->ctx->flash_ctx.dst_flash_id = stream->dst_flash_id;
+#endif
+
 	haddr = GetDestinationHWaddr(stream->daddr, stream->is_external);
 	if (!haddr) {
 #if 0
@@ -158,6 +162,14 @@ uint8_t *IPOutput(struct mtcp_manager *mtcp, tcp_stream *stream, uint16_t tcplen
 			   mtcp->cur_ts);
 		return NULL;
 	}
+
+
+	// if flash_ctx.data != NULL, ZC is active, give headroom for ip header
+#ifdef MTCP_TX_ZERO_COPY
+    if (mtcp->ctx->flash_ctx.data != NULL) {
+        mtcp->ctx->flash_ctx.data = mtcp->ctx->flash_ctx.data - IP_HEADER_LEN;
+    }
+#endif
 
 	iph = (struct iphdr *)EthernetOutput(mtcp, ETH_P_IP, stream->sndvar->nif_out, haddr, tcplen + IP_HEADER_LEN);
 	if (!iph) {

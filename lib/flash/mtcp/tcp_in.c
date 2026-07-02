@@ -464,6 +464,12 @@ static inline void ProcessACK(mtcp_manager_t mtcp, tcp_stream *cur_stream, uint3
 			TRACE_DBG("Exceed MAX_RTX.\n");
 		}
 
+#ifdef MTCP_TX_ZERO_COPY
+		if (sndvar->sndbuf->available_zc_slots < MAX_TX_SLOTS || sndvar->sndbuf->q_front != -1)
+			AddtoZCSendList(mtcp, cur_stream);
+		else
+#endif
+		// standard fallback
 		AddtoSendList(mtcp, cur_stream);
 
 	} else if (cur_stream->rcvvar->dup_acks > 3) {
@@ -504,6 +510,17 @@ static inline void ProcessACK(mtcp_manager_t mtcp, tcp_stream *cur_stream, uint3
 		cur_stream->snd_nxt = ack_seq;
 		TRACE_DBG("Sending again..., ack_seq=%u sndlen=%u cwnd=%u\n", ack_seq - sndvar->iss, sndvar->sndbuf->len,
 			  sndvar->cwnd / sndvar->mss);
+#ifdef MTCP_TX_ZERO_COPY
+		// this condition tells me whether to use zero copy or not. If the sndbuf is empty, we can remove it from the list. If the sndbuf is not empty, we can add it to the list.
+		if (sndvar->sndbuf->available_zc_slots < MAX_TX_SLOTS || sndvar->sndbuf->q_front != -1) {
+			if (sndvar->sndbuf->len == 0) {
+				RemoveFromZCSendList(mtcp, cur_stream);
+			} else {
+				AddtoZCSendList(mtcp, cur_stream);
+			}
+		} else
+#endif
+		// standard fallback
 		if (sndvar->sndbuf->len == 0) {
 			RemoveFromSendList(mtcp, cur_stream);
 		} else {
@@ -566,6 +583,14 @@ static inline void ProcessACK(mtcp_manager_t mtcp, tcp_stream *cur_stream, uint3
 				perror("ProcessACK: write_lock blocked\n");
 			assert(0);
 		}
+#ifdef MTCP_TX_ZERO_COPY
+		uint32_t zc_slots_prev = 0;
+		if (sndvar->sndbuf->available_zc_slots < MAX_TX_SLOTS || sndvar->sndbuf->q_front != -1) {
+			zc_slots_prev = sndvar->sndbuf->available_zc_slots;
+			ret = SBRemove_zc(mtcp, sndvar->sndbuf, rmlen);
+		} else
+#endif
+		// Standard fallback
 		ret = SBRemove(mtcp->rbm_snd, sndvar->sndbuf, rmlen);
 		sndvar->snd_una = ack_seq;
 		snd_wnd_prev = sndvar->snd_wnd;
@@ -574,7 +599,11 @@ static inline void ProcessACK(mtcp_manager_t mtcp, tcp_stream *cur_stream, uint3
 		/* If there was no available sending window */
 		/* notify the newly available window to application */
 #if SELECTIVE_WRITE_EVENT_NOTIFY
+#ifdef MTCP_TX_ZERO_COPY
+		if (snd_wnd_prev <= 0 || (zc_slots_prev == 0 && sndvar->sndbuf->available_zc_slots > 0)) {
+#else
 		if (snd_wnd_prev <= 0) {
+#endif /* MTCP_TX_ZERO_COPY */
 #endif /* SELECTIVE_WRITE_EVENT_NOTIFY */
 			RaiseWriteEvent(mtcp, cur_stream);
 #if SELECTIVE_WRITE_EVENT_NOTIFY
@@ -598,15 +627,18 @@ static inline int ProcessTCPPayload(mtcp_manager_t mtcp, tcp_stream *cur_stream,
 	(void)cur_ts;
 	struct tcp_recv_vars *rcvvar = cur_stream->rcvvar;
 	uint32_t prev_rcv_nxt;
-	int ret;
+	
+	// h-> i am returning two bits, bit0: original return value, bit1: app_will_drop
+	int ret = FALSE;
+	int app_will_drop = FALSE;
 
 	/* if seq and segment length is lower than rcv_nxt, ignore and send ack */
 	if (TCP_SEQ_LT(seq + payloadlen, cur_stream->rcv_nxt)) {
-		return FALSE;
+		return (app_will_drop << 1) | ret;
 	}
 	/* if payload exceeds receiving buffer, drop and send ack */
 	if (TCP_SEQ_GT(seq + payloadlen, cur_stream->rcv_nxt + rcvvar->rcv_wnd)) {
-		return FALSE;
+		return (app_will_drop << 1) | ret;
 	}
 
 	/* allocate receive buffer if not exist */
@@ -618,7 +650,7 @@ static inline int ProcessTCPPayload(mtcp_manager_t mtcp, tcp_stream *cur_stream,
 			cur_stream->close_reason = TCP_NO_MEM;
 			RaiseErrorEvent(mtcp, cur_stream);
 
-			return ERROR;
+			return (app_will_drop << 1) | ret;
 		}
 	}
 
@@ -629,7 +661,12 @@ static inline int ProcessTCPPayload(mtcp_manager_t mtcp, tcp_stream *cur_stream,
 	}
 
 	prev_rcv_nxt = cur_stream->rcv_nxt;
+#ifdef MTCP_RX_ZERO_COPY
+	ret = RBPut_zc(mtcp, mtcp->rbm_rcv, rcvvar->rcvbuf, mtcp->ctx->flash_ctx.flash_addr, payload, (uint32_t)payloadlen, seq);
+	app_will_drop = TRUE;
+#else
 	ret = RBPut(mtcp->rbm_rcv, rcvvar->rcvbuf, payload, (uint32_t)payloadlen, seq);
+#endif // MTCP_RX_ZERO_COPY
 	if (ret < 0) {
 		TRACE_ERROR("Cannot merge payload. reason: %d\n", ret);
 	}
@@ -637,7 +674,15 @@ static inline int ProcessTCPPayload(mtcp_manager_t mtcp, tcp_stream *cur_stream,
 	/* discard the buffer if the state is FIN_WAIT_1 or FIN_WAIT_2, 
 	   meaning that the connection is already closed by the application */
 	if (cur_stream->state == TCP_ST_FIN_WAIT_1 || cur_stream->state == TCP_ST_FIN_WAIT_2) {
+#ifdef MTCP_RX_ZERO_COPY
+		RBRemove_zc(mtcp, mtcp->rbm_rcv, rcvvar->rcvbuf, rcvvar->rcvbuf->merged_len, AT_MTCP);
+		// if (TCP_SEQ_LEQ(seq + payloadlen, rcvvar->rcvbuf->head_seq)) {
+		// 	app_will_drop = FALSE;
+		// }
+#else
 		RBRemove(mtcp->rbm_rcv, rcvvar->rcvbuf, rcvvar->rcvbuf->merged_len, AT_MTCP);
+#endif // MTCP_RX_ZERO_COPY
+
 	}
 	cur_stream->rcv_nxt = rcvvar->rcvbuf->head_seq + rcvvar->rcvbuf->merged_len;
 	rcvvar->rcv_wnd = rcvvar->rcvbuf->size - rcvvar->rcvbuf->merged_len;
@@ -646,7 +691,8 @@ static inline int ProcessTCPPayload(mtcp_manager_t mtcp, tcp_stream *cur_stream,
 
 	if (TCP_SEQ_LEQ(cur_stream->rcv_nxt, prev_rcv_nxt)) {
 		/* There are some lost packets */
-		return FALSE;
+		ret = FALSE;
+		return (app_will_drop << 1) | ret;
 	}
 
 	TRACE_EPOLL("Stream %d data arrived. "
@@ -659,7 +705,8 @@ static inline int ProcessTCPPayload(mtcp_manager_t mtcp, tcp_stream *cur_stream,
 		RaiseReadEvent(mtcp, cur_stream);
 	}
 
-	return TRUE;
+	ret = TRUE;
+	return (app_will_drop << 1) | ret;
 }
 /*----------------------------------------------------------------------------*/
 static inline tcp_stream *CreateNewFlowHTEntry(mtcp_manager_t mtcp, uint32_t cur_ts, const struct iphdr *iph, int ip_len,
@@ -871,7 +918,7 @@ static inline void Handle_TCP_ST_SYN_RCVD(mtcp_manager_t mtcp, uint32_t cur_ts, 
 	}
 }
 /*----------------------------------------------------------------------------*/
-static inline void Handle_TCP_ST_ESTABLISHED(mtcp_manager_t mtcp, uint32_t cur_ts, tcp_stream *cur_stream, struct tcphdr *tcph,
+static inline int Handle_TCP_ST_ESTABLISHED(mtcp_manager_t mtcp, uint32_t cur_ts, tcp_stream *cur_stream, struct tcphdr *tcph,
 					     uint32_t seq, uint32_t ack_seq, uint8_t *payload, int payloadlen, uint16_t window)
 {
 	if (tcph->syn) {
@@ -880,11 +927,15 @@ static inline void Handle_TCP_ST_ESTABLISHED(mtcp_manager_t mtcp, uint32_t cur_t
 			  cur_stream->id, seq, cur_stream->rcv_nxt, ack_seq, cur_stream->snd_nxt);
 		cur_stream->snd_nxt = ack_seq;
 		AddtoControlList(mtcp, cur_stream, cur_ts);
-		return;
+		return FALSE;
 	}
-
+	int ret = FALSE;
 	if (payloadlen > 0) {
-		if (ProcessTCPPayload(mtcp, cur_stream, cur_ts, payload, seq, payloadlen)) {
+		int ret_val = ProcessTCPPayload(mtcp, cur_stream, cur_ts, payload, seq, payloadlen);
+		if (ret_val & 2) { // will_app_drop
+			ret = TRUE;
+		}
+		if (ret_val & 1) { // original return value
 			/* if return is TRUE, send ACK */
 			EnqueueACK(mtcp, cur_stream, cur_ts, ACK_OPT_AGGREGATE);
 		} else {
@@ -911,9 +962,9 @@ static inline void Handle_TCP_ST_ESTABLISHED(mtcp_manager_t mtcp, uint32_t cur_t
 			RaiseReadEvent(mtcp, cur_stream);
 		} else {
 			EnqueueACK(mtcp, cur_stream, cur_ts, ACK_OPT_NOW);
-			return;
 		}
 	}
+	return ret;
 }
 /*----------------------------------------------------------------------------*/
 static inline void Handle_TCP_ST_CLOSE_WAIT(mtcp_manager_t mtcp, uint32_t cur_ts, tcp_stream *cur_stream, struct tcphdr *tcph,
@@ -988,7 +1039,7 @@ static inline void Handle_TCP_ST_LAST_ACK(mtcp_manager_t mtcp, uint32_t cur_ts, 
 	}
 }
 /*----------------------------------------------------------------------------*/
-static inline void Handle_TCP_ST_FIN_WAIT_1(mtcp_manager_t mtcp, uint32_t cur_ts, tcp_stream *cur_stream, struct tcphdr *tcph,
+static inline int Handle_TCP_ST_FIN_WAIT_1(mtcp_manager_t mtcp, uint32_t cur_ts, tcp_stream *cur_stream, struct tcphdr *tcph,
 					    uint32_t seq, uint32_t ack_seq, uint8_t *payload, int payloadlen, uint16_t window)
 {
 	if (TCP_SEQ_LT(seq, cur_stream->rcv_nxt)) {
@@ -996,8 +1047,10 @@ static inline void Handle_TCP_ST_FIN_WAIT_1(mtcp_manager_t mtcp, uint32_t cur_ts
 			  "weird seq: %u, expected: %u\n",
 			  cur_stream->id, seq, cur_stream->rcv_nxt);
 		AddtoControlList(mtcp, cur_stream, cur_ts);
-		return;
+		return FALSE;
 	}
+
+	int ret = FALSE;
 
 	if (tcph->ack) {
 		if (cur_stream->sndvar->sndbuf) {
@@ -1020,11 +1073,15 @@ static inline void Handle_TCP_ST_FIN_WAIT_1(mtcp_manager_t mtcp, uint32_t cur_ts
 
 	} else {
 		TRACE_DBG("Stream %d: does not contain an ack!\n", cur_stream->id);
-		return;
+		return FALSE;
 	}
 
 	if (payloadlen > 0) {
-		if (ProcessTCPPayload(mtcp, cur_stream, cur_ts, payload, seq, payloadlen)) {
+		int ret_val = ProcessTCPPayload(mtcp, cur_stream, cur_ts, payload, seq, payloadlen);
+		if (ret_val & 2) {
+			ret = TRUE;
+		}
+		if (ret_val & 1) {
 			/* if return is TRUE, send ACK */
 			EnqueueACK(mtcp, cur_stream, cur_ts, ACK_OPT_AGGREGATE);
 		} else {
@@ -1050,22 +1107,28 @@ static inline void Handle_TCP_ST_FIN_WAIT_1(mtcp_manager_t mtcp, uint32_t cur_ts
 			AddtoControlList(mtcp, cur_stream, cur_ts);
 		}
 	}
+	return ret;
 }
 /*----------------------------------------------------------------------------*/
-static inline void Handle_TCP_ST_FIN_WAIT_2(mtcp_manager_t mtcp, uint32_t cur_ts, tcp_stream *cur_stream, struct tcphdr *tcph,
+static inline int Handle_TCP_ST_FIN_WAIT_2(mtcp_manager_t mtcp, uint32_t cur_ts, tcp_stream *cur_stream, struct tcphdr *tcph,
 					    uint32_t seq, uint32_t ack_seq, uint8_t *payload, int payloadlen, uint16_t window)
 {
+	int ret = FALSE;
 	if (tcph->ack) {
 		if (cur_stream->sndvar->sndbuf) {
 			ProcessACK(mtcp, cur_stream, cur_ts, tcph, seq, ack_seq, window, payloadlen);
 		}
 	} else {
 		TRACE_DBG("Stream %d: does not contain an ack!\n", cur_stream->id);
-		return;
+		return FALSE;
 	}
 
 	if (payloadlen > 0) {
-		if (ProcessTCPPayload(mtcp, cur_stream, cur_ts, payload, seq, payloadlen)) {
+		int ret_val = ProcessTCPPayload(mtcp, cur_stream, cur_ts, payload, seq, payloadlen);
+		if (ret_val & 2) {
+			ret = TRUE;
+		}
+		if (ret_val & 1) {
 			/* if return is TRUE, send ACK */
 			EnqueueACK(mtcp, cur_stream, cur_ts, ACK_OPT_AGGREGATE);
 		} else {
@@ -1095,6 +1158,7 @@ static inline void Handle_TCP_ST_FIN_WAIT_2(mtcp_manager_t mtcp, uint32_t cur_ts
 #endif
 #endif
 	}
+	return ret;
 }
 /*----------------------------------------------------------------------------*/
 static inline void Handle_TCP_ST_CLOSING(mtcp_manager_t mtcp, uint32_t cur_ts, tcp_stream *cur_stream, struct tcphdr *tcph,
@@ -1185,11 +1249,15 @@ int ProcessTCPPacket(mtcp_manager_t mtcp, uint32_t cur_ts, const int ifidx, cons
 	s_stream.daddr = iph->saddr;
 	s_stream.dport = tcph->source;
 
+#ifdef MTCP_FLASH_ID_TRAILER
+	s_stream.dst_flash_id = mtcp->ctx->flash_ctx.dst_flash_id;
+#endif
+
 	if (!(cur_stream = StreamHTSearch(mtcp->tcp_flow_table, &s_stream))) {
 		/* not found in flow table */
 		cur_stream = CreateNewFlowHTEntry(mtcp, cur_ts, iph, ip_len, tcph, seq, ack_seq, payloadlen, window);
 		if (!cur_stream)
-			return TRUE;
+			return FALSE; // false to free up the packet
 	}
 
 	/* Validate sequence. if not valid, ignore the packet */
@@ -1203,7 +1271,7 @@ int ProcessTCPPacket(mtcp_manager_t mtcp, uint32_t cur_ts, const int ifidx, cons
 #ifdef DUMP_STREAM
 			DumpStream(mtcp, cur_stream);
 #endif
-			return TRUE;
+			return FALSE; // false to free up the packet
 		}
 	}
 
@@ -1222,7 +1290,7 @@ int ProcessTCPPacket(mtcp_manager_t mtcp, uint32_t cur_ts, const int ifidx, cons
 		cur_stream->have_reset = TRUE;
 		if (cur_stream->state > TCP_ST_SYN_SENT) {
 			if (ProcessRST(mtcp, cur_stream, ack_seq)) {
-				return TRUE;
+				return FALSE; // false to free up the packet
 			}
 		}
 	}
@@ -1243,13 +1311,13 @@ int ProcessTCPPacket(mtcp_manager_t mtcp, uint32_t cur_ts, const int ifidx, cons
 		else {
 			Handle_TCP_ST_SYN_RCVD(mtcp, cur_ts, cur_stream, tcph, ack_seq);
 			if (payloadlen > 0 && cur_stream->state == TCP_ST_ESTABLISHED) {
-				Handle_TCP_ST_ESTABLISHED(mtcp, cur_ts, cur_stream, tcph, seq, ack_seq, payload, payloadlen, window);
+				return Handle_TCP_ST_ESTABLISHED(mtcp, cur_ts, cur_stream, tcph, seq, ack_seq, payload, payloadlen, window);
 			}
 		}
 		break;
 
 	case TCP_ST_ESTABLISHED:
-		Handle_TCP_ST_ESTABLISHED(mtcp, cur_ts, cur_stream, tcph, seq, ack_seq, payload, payloadlen, window);
+		return Handle_TCP_ST_ESTABLISHED(mtcp, cur_ts, cur_stream, tcph, seq, ack_seq, payload, payloadlen, window);
 		break;
 
 	case TCP_ST_CLOSE_WAIT:
@@ -1261,11 +1329,11 @@ int ProcessTCPPacket(mtcp_manager_t mtcp, uint32_t cur_ts, const int ifidx, cons
 		break;
 
 	case TCP_ST_FIN_WAIT_1:
-		Handle_TCP_ST_FIN_WAIT_1(mtcp, cur_ts, cur_stream, tcph, seq, ack_seq, payload, payloadlen, window);
+		return Handle_TCP_ST_FIN_WAIT_1(mtcp, cur_ts, cur_stream, tcph, seq, ack_seq, payload, payloadlen, window);
 		break;
 
 	case TCP_ST_FIN_WAIT_2:
-		Handle_TCP_ST_FIN_WAIT_2(mtcp, cur_ts, cur_stream, tcph, seq, ack_seq, payload, payloadlen, window);
+		return Handle_TCP_ST_FIN_WAIT_2(mtcp, cur_ts, cur_stream, tcph, seq, ack_seq, payload, payloadlen, window);
 		break;
 
 	case TCP_ST_CLOSING:
@@ -1286,5 +1354,5 @@ int ProcessTCPPacket(mtcp_manager_t mtcp, uint32_t cur_ts, const int ifidx, cons
 		break;
 	}
 
-	return TRUE;
+	return FALSE; // to free up the packet
 }

@@ -39,6 +39,16 @@
 typedef struct sb_manager *sb_manager_t;
 typedef struct mtcp_manager *mtcp_manager_t;
 /*----------------------------------------------------------------------------*/
+
+#ifdef MTCP_TX_ZERO_COPY
+#define MAX_TX_SLOTS 32
+struct data_zc {
+	uint64_t flash_addr;
+	size_t len;
+	size_t acked_len;
+	uint8_t *payload;
+};
+#endif /* MTCP_TX_ZERO_COPY */
 struct tcp_send_buffer {
 	unsigned char *data;
 	unsigned char *head;
@@ -51,6 +61,13 @@ struct tcp_send_buffer {
 
 	uint32_t head_seq;
 	uint32_t init_seq;
+
+#ifdef MTCP_TX_ZERO_COPY
+	// need to check overflow before inserting data into the buffer
+	struct data_zc zc_buf[MAX_TX_SLOTS];
+	int q_front, q_back;
+	uint32_t available_zc_slots;
+#endif /* MTCP_TX_ZERO_COPY */
 };
 /*----------------------------------------------------------------------------*/
 uint32_t SBGetCurnum(sb_manager_t sbm);
@@ -65,5 +82,11 @@ size_t SBPut(sb_manager_t sbm, struct tcp_send_buffer *buf, const void *data, si
 /*----------------------------------------------------------------------------*/
 size_t SBRemove(sb_manager_t sbm, struct tcp_send_buffer *buf, size_t len);
 /*----------------------------------------------------------------------------*/
+
+#ifdef MTCP_TX_ZERO_COPY
+size_t SBRemove_zc(mtcp_manager_t mtcp, struct tcp_send_buffer *buf, size_t acked_len);
+size_t SBPut_zc(sb_manager_t sbm, struct tcp_send_buffer *buf, const void *data, size_t len, uint64_t flash_addr);
+void SBClear_zc(mtcp_manager_t mtcp, struct tcp_send_buffer *buf);
+#endif /* MTCP_TX_ZERO_COPY */
 
 #endif /* TCP_SEND_BUFFER_H */

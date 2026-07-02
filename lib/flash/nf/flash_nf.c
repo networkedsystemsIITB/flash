@@ -601,6 +601,14 @@ int flash__configure_nf(struct nf **_nf, struct config *cfg)
 		}
 	}
 
+#if defined(MTCP_TX_ZERO_COPY)
+	cfg->zc_tracker = (uint8_t *)calloc(cfg->umem->size / cfg->umem->frame_size, sizeof(uint8_t));
+	if (!cfg->zc_tracker) {
+		log_error("ERROR: Memory allocation failed for zero-copy tracker");
+		goto out_error;
+	}
+#endif
+
 	free(sockfd);
 	*_nf = nf;
 	return 0;

@@ -262,6 +262,10 @@ tcp_stream *CreateTCPStream(mtcp_manager_t mtcp, socket_map_t socket, int type, 
 	stream->daddr = daddr;
 	stream->dport = dport;
 
+#ifdef MTCP_FLASH_ID_TRAILER
+	stream->dst_flash_id = mtcp->ctx->flash_ctx.dst_flash_id;
+#endif
+
 	ret = StreamHTInsert(mtcp->tcp_flow_table, stream);
 	if (ret < 0) {
 		TRACE_ERROR("Stream %d: "
@@ -364,10 +368,17 @@ tcp_stream *CreateTCPStream(mtcp_manager_t mtcp, socket_map_t socket, int type, 
 
 	sa = (uint8_t *)&stream->saddr;
 	da = (uint8_t *)&stream->daddr;
+#ifndef MTCP_FLASH_ID_TRAILER
 	TRACE_STREAM("CREATED NEW TCP STREAM %d: "
 		     "%u.%u.%u.%u(%d) -> %u.%u.%u.%u(%d) (ISS: %u)\n",
 		     stream->id, sa[0], sa[1], sa[2], sa[3], ntohs(stream->sport), da[0], da[1], da[2], da[3], ntohs(stream->dport),
 		     stream->sndvar->iss);
+#else
+	TRACE_STREAM("CREATED NEW TCP STREAM %d: "
+		     "%u.%u.%u.%u(%d) -> %u.%u.%u.%u(%d) (ISS: %u) (FLASH_IDS: %d)\n",
+		     stream->id, sa[0], sa[1], sa[2], sa[3], ntohs(stream->sport), da[0], da[1], da[2], da[3], ntohs(stream->dport),
+		     stream->sndvar->iss, stream->dst_flash_id);
+#endif
 
 #if RATE_LIMIT_ENABLED
 	stream->bucket = NewTokenBucket();
@@ -469,6 +480,9 @@ void DestroyTCPStream(mtcp_manager_t mtcp, tcp_stream *stream)
 
 	RemoveFromControlList(mtcp, stream);
 	RemoveFromSendList(mtcp, stream);
+#ifdef MTCP_TX_ZERO_COPY
+	RemoveFromZCSendList(mtcp, stream);
+#endif /* MTCP_TX_ZERO_COPY */
 	RemoveFromACKList(mtcp, stream);
 
 	if (stream->on_rto_idx >= 0)
@@ -511,11 +525,14 @@ void DestroyTCPStream(mtcp_manager_t mtcp, tcp_stream *stream)
 
 	/* free ring buffers */
 	if (stream->sndvar->sndbuf) {
+#ifdef MTCP_TX_ZERO_COPY
+		SBClear_zc(mtcp, stream->sndvar->sndbuf);
+#endif /* MTCP_TX_ZERO_COPY */
 		SBFree(mtcp->rbm_snd, stream->sndvar->sndbuf);
 		stream->sndvar->sndbuf = NULL;
 	}
 	if (stream->rcvvar->rcvbuf) {
-		RBFree(mtcp->rbm_rcv, stream->rcvvar->rcvbuf);
+		RBFree(mtcp, mtcp->rbm_rcv, stream->rcvvar->rcvbuf);
 		stream->rcvvar->rcvbuf = NULL;
 	}
 

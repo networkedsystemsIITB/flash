@@ -236,7 +236,14 @@ static inline void __complete_tx_completions(struct config *cfg, struct socket *
 
 				*data_ptr = 0;
 			}
+#if defined(MTCP_TX_ZERO_COPY)
+			uint32_t frame_index = addr / cfg->umem->frame_size;
+            if (cfg->zc_tracker[frame_index] == 0) {
+                flash_pool__put(xsk->flash_pool, addr);
+            }
+#else
 			flash_pool__put(xsk->flash_pool, addr);
+#endif
 		}
 	}
 

@@ -318,7 +318,9 @@ static struct thread_context *InitializeServerThread(int core)
 		return NULL;
 	}
 	/* create mtcp context: this will spawn an mtcp thread */
-	ctx->mctx = mtcp_create_context(core);
+	// h -> assuming single thread only
+	// h -> assuming epserver wants nic queue 0
+	ctx->mctx = mtcp_create_context(core, 0);
 	if (!ctx->mctx) {
 		TRACE_ERROR("Failed to create mtcp context!\n");
 		free(ctx);

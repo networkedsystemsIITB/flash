@@ -514,6 +514,14 @@ static inline void HandleApplicationCalls(mtcp_manager_t mtcp, uint32_t cur_ts)
 		AddtoSendList(mtcp, stream);
 	}
 
+#ifdef MTCP_TX_ZERO_COPY
+	/* zero-copy send queue handling */
+	while ((stream = StreamDequeue(mtcp->sendZCq))) {
+		stream->sndvar->on_sendZCq = FALSE;
+		AddtoZCSendList(mtcp, stream);
+	}
+#endif /* MTCP_TX_ZERO_COPY */
+
 	/* ack queue handling */
 	while ((stream = StreamDequeue(mtcp->ackq))) {
 		stream->sndvar->on_ackq = FALSE;
@@ -683,6 +691,11 @@ static inline void HandleApplicationCalls(mtcp_manager_t mtcp, uint32_t cur_ts)
 /*----------------------------------------------------------------------------*/
 static inline void WritePacketsToChunks(mtcp_manager_t mtcp, uint32_t cur_ts)
 {
+
+#ifdef MTCP_TX_ZERO_COPY
+	mtcp->ctx->flash_ctx.tx_zc = FALSE;
+#endif /* MTCP_TX_ZERO_COPY */
+
 	int thresh = CONFIG.max_concurrency;
 	int i;
 
@@ -696,6 +709,15 @@ static inline void WritePacketsToChunks(mtcp_manager_t mtcp, uint32_t cur_ts)
 	if (mtcp->g_sender->send_list_cnt)
 		WriteTCPDataList(mtcp, mtcp->g_sender, cur_ts, thresh);
 
+
+#ifdef MTCP_TX_ZERO_COPY
+	if (mtcp->g_sender->sendZC_list_cnt) {
+		mtcp->ctx->flash_ctx.tx_zc = TRUE;
+		WriteTCPZCDataList(mtcp, mtcp->g_sender, cur_ts, thresh);
+		mtcp->ctx->flash_ctx.tx_zc = FALSE;
+	}
+#endif
+
 	for (i = 0; i < CONFIG.eths_num; i++) {
 		assert(mtcp->n_sender[i] != NULL);
 		if (mtcp->n_sender[i]->control_list_cnt)
@@ -704,6 +726,13 @@ static inline void WritePacketsToChunks(mtcp_manager_t mtcp, uint32_t cur_ts)
 			WriteTCPACKList(mtcp, mtcp->n_sender[i], cur_ts, thresh);
 		if (mtcp->n_sender[i]->send_list_cnt)
 			WriteTCPDataList(mtcp, mtcp->n_sender[i], cur_ts, thresh);
+#ifdef MTCP_TX_ZERO_COPY
+		if (mtcp->n_sender[i]->sendZC_list_cnt) {
+			mtcp->ctx->flash_ctx.tx_zc = TRUE;
+			WriteTCPZCDataList(mtcp, mtcp->n_sender[i], cur_ts, thresh);
+			mtcp->ctx->flash_ctx.tx_zc = FALSE;
+		}
+#endif /* MTCP_TX_ZERO_COPY */
 	}
 }
 /*----------------------------------------------------------------------------*/
@@ -763,6 +792,49 @@ static void InterruptApplication(mtcp_manager_t mtcp)
 	}
 }
 /*----------------------------------------------------------------------------*/
+#ifdef MTCP_RX_ZERO_COPY
+// app thread produces, mtcp thread consumes
+static inline void ReclaimFreeRXBuffers(mtcp_manager_t mtcp)
+{
+	struct zc_rx_free_ring *ring = &mtcp->ctx->flash_ctx.zc_rx_ring;
+	uint32_t head = __atomic_load_n(&ring->head, __ATOMIC_RELAXED);
+	uint32_t tail = __atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE);
+
+	while (head != tail) {
+		uint64_t flash_addr = ring->flash_addrs[head & (ZC_RX_FREE_RING_SIZE - 1)];
+		mtcp->iom->release_pkt(mtcp->ctx, 0, (uint8_t *)flash_addr, 0);
+
+		head++;
+	}
+
+	__atomic_store_n(&ring->head, head, __ATOMIC_RELEASE);
+}
+#endif /* MTCP_RX_ZERO_COPY */
+/*----------------------------------------------------------------------------*/
+#ifdef MTCP_TX_ZERO_COPY
+static inline void ReplenishZCRing(mtcp_manager_t mtcp) {
+	// mtcp thread is producer
+	// app thread consumes using mtcp_get_zc_ptr
+
+	struct zc_tx_free_ring *ring = &mtcp->ctx->flash_ctx.zc_tx_ring;
+
+    uint32_t head = __atomic_load_n(&ring->head, __ATOMIC_ACQUIRE);
+    uint32_t tail = __atomic_load_n(&ring->tail, __ATOMIC_RELAXED);
+    uint32_t space = ZC_TX_FREE_RING_SIZE - (tail - head);
+
+    for (uint32_t i = 0; i < space; i++) {
+		uint8_t* ret = mtcp->iom->get_zc_wptr(mtcp->ctx, 0);
+        if (ret == NULL) break;
+
+        ring->flash_addrs[tail & (ZC_TX_FREE_RING_SIZE - 1)] = mtcp->ctx->flash_ctx.flash_addr;
+		ring->flash_data[tail & (ZC_TX_FREE_RING_SIZE - 1)] = ret;
+        tail++;
+    }
+
+    __atomic_store_n(&ring->tail, tail, __ATOMIC_RELEASE);
+}
+#endif /* MTCP_TX_ZERO_COPY */
+/*----------------------------------------------------------------------------*/
 static void RunMainLoop(struct mtcp_thread_context *ctx)
 {
 	mtcp_manager_t mtcp = ctx->mtcp_manager;
@@ -792,16 +864,20 @@ static void RunMainLoop(struct mtcp_thread_context *ctx)
 
 			for (i = 0; i < recv_cnt; i++) {
 				pktbuf = mtcp->iom->get_rptr(mtcp->ctx, rx_inf, i, &len);
+				// IMP: get_rptr will set flash_ctx
 				if (pktbuf != NULL) {
-					if (ProcessPacket(mtcp, rx_inf, ts, pktbuf, len) != TRUE)
-						mtcp->iom->release_pkt(mtcp->ctx, rx_inf, pktbuf, len);
+					if (ProcessPacket(mtcp, rx_inf, ts, pktbuf, len) != TRUE) {
+#ifdef MTCP_RX_ZERO_COPY
+						mtcp->iom->release_pkt(mtcp->ctx, 0, (uint8_t *)mtcp->ctx->flash_ctx.flash_addr, len);
+#endif
+					}
 				}
 #ifdef NETSTAT
 				else
 					mtcp->nstat.rx_errors[rx_inf]++;
 #endif
 			}
-#ifndef DISABLE_AFXDP
+#ifndef MTCP_RX_ZERO_COPY
 			mtcp->iom->drop_pkts(mtcp->ctx);
 #endif
 		}
@@ -845,6 +921,13 @@ static void RunMainLoop(struct mtcp_thread_context *ctx)
 		}
 
 		WritePacketsToChunks(mtcp, ts);
+
+#ifdef MTCP_RX_ZERO_COPY
+		ReclaimFreeRXBuffers(mtcp);
+#endif
+#ifdef MTCP_TX_ZERO_COPY
+		ReplenishZCRing(mtcp);
+#endif
 
 		/* send packets from write buffer */
 		/* send until tx is available */
@@ -895,6 +978,9 @@ static struct mtcp_sender *CreateMTCPSender(int ifidx)
 	TAILQ_INIT(&sender->control_list);
 	TAILQ_INIT(&sender->send_list);
 	TAILQ_INIT(&sender->ack_list);
+#ifdef MTCP_TX_ZERO_COPY
+	TAILQ_INIT(&sender->sendZC_list);
+#endif
 
 	sender->control_list_cnt = 0;
 	sender->send_list_cnt = 0;
@@ -1031,6 +1117,13 @@ static mtcp_manager_t InitializeMTCPManager(struct mtcp_thread_context *ctx)
 		CTRACE_ERROR("Failed to create send queue.\n");
 		return NULL;
 	}
+#ifdef MTCP_TX_ZERO_COPY
+	mtcp->sendZCq = CreateStreamQueue(CONFIG.max_concurrency);
+	if (!mtcp->sendZCq) {
+		CTRACE_ERROR("Failed to create zero-copy send queue.\n");
+		return NULL;
+	}
+#endif
 	mtcp->ackq = CreateStreamQueue(CONFIG.max_concurrency);
 	if (!mtcp->ackq) {
 		CTRACE_ERROR("Failed to create ack queue.\n");
@@ -1173,6 +1266,7 @@ static void *MTCPRunThread(void *arg)
 	ctx->thread = pthread_self();
 	ctx->cpu = cpu;
 	mtcp = ctx->mtcp_manager = InitializeMTCPManager(ctx);
+	ctx->flash_ctx.flash_nic_queue = mctx->flash_nic_queue;
 	if (!mtcp) {
 		TRACE_ERROR("Failed to initialize mtcp manager.\n");
 		exit(-1);
@@ -1261,7 +1355,7 @@ int MTCPDPDKRunThread(void *arg)
 }
 #endif
 /*----------------------------------------------------------------------------*/
-mctx_t mtcp_create_context(int cpu)
+mctx_t mtcp_create_context(int cpu, int flash_nic_queue)
 {
 	mctx_t mctx;
 	int ret;
@@ -1291,6 +1385,7 @@ mctx_t mtcp_create_context(int cpu)
 		return NULL;
 	}
 	mctx->cpu = cpu;
+	mctx->flash_nic_queue = flash_nic_queue;
 
 	/* initialize logger */
 	g_logctx[cpu] = (struct log_thread_context *)calloc(1, sizeof(struct log_thread_context));
@@ -1449,6 +1544,25 @@ void mtcp_free_context(mctx_t mctx)
 		DestroyStreamQueue(mtcp->destroyq);
 		mtcp->destroyq = NULL;
 	}
+
+#ifdef MTCP_TX_ZERO_COPY
+	if (mtcp->sendZCq) {
+		DestroyStreamQueue(mtcp->sendZCq);
+		mtcp->sendZCq = NULL;
+	}
+
+	struct zc_tx_free_ring *ring = &mtcp->ctx->flash_ctx.zc_tx_ring;
+    uint32_t head = __atomic_load_n(&ring->head, __ATOMIC_RELAXED);
+    uint32_t tail = __atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE);
+
+    while (head != tail) {
+        uint64_t flash_addr = ring->flash_addrs[head & (ZC_TX_FREE_RING_SIZE - 1)];
+        mtcp->iom->release_pkt(mtcp->ctx, 0, (uint8_t *)flash_addr, 0);
+        head++;
+    }
+	__atomic_store_n(&ring->head, head, __ATOMIC_RELEASE);
+#endif
+
 
 	DestroyMTCPSender(mtcp->g_sender);
 	for (i = 0; i < CONFIG.eths_num; i++) {

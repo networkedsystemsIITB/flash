@@ -46,4 +46,13 @@ int RBFragEnqueue(rb_frag_queue_t rb_fragq, struct fragment_ctx *frag);
 struct fragment_ctx *RBFragDequeue(rb_frag_queue_t rb_fragq);
 /*---------------------------------------------------------------------------*/
 
+#ifdef MTCP_RX_ZERO_COPY
+typedef struct rb_frag_queue_zc *rb_frag_queue_zc_t;
+rb_frag_queue_zc_t CreateRBFragQueue_zc(int capacity);
+void DestroyRBFragQueue_zc(rb_frag_queue_zc_t q);
+int RBFragEnqueue_zc(rb_frag_queue_zc_t q, struct fragment_ctx_zc *frag);
+struct fragment_ctx_zc *RBFragDequeue_zc(rb_frag_queue_zc_t q);
+#endif
+
+
 #endif /* TCP_RB_FRAG_QUEUE */

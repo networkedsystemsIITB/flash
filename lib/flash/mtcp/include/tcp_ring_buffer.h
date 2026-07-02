@@ -78,6 +78,9 @@ struct tcp_ring_buffer {
 	uint32_t init_seq;
 
 	struct fragment_ctx *fctx;
+#ifdef MTCP_RX_ZERO_COPY
+	struct fragment_ctx_zc *fctx_zc, *fctx_zc_tail;
+#endif /* MTCP_RX_ZERO_COPY */
 };
 /*----------------------------------------------------------------------------*/
 uint32_t RBGetCurnum(rb_manager_t rbm);
@@ -88,7 +91,7 @@ void RBPrintHex(struct tcp_ring_buffer *buff);
 rb_manager_t RBManagerCreate(mtcp_manager_t mtcp, size_t chunk_size, uint32_t cnum);
 /*----------------------------------------------------------------------------*/
 struct tcp_ring_buffer *RBInit(rb_manager_t rbm, uint32_t init_seq);
-void RBFree(rb_manager_t rbm, struct tcp_ring_buffer *buff);
+void RBFree(mtcp_manager_t mtcp, rb_manager_t rbm, struct tcp_ring_buffer *buff);
 uint32_t RBIsDanger(rb_manager_t rbm);
 /*----------------------------------------------------------------------------*/
 /* data manupulation functions */
@@ -96,5 +99,37 @@ int RBPut(rb_manager_t rbm, struct tcp_ring_buffer *buff, void *data, uint32_t l
 size_t RBGet(rb_manager_t rbm, struct tcp_ring_buffer *buff, size_t len);
 size_t RBRemove(rb_manager_t rbm, struct tcp_ring_buffer *buff, size_t len, int option);
 /*----------------------------------------------------------------------------*/
+
+/*----------------------------------------------------------------------------*/
+#ifdef MTCP_RX_ZERO_COPY
+struct fragment_ctx_zc {
+    uint32_t seq;
+    uint32_t len;
+    struct fragment_ctx_zc *next;
+
+    uint64_t flash_addr;   // pointer passed to release_pkt()
+    unsigned char *payload;    // current readable start
+    uint32_t payload_len;      // current readable bytes
+};
+
+/* zero copy api */
+size_t RBAvailable_zc(struct tcp_ring_buffer *buff);
+int RBPut_zc(mtcp_manager_t mtcp, rb_manager_t rbm, struct tcp_ring_buffer *buff,
+             uint64_t flash_addr,
+             unsigned char *payload,
+             uint32_t len,
+             uint32_t cur_seq);
+
+size_t RBRead_zc(rb_manager_t rbm, struct tcp_ring_buffer *buff,
+                 void *dst, size_t len);
+
+size_t RBRemove_zc(mtcp_manager_t mtcp, rb_manager_t rbm, struct tcp_ring_buffer *buff,
+                   size_t len, int option);
+
+size_t RBGetBuff_zc(rb_manager_t rbm, struct tcp_ring_buffer *buff, void **buf, uint64_t *flash_addr);
+void RBFreeBuff_zc(mtcp_manager_t mtcp, rb_manager_t rbm, uint64_t flash_addr);
+int RBFreeBuff_zc_batch(mtcp_manager_t mtcp, rb_manager_t rbm, uint64_t *addr_array, int num_pkts);
+
+#endif /* MTCP_RX_ZERO_COPY */
 
 #endif
